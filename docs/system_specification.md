@@ -21,11 +21,12 @@
 7. [認證與授權](#7-認證與授權)
 8. [工作佇列設計](#8-工作佇列設計)
 9. [SQL 定義系統](#9-sql-定義系統)
-10. [中介層 (Middleware)](#10-中介層-middleware)
-11. [部署架構](#11-部署架構)
-12. [安全性設計](#12-安全性設計)
-13. [設定參數一覽](#13-設定參數一覽)
-14. [專案目錄結構](#14-專案目錄結構)
+10. [管理介面 (Admin UI)](#10-管理介面-admin-ui)
+11. [中介層 (Middleware)](#11-中介層-middleware)
+12. [部署架構](#12-部署架構)
+13. [安全性設計](#13-安全性設計)
+14. [設定參數一覽](#14-設定參數一覽)
+15. [專案目錄結構](#15-專案目錄結構)
 
 ---
 
@@ -45,6 +46,7 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
 | 資料寫入 | 支援 INSERT / UPDATE / DELETE，並可切換同步或非同步模式 |
 | 負載緩解 | 透過 Celery + Redis 工作佇列將寫入與程序呼叫非同步化 |
 | 權限控管 | JWT 認證搭配 RBAC（角色基礎存取控制），支援萬用字元權限 |
+| 管理介面 | 內建 Web 管理 UI（SPA），提供使用者/角色/權限 CRUD、查詢測試、任務監控 |
 | 11g 相容 | 使用 cx_Oracle SessionPool 與 ROWNUM 分頁，完全相容 Oracle 11.1.0.4 |
 
 ### 1.3 系統邊界
@@ -1079,9 +1081,107 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 
 ---
 
-## 10. 中介層 (Middleware)
+## 10. 管理介面 (Admin UI)
 
-### 10.1 CORS 中介層
+### 10.1 概觀
+
+系統內建一套 Web 管理介面（Single-Page Application），透過瀏覽器即可管理所有系統資源，無需使用 curl 或 Postman。
+
+**存取位址：** `http://localhost:8000/admin`
+
+**技術實作：**
+- 純前端 SPA（Vanilla JavaScript，無框架依賴）
+- 由 FastAPI 以 `StaticFiles` + `FileResponse` 伺服
+- 透過 REST API（`/api/v1/*`）與後端通訊
+- JWT Token 儲存於 `localStorage`
+
+### 10.2 頁面功能
+
+| 頁面 | 路徑 | 說明 |
+|------|------|------|
+| **Login** | `/admin` | JWT 登入頁面（帳號密碼表單） |
+| **Dashboard** | — | 統計總覽（使用者數、角色數、權限數、SQL 定義數）、快捷資訊 |
+| **Users** | — | 使用者清單 + 新增使用者（帳號、密碼、角色指派、超級管理員設定） |
+| **Roles** | — | 角色清單 + 新增角色（名稱、描述、權限指派） |
+| **Permissions** | — | 權限清單 + 新增權限（resource、action、描述） |
+| **SQL Definitions** | — | 查看所有已註冊的 SQL 定義、參數資訊、熱重載 |
+| **Query Console** | — | 互動式查詢測試台（選擇 fetch mode、填入參數、即時查看結果表格） |
+| **Procedure Console** | — | 執行 Procedure / Function（支援 OUT 參數、非同步模式） |
+| **Write Console** | — | 執行 INSERT / UPDATE / DELETE（支援非同步佇列模式） |
+| **Async Tasks** | — | 查詢 Celery 任務狀態、連結至 Flower 監控面板 |
+
+### 10.3 UI 元件
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ┌──────────┐  ┌──────────────────────────────────────────────┐ │
+│  │          │  │  Top Header        [user badge] [Logout]     │ │
+│  │  Sidebar │  ├──────────────────────────────────────────────┤ │
+│  │          │  │                                              │ │
+│  │ Dashboard│  │  Content Area                                │ │
+│  │ Users    │  │                                              │ │
+│  │ Roles    │  │  ┌─────────────────────────────────────────┐ │ │
+│  │ Perms    │  │  │  Stats Grid / Data Tables / Forms       │ │ │
+│  │ SQL Defs │  │  │                                         │ │ │
+│  │ Query    │  │  │  (dynamically rendered per page)        │ │ │
+│  │ Proc     │  │  │                                         │ │ │
+│  │ Write    │  │  └─────────────────────────────────────────┘ │ │
+│  │ Tasks    │  │                                              │ │
+│  │          │  │                                              │ │
+│  └──────────┘  └──────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 10.4 認證流程
+
+1. 使用者在 Login 頁面輸入帳號密碼
+2. 前端以 `POST /api/v1/auth/token` 取得 JWT Token
+3. Token 儲存於 `localStorage`（key: `hub_token`）
+4. 後續所有 API 請求附帶 `Authorization: Bearer <token>` 標頭
+5. Token 過期或無效時自動導回 Login 頁面
+6. Logout 清除 `localStorage` 中的 Token
+
+### 10.5 Query Console 功能
+
+支援所有五種 fetch mode 的互動式測試：
+
+- **模式切換**：下拉選單切換 page / all / batch / top_n / one
+- **動態參數欄位**：依模式顯示/隱藏 page/batch/top_n 相關參數
+- **JSON 參數編輯器**：以 textarea 輸入 bind parameters
+- **結果展示**：成功時顯示資料表格 + 可展開的 Raw JSON（語法高亮）
+- **錯誤提示**：失敗時顯示紅色錯誤訊息
+
+### 10.6 檔案結構
+
+```
+app/admin/
+├── index.html            # SPA 主頁面（含所有 HTML 結構）
+├── css/
+│   └── style.css         # 完整樣式（佈局、元件、響應式）
+└── js/
+    └── app.js            # 應用邏輯（路由、API 呼叫、頁面渲染）
+```
+
+### 10.7 路由掛載
+
+```python
+# app/main.py
+app.mount("/admin/css", StaticFiles(directory="app/admin/css"))
+app.mount("/admin/js",  StaticFiles(directory="app/admin/js"))
+
+@app.get("/admin")
+@app.get("/admin/{rest_of_path:path}")
+def admin_spa(rest_of_path: str = ""):
+    return FileResponse("app/admin/index.html")
+```
+
+所有 `/admin/*` 路徑均回傳 `index.html`，由前端 JavaScript 負責頁面路由。
+
+---
+
+## 11. 中介層 (Middleware)
+
+### 11.1 CORS 中介層
 
 ```python
 CORSMiddleware(
@@ -1094,7 +1194,7 @@ CORSMiddleware(
 
 > **生產環境注意：** 應將 `allow_origins` 設為明確的前端網域清單。
 
-### 10.2 速率限制中介層
+### 11.2 速率限制中介層
 
 **類別：** `RateLimiterMiddleware`
 **演算法：** 滑動視窗 (Sliding Window)
@@ -1121,9 +1221,9 @@ CORSMiddleware(
 
 ---
 
-## 11. 部署架構
+## 12. 部署架構
 
-### 11.1 Docker 映像
+### 12.1 Docker 映像
 
 **基底映像：** `python:3.11-slim`
 
@@ -1135,7 +1235,7 @@ CORSMiddleware(
 5. 複製應用程式碼
 6. 啟動 Uvicorn：`uvicorn app.main:app --host 0.0.0.0 --port 8000`
 
-### 11.2 Docker Compose 服務
+### 12.2 Docker Compose 服務
 
 | 服務 | 映像 | 連接埠 | 說明 |
 |------|------|--------|------|
@@ -1145,7 +1245,7 @@ CORSMiddleware(
 | `flower` | 自建 | 5555 | Celery 監控儀表板 |
 | `redis` | redis:7-alpine | 6379 | 訊息佇列 Broker |
 
-### 11.3 部署拓撲
+### 12.3 部署拓撲
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -1174,14 +1274,14 @@ CORSMiddleware(
                     └──────────────────────┘
 ```
 
-### 11.4 Volume 掛載
+### 12.4 Volume 掛載
 
 | 掛載 | 說明 |
 |------|------|
 | `./app/sql_definitions` → `/app/app/sql_definitions` | SQL 定義檔熱更新 |
 | `redis_data` (named volume) | Redis 資料持久化 |
 
-### 11.5 快速啟動
+### 12.5 快速啟動
 
 ```bash
 # 1. 複製並編輯組態
@@ -1207,9 +1307,9 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
 
 ---
 
-## 12. 安全性設計
+## 13. 安全性設計
 
-### 12.1 安全措施總覽
+### 13.1 安全措施總覽
 
 | 威脅 | 防護措施 | 實作位置 |
 |------|----------|----------|
@@ -1222,7 +1322,7 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
 | **DML Injection** | 表名正則 + 參數化 SQL | `write_service.py` |
 | **資料庫過載** | 連線池上限 + Celery 佇列緩衝 | `oracle_pool.py`, `celery_app.py` |
 
-### 12.2 表名驗證規則
+### 13.2 表名驗證規則
 
 ```
 正則：^[A-Za-z_][A-Za-z0-9_$.#]{0,127}$
@@ -1231,7 +1331,7 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
 非法：'; DROP TABLE --, (空字串), 123_bad, table name with spaces
 ```
 
-### 12.3 上線前檢查清單
+### 13.3 上線前檢查清單
 
 - [ ] 變更 `admin` 帳號的預設密碼
 - [ ] 將 `SECRET_KEY` 設為高強度隨機字串
@@ -1242,7 +1342,7 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
 
 ---
 
-## 13. 設定參數一覽
+## 14. 設定參數一覽
 
 | 環境變數 | 預設值 | 說明 |
 |----------|--------|------|
@@ -1267,7 +1367,7 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
 
 ---
 
-## 14. 專案目錄結構
+## 15. 專案目錄結構
 
 ```
 Oracle-api-hub/
@@ -1313,6 +1413,12 @@ Oracle-api-hub/
 │   │       ├── queries.py               # 查詢端點（定義列表 / 重載 / 執行）
 │   │       ├── procedures.py            # 程序端點（同步 / 非同步）
 │   │       └── writes.py                # 寫入端點（同步 / 非同步 / 狀態查詢）
+│   ├── admin/                           # 管理介面 SPA
+│   │   ├── index.html                   # SPA 主頁面
+│   │   ├── css/
+│   │   │   └── style.css                # UI 樣式
+│   │   └── js/
+│   │       └── app.js                   # 前端邏輯（路由、API、頁面渲染）
 │   └── sql_definitions/                 # SQL 查詢定義 YAML 檔
 │       ├── employees.yaml               # 員工查詢範例
 │       ├── departments.yaml             # 部門查詢範例

@@ -1,0 +1,867 @@
+/**
+ * Oracle API Hub — Admin SPA
+ *
+ * Single-page management console communicating with the FastAPI backend.
+ */
+
+/* ── Global State ─────────────────────────────────────────────────────── */
+const API = '/api/v1';
+let token = localStorage.getItem('hub_token') || '';
+let currentUser = null;
+
+/* ── Bootstrap ────────────────────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', () => {
+  if (token) {
+    fetchCurrentUser().then(ok => {
+      if (ok) showApp();
+      else showLogin();
+    });
+  } else {
+    showLogin();
+  }
+  bindGlobalEvents();
+});
+
+/* ── Auth ─────────────────────────────────────────────────────────────── */
+function showLogin() {
+  document.getElementById('loginPage').classList.remove('hidden');
+  document.getElementById('appLayout').classList.add('hidden');
+}
+
+function showApp() {
+  document.getElementById('loginPage').classList.add('hidden');
+  document.getElementById('appLayout').classList.remove('hidden');
+  document.getElementById('userBadge').textContent = currentUser?.username || '?';
+  navigateTo('dashboard');
+}
+
+document.getElementById('loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const username = document.getElementById('loginUser').value;
+  const password = document.getElementById('loginPass').value;
+  try {
+    const res = await fetch(`${API}/auth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+    });
+    if (!res.ok) throw new Error('Login failed');
+    const data = await res.json();
+    token = data.access_token;
+    localStorage.setItem('hub_token', token);
+    await fetchCurrentUser();
+    showApp();
+    toast('Login successful', 'success');
+  } catch {
+    toast('Invalid username or password', 'error');
+  }
+});
+
+document.getElementById('logoutBtn').addEventListener('click', () => {
+  token = '';
+  currentUser = null;
+  localStorage.removeItem('hub_token');
+  showLogin();
+});
+
+async function fetchCurrentUser() {
+  try {
+    currentUser = await api('GET', '/auth/me');
+    return true;
+  } catch {
+    token = '';
+    localStorage.removeItem('hub_token');
+    return false;
+  }
+}
+
+/* ── API helper ───────────────────────────────────────────────────────── */
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: { 'Authorization': `Bearer ${token}` },
+  };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(`${API}${path}`, opts);
+  if (res.status === 401) { showLogin(); throw new Error('Unauthorized'); }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  return data;
+}
+
+/* ── Navigation ───────────────────────────────────────────────────────── */
+function bindGlobalEvents() {
+  document.querySelectorAll('.sidebar-nav a[data-page]').forEach(a => {
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      navigateTo(a.dataset.page);
+    });
+  });
+  document.getElementById('modalOverlay').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+  document.getElementById('modalClose').addEventListener('click', closeModal);
+}
+
+function navigateTo(page) {
+  document.querySelectorAll('.sidebar-nav a').forEach(a => a.classList.remove('active'));
+  const link = document.querySelector(`.sidebar-nav a[data-page="${page}"]`);
+  if (link) link.classList.add('active');
+
+  const titles = {
+    dashboard: 'Dashboard', users: 'User Management', roles: 'Role Management',
+    permissions: 'Permission Management', 'sql-definitions': 'SQL Definitions',
+    'query-console': 'Query Console', 'procedure-console': 'Procedure Console',
+    'write-console': 'Write Console', tasks: 'Async Tasks',
+  };
+  document.getElementById('pageTitle').textContent = titles[page] || page;
+  const renderers = {
+    dashboard: renderDashboard, users: renderUsers, roles: renderRoles,
+    permissions: renderPermissions, 'sql-definitions': renderSqlDefs,
+    'query-console': renderQueryConsole, 'procedure-console': renderProcConsole,
+    'write-console': renderWriteConsole, tasks: renderTasks,
+  };
+  (renderers[page] || renderDashboard)();
+}
+
+/* ── Toast ─────────────────────────────────────────────────────────────── */
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.getElementById('toastContainer').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+/* ── Modal ─────────────────────────────────────────────────────────────── */
+function openModal(title, bodyHtml, footerHtml) {
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalBody').innerHTML = bodyHtml;
+  document.getElementById('modalFooter').innerHTML = footerHtml || '';
+  document.getElementById('modalOverlay').classList.add('active');
+}
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('active');
+}
+
+/* ── HTML Helpers ──────────────────────────────────────────────────────── */
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function syntaxHighlight(json) {
+  if (typeof json !== 'string') json = JSON.stringify(json, null, 2);
+  return json.replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
+    let cls = 'json-number';
+    if (/^"/.test(match)) {
+      cls = /:$/.test(match) ? 'json-key' : 'json-string';
+    } else if (/true|false/.test(match)) {
+      cls = 'json-bool';
+    } else if (/null/.test(match)) {
+      cls = 'json-null';
+    }
+    return `<span class="${cls}">${match}</span>`;
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Page Renderers
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Dashboard ────────────────────────────────────────────────────────── */
+async function renderDashboard() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
+
+  try {
+    const [users, roles, perms, defs] = await Promise.all([
+      api('GET', '/auth/users').catch(() => []),
+      api('GET', '/auth/roles').catch(() => []),
+      api('GET', '/auth/permissions').catch(() => []),
+      api('GET', '/queries/definitions').catch(() => []),
+    ]);
+
+    area.innerHTML = `
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-info"><h3>Users</h3><div class="stat-value">${users.length}</div></div>
+          <div class="stat-icon blue">&#9823;</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-info"><h3>Roles</h3><div class="stat-value">${roles.length}</div></div>
+          <div class="stat-icon green">&#9881;</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-info"><h3>Permissions</h3><div class="stat-value">${perms.length}</div></div>
+          <div class="stat-icon yellow">&#9919;</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-info"><h3>SQL Definitions</h3><div class="stat-value">${defs.length}</div></div>
+          <div class="stat-icon blue">&#9998;</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+        <div class="card">
+          <div class="card-header"><h2>Recent Users</h2></div>
+          <div class="card-body no-pad">
+            <table class="data-table"><thead><tr><th>Username</th><th>Full Name</th><th>Status</th></tr></thead>
+            <tbody>${users.slice(0, 5).map(u => `<tr>
+              <td>${esc(u.username)}</td>
+              <td>${esc(u.full_name || '—')}</td>
+              <td>${u.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>'}</td>
+            </tr>`).join('')}</tbody></table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h2>SQL Definitions</h2></div>
+          <div class="card-body no-pad">
+            <table class="data-table"><thead><tr><th>Name</th><th>Permission</th></tr></thead>
+            <tbody>${defs.slice(0, 5).map(d => `<tr>
+              <td>${esc(d.name)}</td>
+              <td><span class="tag">${esc(d.permission)}</span></td>
+            </tr>`).join('')}</tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header"><h2>System Info</h2></div>
+        <div class="card-body">
+          <p><strong>Current User:</strong> ${esc(currentUser?.username)} ${currentUser?.is_superuser ? '<span class="badge badge-blue">Superuser</span>' : ''}</p>
+          <p class="mt-2"><strong>API Base:</strong> <code>${API}</code></p>
+          <p class="mt-2"><strong>Swagger UI:</strong> <a href="/docs" target="_blank">/docs</a></p>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    area.innerHTML = `<div class="card"><div class="card-body"><p>Error loading dashboard: ${esc(err.message)}</p></div></div>`;
+  }
+}
+
+/* ── Users ─────────────────────────────────────────────────────────────── */
+async function renderUsers() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
+
+  try {
+    const [users, roles] = await Promise.all([
+      api('GET', '/auth/users'),
+      api('GET', '/auth/roles').catch(() => []),
+    ]);
+    window._cachedRoles = roles;
+
+    area.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h2>Users (${users.length})</h2>
+          <button class="btn btn-primary btn-sm" onclick="openUserModal()">+ New User</button>
+        </div>
+        <div class="card-body no-pad">
+          <table class="data-table"><thead><tr>
+            <th>ID</th><th>Username</th><th>Full Name</th><th>Roles</th><th>Status</th><th>Superuser</th>
+          </tr></thead>
+          <tbody>${users.map(u => `<tr>
+            <td>${u.id}</td>
+            <td><strong>${esc(u.username)}</strong></td>
+            <td>${esc(u.full_name || '—')}</td>
+            <td>${(u.roles || []).map(r => `<span class="tag">${esc(r.name)}</span>`).join(' ') || '—'}</td>
+            <td>${u.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>'}</td>
+            <td>${u.is_superuser ? '<span class="badge badge-blue">Yes</span>' : '—'}</td>
+          </tr>`).join('')}</tbody></table>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    area.innerHTML = `<div class="card"><div class="card-body"><p>Error: ${esc(err.message)}</p></div></div>`;
+  }
+}
+
+window.openUserModal = function() {
+  const roles = window._cachedRoles || [];
+  const body = `
+    <form id="userForm">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" name="username" required>
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" name="password" required>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Full Name</label>
+        <input type="text" name="full_name">
+      </div>
+      <div class="form-group">
+        <label>Superuser</label>
+        <select name="is_superuser"><option value="false">No</option><option value="true">Yes</option></select>
+      </div>
+      <div class="form-group">
+        <label>Roles</label>
+        <div class="checkbox-list">
+          ${roles.map(r => `<div class="checkbox-item">
+            <input type="checkbox" id="role_${r.id}" name="role_ids" value="${r.id}">
+            <label for="role_${r.id}">${esc(r.name)} <span class="text-muted text-sm">${esc(r.description || '')}</span></label>
+          </div>`).join('')}
+        </div>
+      </div>
+    </form>
+  `;
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                   <button class="btn btn-primary" onclick="submitUser()">Create User</button>`;
+  openModal('New User', body, footer);
+};
+
+window.submitUser = async function() {
+  const form = document.getElementById('userForm');
+  const data = {
+    username: form.username.value,
+    password: form.password.value,
+    full_name: form.full_name.value || null,
+    is_superuser: form.is_superuser.value === 'true',
+    role_ids: [...form.querySelectorAll('input[name="role_ids"]:checked')].map(c => parseInt(c.value)),
+  };
+  try {
+    await api('POST', '/auth/users', data);
+    closeModal();
+    toast('User created', 'success');
+    renderUsers();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+/* ── Roles ─────────────────────────────────────────────────────────────── */
+async function renderRoles() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
+
+  try {
+    const [roles, perms] = await Promise.all([
+      api('GET', '/auth/roles'),
+      api('GET', '/auth/permissions').catch(() => []),
+    ]);
+    window._cachedPerms = perms;
+
+    area.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h2>Roles (${roles.length})</h2>
+          <button class="btn btn-primary btn-sm" onclick="openRoleModal()">+ New Role</button>
+        </div>
+        <div class="card-body no-pad">
+          <table class="data-table"><thead><tr>
+            <th>ID</th><th>Name</th><th>Description</th><th>Permissions</th>
+          </tr></thead>
+          <tbody>${roles.map(r => `<tr>
+            <td>${r.id}</td>
+            <td><strong>${esc(r.name)}</strong></td>
+            <td>${esc(r.description || '—')}</td>
+            <td>${(r.permissions || []).map(p => `<span class="tag">${esc(p.resource)}:${esc(p.action)}</span>`).join(' ') || '—'}</td>
+          </tr>`).join('')}</tbody></table>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    area.innerHTML = `<div class="card"><div class="card-body"><p>Error: ${esc(err.message)}</p></div></div>`;
+  }
+}
+
+window.openRoleModal = function() {
+  const perms = window._cachedPerms || [];
+  const body = `
+    <form id="roleForm">
+      <div class="form-group"><label>Role Name</label><input type="text" name="name" required></div>
+      <div class="form-group"><label>Description</label><textarea name="description" rows="2"></textarea></div>
+      <div class="form-group">
+        <label>Permissions</label>
+        <div class="checkbox-list">
+          ${perms.map(p => `<div class="checkbox-item">
+            <input type="checkbox" id="perm_${p.id}" name="perm_ids" value="${p.id}">
+            <label for="perm_${p.id}">${esc(p.resource)}:${esc(p.action)} <span class="text-muted text-sm">${esc(p.description || '')}</span></label>
+          </div>`).join('')}
+        </div>
+      </div>
+    </form>
+  `;
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                   <button class="btn btn-primary" onclick="submitRole()">Create Role</button>`;
+  openModal('New Role', body, footer);
+};
+
+window.submitRole = async function() {
+  const form = document.getElementById('roleForm');
+  const data = {
+    name: form.name.value,
+    description: form.description.value || null,
+    permission_ids: [...form.querySelectorAll('input[name="perm_ids"]:checked')].map(c => parseInt(c.value)),
+  };
+  try {
+    await api('POST', '/auth/roles', data);
+    closeModal();
+    toast('Role created', 'success');
+    renderRoles();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+/* ── Permissions ──────────────────────────────────────────────────────── */
+async function renderPermissions() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
+
+  try {
+    const perms = await api('GET', '/auth/permissions');
+    area.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h2>Permissions (${perms.length})</h2>
+          <button class="btn btn-primary btn-sm" onclick="openPermModal()">+ New Permission</button>
+        </div>
+        <div class="card-body no-pad">
+          <table class="data-table"><thead><tr>
+            <th>ID</th><th>Resource</th><th>Action</th><th>Description</th>
+          </tr></thead>
+          <tbody>${perms.map(p => `<tr>
+            <td>${p.id}</td>
+            <td><span class="tag">${esc(p.resource)}</span></td>
+            <td><span class="badge badge-blue">${esc(p.action)}</span></td>
+            <td>${esc(p.description || '—')}</td>
+          </tr>`).join('')}</tbody></table>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    area.innerHTML = `<div class="card"><div class="card-body"><p>Error: ${esc(err.message)}</p></div></div>`;
+  }
+}
+
+window.openPermModal = function() {
+  const body = `
+    <form id="permForm">
+      <div class="form-group">
+        <label>Resource</label>
+        <input type="text" name="resource" placeholder="e.g. query:employees or table:*" required>
+        <div class="hint">Format: type:name (supports * wildcard)</div>
+      </div>
+      <div class="form-group">
+        <label>Action</label>
+        <select name="action">
+          <option value="read">read</option>
+          <option value="execute">execute</option>
+          <option value="write">write</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Description</label><textarea name="description" rows="2"></textarea></div>
+    </form>
+  `;
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                   <button class="btn btn-primary" onclick="submitPerm()">Create Permission</button>`;
+  openModal('New Permission', body, footer);
+};
+
+window.submitPerm = async function() {
+  const form = document.getElementById('permForm');
+  const data = {
+    resource: form.resource.value,
+    action: form.action.value,
+    description: form.description.value || null,
+  };
+  try {
+    await api('POST', '/auth/permissions', data);
+    closeModal();
+    toast('Permission created', 'success');
+    renderPermissions();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+/* ── SQL Definitions ──────────────────────────────────────────────────── */
+async function renderSqlDefs() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
+
+  try {
+    const defs = await api('GET', '/queries/definitions');
+    area.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h2>SQL Definitions (${defs.length})</h2>
+          <div class="btn-group">
+            <button class="btn btn-secondary btn-sm" onclick="reloadDefs()">&#8635; Reload</button>
+          </div>
+        </div>
+        <div class="card-body no-pad">
+          <table class="data-table"><thead><tr>
+            <th>Name</th><th>Description</th><th>Permission</th><th>Parameters</th><th>Actions</th>
+          </tr></thead>
+          <tbody>${defs.map(d => `<tr>
+            <td><strong>${esc(d.name)}</strong></td>
+            <td class="text-sm">${esc(d.description || '—')}</td>
+            <td><span class="tag">${esc(d.permission)}</span></td>
+            <td>${Object.keys(d.params || {}).map(k => {
+              const p = d.params[k];
+              return `<span class="tag">${esc(k)}${p.required ? '*' : ''}</span>`;
+            }).join(' ') || '—'}</td>
+            <td><button class="btn btn-sm btn-outline" onclick="viewSqlDef('${esc(d.name)}')">Detail</button></td>
+          </tr>`).join('')}</tbody></table>
+        </div>
+      </div>
+    `;
+    window._cachedDefs = defs;
+  } catch (err) {
+    area.innerHTML = `<div class="card"><div class="card-body"><p>Error: ${esc(err.message)}</p></div></div>`;
+  }
+}
+
+window.reloadDefs = async function() {
+  try {
+    const res = await api('POST', '/queries/definitions/reload');
+    toast(`Reloaded ${res.count} definitions`, 'success');
+    renderSqlDefs();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.viewSqlDef = function(name) {
+  const d = (window._cachedDefs || []).find(x => x.name === name);
+  if (!d) return;
+  const body = `
+    <div class="form-group"><label>Name</label><input type="text" value="${esc(d.name)}" disabled></div>
+    <div class="form-group"><label>Description</label><input type="text" value="${esc(d.description)}" disabled></div>
+    <div class="form-group"><label>Permission</label><input type="text" value="${esc(d.permission)}" disabled></div>
+    <div class="form-group">
+      <label>Parameters</label>
+      ${Object.keys(d.params || {}).length === 0 ? '<p class="text-muted">No parameters</p>' :
+        `<table class="data-table"><thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+        <tbody>${Object.entries(d.params).map(([k,v]) => `<tr>
+          <td><code>${esc(k)}</code></td><td>${esc(v.type)}</td>
+          <td>${v.required ? '<span class="badge badge-red">Yes</span>' : 'No'}</td>
+          <td>${esc(v.description || '—')}</td>
+        </tr>`).join('')}</tbody></table>`}
+    </div>
+    <div class="mt-4">
+      <button class="btn btn-primary btn-sm" onclick="closeModal();prefillQuery('${esc(name)}')">Open in Query Console</button>
+    </div>
+  `;
+  openModal(`SQL Definition: ${name}`, body, '');
+};
+
+window.prefillQuery = function(name) {
+  navigateTo('query-console');
+  setTimeout(() => {
+    const nameInput = document.getElementById('qcName');
+    if (nameInput) nameInput.value = name;
+  }, 100);
+};
+
+/* ── Query Console ────────────────────────────────────────────────────── */
+function renderQueryConsole() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = `
+    <div class="card">
+      <div class="card-header"><h2>Query Console</h2></div>
+      <div class="card-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Query Name</label>
+            <input type="text" id="qcName" placeholder="e.g. employees">
+          </div>
+          <div class="form-group">
+            <label>Fetch Mode</label>
+            <select id="qcMode" onchange="toggleQcModeFields()">
+              <option value="page">page</option>
+              <option value="all">all</option>
+              <option value="batch">batch</option>
+              <option value="top_n">top_n</option>
+              <option value="one">one</option>
+            </select>
+          </div>
+        </div>
+        <div id="qcModeFields">
+          <div class="form-row" id="qcPageFields">
+            <div class="form-group"><label>Page</label><input type="number" id="qcPage" value="1" min="1"></div>
+            <div class="form-group"><label>Page Size</label><input type="number" id="qcPageSize" value="50" min="1" max="1000"></div>
+          </div>
+          <div class="form-row hidden" id="qcBatchFields">
+            <div class="form-group"><label>Batch Size</label><input type="number" id="qcBatchSize" value="500" min="1" max="10000"></div>
+            <div class="form-group"><label>Batch Offset</label><input type="number" id="qcBatchOffset" value="0" min="0"></div>
+          </div>
+          <div class="form-row hidden" id="qcTopNFields">
+            <div class="form-group"><label>Top N</label><input type="number" id="qcTopN" value="10" min="1" max="1000"></div>
+          </div>
+        </div>
+        <div class="form-group query-console">
+          <label>Parameters (JSON)</label>
+          <textarea id="qcParams" placeholder='{"dept": "IT"}'>{}</textarea>
+        </div>
+        <button class="btn btn-primary" onclick="executeQuery()">&#9654; Execute Query</button>
+        <div class="result-area" id="qcResult"></div>
+      </div>
+    </div>
+  `;
+}
+
+window.toggleQcModeFields = function() {
+  const mode = document.getElementById('qcMode').value;
+  document.getElementById('qcPageFields').classList.toggle('hidden', mode !== 'page');
+  document.getElementById('qcBatchFields').classList.toggle('hidden', mode !== 'batch');
+  document.getElementById('qcTopNFields').classList.toggle('hidden', mode !== 'top_n');
+};
+
+window.executeQuery = async function() {
+  const name = document.getElementById('qcName').value.trim();
+  if (!name) return toast('Please enter a query name', 'error');
+
+  let params = {};
+  try { params = JSON.parse(document.getElementById('qcParams').value || '{}'); } catch { return toast('Invalid JSON parameters', 'error'); }
+
+  const mode = document.getElementById('qcMode').value;
+  const body = { query_name: name, params, fetch_mode: mode };
+
+  if (mode === 'page') {
+    body.page = parseInt(document.getElementById('qcPage').value);
+    body.page_size = parseInt(document.getElementById('qcPageSize').value);
+  } else if (mode === 'batch') {
+    body.batch_size = parseInt(document.getElementById('qcBatchSize').value);
+    body.batch_offset = parseInt(document.getElementById('qcBatchOffset').value);
+  } else if (mode === 'top_n') {
+    body.top_n = parseInt(document.getElementById('qcTopN').value);
+  }
+
+  const resultArea = document.getElementById('qcResult');
+  resultArea.innerHTML = '<div class="spinner"></div>';
+
+  try {
+    const result = await api('POST', '/queries/execute', body);
+    const meta = { ...result };
+    delete meta.data;
+    delete meta.columns;
+
+    resultArea.innerHTML = `
+      <div class="mb-4">
+        <span class="badge badge-green">SUCCESS</span>
+        <span class="text-muted text-sm" style="margin-left:8px">Total: ${result.total} rows | Returned: ${result.data.length} rows</span>
+      </div>
+      ${result.data.length > 0 ? `
+        <div style="overflow-x:auto">
+          <table class="data-table"><thead><tr>${result.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
+          <tbody>${result.data.map(row => `<tr>${result.columns.map(c => `<td>${esc(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>
+        </div>
+      ` : '<p class="text-muted">No data returned</p>'}
+      <details class="mt-4"><summary class="text-sm" style="cursor:pointer">Raw JSON Response</summary>
+        <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+      </details>
+    `;
+  } catch (err) {
+    resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
+  }
+};
+
+/* ── Procedure Console ────────────────────────────────────────────────── */
+function renderProcConsole() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = `
+    <div class="card">
+      <div class="card-header"><h2>Procedure / Function Console</h2></div>
+      <div class="card-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Procedure/Function Name</label>
+            <input type="text" id="pcName" placeholder="e.g. PKG_HR.GET_SALARY">
+          </div>
+          <div class="form-group">
+            <label>Type</label>
+            <select id="pcIsFunc">
+              <option value="false">Procedure</option>
+              <option value="true">Function</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group query-console">
+          <label>Input Parameters (JSON)</label>
+          <textarea id="pcParams" placeholder='{"p_emp_id": 1001}'>{}</textarea>
+        </div>
+        <div class="form-group">
+          <label>OUT Parameters (comma-separated names)</label>
+          <input type="text" id="pcOutParams" placeholder="p_salary, p_currency">
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="pcAsync"> Execute Asynchronously (Celery)</label>
+        </div>
+        <button class="btn btn-primary" onclick="executeProcedure()">&#9654; Execute</button>
+        <div class="result-area" id="pcResult"></div>
+      </div>
+    </div>
+  `;
+}
+
+window.executeProcedure = async function() {
+  const name = document.getElementById('pcName').value.trim();
+  if (!name) return toast('Please enter a procedure name', 'error');
+
+  let params = {};
+  try { params = JSON.parse(document.getElementById('pcParams').value || '{}'); } catch { return toast('Invalid JSON', 'error'); }
+
+  const outRaw = document.getElementById('pcOutParams').value.trim();
+  const outParams = outRaw ? outRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const isFunction = document.getElementById('pcIsFunc').value === 'true';
+  const isAsync = document.getElementById('pcAsync').checked;
+
+  const body = { name, params, out_params: outParams, is_function: isFunction };
+  const endpoint = isAsync ? '/procedures/execute-async' : '/procedures/execute';
+  const resultArea = document.getElementById('pcResult');
+  resultArea.innerHTML = '<div class="spinner"></div>';
+
+  try {
+    const result = await api('POST', endpoint, body);
+    resultArea.innerHTML = `
+      <div class="mb-4"><span class="badge badge-green">SUCCESS</span></div>
+      <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+    `;
+  } catch (err) {
+    resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
+  }
+};
+
+/* ── Write Console ────────────────────────────────────────────────────── */
+function renderWriteConsole() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = `
+    <div class="card">
+      <div class="card-header"><h2>Write Console</h2></div>
+      <div class="card-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Operation</label>
+            <select id="wcOp">
+              <option value="insert">INSERT</option>
+              <option value="update">UPDATE</option>
+              <option value="delete">DELETE</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Table Name</label>
+            <input type="text" id="wcTable" placeholder="e.g. HR.EMPLOYEES">
+          </div>
+        </div>
+        <div class="form-group query-console">
+          <label>Data (JSON array of objects)</label>
+          <textarea id="wcData" placeholder='[{"emp_name": "John", "department": "IT"}]'>[]</textarea>
+        </div>
+        <div class="form-group query-console">
+          <label>WHERE Clause Params (JSON, for UPDATE/DELETE)</label>
+          <textarea id="wcWhere" rows="2" placeholder='{"emp_id": 1001}'></textarea>
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="wcAsync"> Execute Asynchronously (Celery)</label>
+        </div>
+        <button class="btn btn-primary" onclick="executeWrite()">&#9654; Execute Write</button>
+        <div class="result-area" id="wcResult"></div>
+      </div>
+    </div>
+  `;
+}
+
+window.executeWrite = async function() {
+  const table = document.getElementById('wcTable').value.trim();
+  if (!table) return toast('Please enter a table name', 'error');
+
+  let data = [];
+  try { data = JSON.parse(document.getElementById('wcData').value || '[]'); } catch { return toast('Invalid JSON data', 'error'); }
+
+  let where = null;
+  const whereRaw = document.getElementById('wcWhere').value.trim();
+  if (whereRaw) {
+    try { where = JSON.parse(whereRaw); } catch { return toast('Invalid WHERE JSON', 'error'); }
+  }
+
+  const body = {
+    operation: document.getElementById('wcOp').value,
+    table,
+    data,
+    where,
+    async_mode: document.getElementById('wcAsync').checked,
+  };
+
+  const resultArea = document.getElementById('wcResult');
+  resultArea.innerHTML = '<div class="spinner"></div>';
+
+  try {
+    const result = await api('POST', '/writes/execute', body);
+    resultArea.innerHTML = `
+      <div class="mb-4"><span class="badge badge-green">SUCCESS</span></div>
+      <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+    `;
+  } catch (err) {
+    resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
+  }
+};
+
+/* ── Tasks ─────────────────────────────────────────────────────────────── */
+function renderTasks() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = `
+    <div class="card">
+      <div class="card-header"><h2>Async Task Status</h2></div>
+      <div class="card-body">
+        <div class="form-group">
+          <label>Task ID</label>
+          <div class="flex gap-2">
+            <input type="text" id="taskIdInput" placeholder="Enter Celery task ID" style="flex:1">
+            <button class="btn btn-primary" onclick="checkTask()">Check</button>
+          </div>
+        </div>
+        <div class="result-area" id="taskResult"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <h2>Flower Dashboard</h2>
+      </div>
+      <div class="card-body">
+        <p>For full task monitoring, open the Flower dashboard:</p>
+        <a href="http://localhost:5555" target="_blank" class="btn btn-outline mt-2">Open Flower (port 5555)</a>
+      </div>
+    </div>
+  `;
+}
+
+window.checkTask = async function() {
+  const taskId = document.getElementById('taskIdInput').value.trim();
+  if (!taskId) return toast('Please enter a task ID', 'error');
+
+  const resultArea = document.getElementById('taskResult');
+  resultArea.innerHTML = '<div class="spinner"></div>';
+
+  try {
+    const result = await api('GET', `/writes/tasks/${encodeURIComponent(taskId)}`);
+    const statusBadge = {
+      SUCCESS: 'badge-green', FAILURE: 'badge-red', PENDING: 'badge-yellow',
+      STARTED: 'badge-blue', RETRY: 'badge-yellow',
+    }[result.status] || 'badge-gray';
+
+    resultArea.innerHTML = `
+      <div class="mb-4">
+        <span class="badge ${statusBadge}">${esc(result.status)}</span>
+        <span class="text-muted text-sm" style="margin-left:8px">Task: ${esc(result.task_id)}</span>
+      </div>
+      <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+    `;
+  } catch (err) {
+    resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
+  }
+};

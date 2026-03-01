@@ -2,15 +2,20 @@
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import auth, health, procedures, queries, writes
 from app.core.config import settings
 from app.db.oracle_pool import close_pool, init_pool
 from app.middleware.rate_limiter import RateLimiterMiddleware
 from app.services.sql_registry import sql_registry
+
+_ADMIN_DIR = Path(__file__).resolve().parent / "admin"
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -52,3 +57,14 @@ app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(queries.router, prefix=settings.api_prefix)
 app.include_router(procedures.router, prefix=settings.api_prefix)
 app.include_router(writes.router, prefix=settings.api_prefix)
+
+# ── Admin UI (static SPA) ────────────────────────────────────────────────────
+app.mount("/admin/css", StaticFiles(directory=str(_ADMIN_DIR / "css")), name="admin-css")
+app.mount("/admin/js", StaticFiles(directory=str(_ADMIN_DIR / "js")), name="admin-js")
+
+
+@app.get("/admin")
+@app.get("/admin/{rest_of_path:path}")
+def admin_spa(rest_of_path: str = ""):
+    """Serve the admin SPA index.html for all /admin routes."""
+    return FileResponse(str(_ADMIN_DIR / "index.html"))
