@@ -6,20 +6,44 @@ from pydantic import BaseModel, Field
 
 
 class QueryRequest(BaseModel):
-    """Execute a named SQL query definition."""
+    """Execute a named SQL query definition.
+
+    Fetch modes (controlled by ``fetch_mode``):
+
+    - **page** (default): paginated results, use ``page`` + ``page_size``.
+    - **all**: return every row (no pagination). Use with caution on large datasets.
+    - **batch**: stream results in a fixed-size batch, use ``batch_size`` + ``batch_offset``.
+    - **top_n**: return the first N rows, use ``top_n``.
+    - **one**: return exactly one row (or 404).
+    """
     query_name: str = Field(..., description="Name of the registered SQL definition")
     params: dict[str, Any] = Field(default_factory=dict, description="Bind parameters")
-    page: int = Field(default=1, ge=1, description="Page number")
-    page_size: int = Field(default=50, ge=1, le=1000, description="Rows per page")
+    fetch_mode: str = Field(
+        default="page",
+        pattern="^(page|all|batch|top_n|one)$",
+        description="Fetch mode: page, all, batch, top_n, one",
+    )
+    # page mode
+    page: int = Field(default=1, ge=1, description="Page number (fetch_mode=page)")
+    page_size: int = Field(default=50, ge=1, le=1000, description="Rows per page (fetch_mode=page)")
+    # batch mode
+    batch_size: int = Field(default=500, ge=1, le=10000, description="Batch size (fetch_mode=batch)")
+    batch_offset: int = Field(default=0, ge=0, description="Starting row offset (fetch_mode=batch)")
+    # top_n mode
+    top_n: int = Field(default=10, ge=1, le=1000, description="Number of rows to return (fetch_mode=top_n)")
 
 
 class QueryResponse(BaseModel):
     """Open data style response."""
     success: bool = True
     query_name: str
+    fetch_mode: str = "page"
     total: int
-    page: int
-    page_size: int
+    page: int | None = None
+    page_size: int | None = None
+    batch_offset: int | None = None
+    batch_size: int | None = None
+    has_more: bool | None = None
     columns: list[str]
     data: list[dict[str, Any]]
 

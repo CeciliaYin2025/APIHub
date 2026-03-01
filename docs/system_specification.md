@@ -265,11 +265,21 @@ cx_Oracle.SessionPool(
 **函式 `execute_query`：**
 
 ```
-(definition: SqlDefinition, params: dict, page: int, page_size: int)
-  -> (columns: list[str], data: list[dict], total: int)
+(definition, params, fetch_mode, *, page, page_size, batch_size, batch_offset, top_n)
+  -> dict[str, Any]   # 包含 columns, data, total, 及模式特有的分頁資訊
 ```
 
-**Oracle 11g 相容分頁機制（使用 ROWNUM）：**
+**支援五種資料擷取模式 (fetch_mode)：**
+
+| 模式 | 參數 | 說明 | 是否計算 COUNT |
+|------|------|------|----------------|
+| `page` | `page` + `page_size` | 傳統分頁（預設） | 是 |
+| `all` | — | 回傳全部資料 | 是 |
+| `batch` | `batch_size` + `batch_offset` | 固定批次大小 + 偏移量，適合游標式逐批取用 | 是 |
+| `top_n` | `top_n` | 取前 N 筆（不做 COUNT，效能最佳） | 否 |
+| `one` | — | 僅取一筆，無資料時回傳 400 | 否 |
+
+**Oracle 11g 相容分頁機制（`page` / `batch` 模式使用 ROWNUM）：**
 
 ```sql
 SELECT * FROM (
@@ -281,12 +291,18 @@ SELECT * FROM (
 WHERE rnum_ > :_min_row
 ```
 
+**`top_n` / `one` 模式使用簡化 ROWNUM：**
+
+```sql
+SELECT * FROM ({原始 SQL}) WHERE ROWNUM <= :_top_n
+```
+
 > 不使用 `OFFSET / FETCH`，因 Oracle 11g 不支援。
 
-**處理流程：**
+**共用處理流程：**
 1. 驗證必填參數（缺少則拋 `ValueError`）
-2. 執行 `SELECT COUNT(*) FROM (sql)` 取得總筆數
-3. 以 ROWNUM 巢狀查詢做分頁
+2. 依模式決定是否執行 `SELECT COUNT(*) FROM (sql)`
+3. 依模式包裝 ROWNUM 或 TOP-N SQL
 4. 將 `cx_Oracle.LOB` 自動轉換為字串
 5. 過濾掉 `RNUM_` 輔助欄位
 
@@ -405,35 +421,143 @@ username=admin&password=changeme
 | `POST` | `/queries/definitions/reload` | 超級管理員 | — | 從磁碟熱重載 SQL 定義 |
 | `POST` | `/queries/execute` | Bearer Token | `{permission}:read` | 執行已註冊的查詢定義 |
 
-**查詢執行請求：**
+**查詢請求參數說明：**
+
+| 欄位 | 型態 | 預設值 | 說明 |
+|------|------|--------|------|
+| `query_name` | string | — (必填) | 已註冊的 SQL 定義名稱 |
+| `params` | dict | `{}` | 綁定參數 |
+| `fetch_mode` | string | `"page"` | 擷取模式：`page` / `all` / `batch` / `top_n` / `one` |
+| `page` | int (>=1) | `1` | 頁碼（`page` 模式） |
+| `page_size` | int (1-1000) | `50` | 每頁筆數（`page` 模式） |
+| `batch_size` | int (1-10000) | `500` | 批次大小（`batch` 模式） |
+| `batch_offset` | int (>=0) | `0` | 起始偏移量（`batch` 模式） |
+| `top_n` | int (1-1000) | `10` | 取前 N 筆（`top_n` 模式） |
+
+#### 5.3.1 `fetch_mode = "page"` — 分頁模式（預設）
 
 ```json
 POST /api/v1/queries/execute
 {
   "query_name": "employees",
   "params": {"dept": "IT"},
-  "page": 1,
-  "page_size": 50
+  "fetch_mode": "page",
+  "page": 2,
+  "page_size": 20
 }
 ```
-
-**查詢執行回應（Open Data 格式）：**
 
 ```json
 {
   "success": true,
   "query_name": "employees",
+  "fetch_mode": "page",
   "total": 128,
-  "page": 1,
-  "page_size": 50,
+  "page": 2,
+  "page_size": 20,
+  "columns": ["EMP_ID", "EMP_NAME", "DEPARTMENT", "HIRE_DATE", "SALARY"],
+  "data": [...]
+}
+```
+
+#### 5.3.2 `fetch_mode = "all"` — 整批取回
+
+```json
+{
+  "query_name": "departments",
+  "fetch_mode": "all"
+}
+```
+
+```json
+{
+  "success": true,
+  "query_name": "departments",
+  "fetch_mode": "all",
+  "total": 15,
+  "columns": ["DEPT_ID", "DEPT_NAME", "MANAGER_ID", "LOCATION"],
+  "data": [...]
+}
+```
+
+#### 5.3.3 `fetch_mode = "batch"` — 分批取用
+
+適合大量資料的游標式逐批處理，客戶端持續遞增 `batch_offset` 直到 `has_more = false`。
+
+```json
+{
+  "query_name": "employees",
+  "fetch_mode": "batch",
+  "batch_size": 500,
+  "batch_offset": 0
+}
+```
+
+```json
+{
+  "success": true,
+  "query_name": "employees",
+  "fetch_mode": "batch",
+  "total": 1200,
+  "batch_offset": 0,
+  "batch_size": 500,
+  "has_more": true,
+  "columns": ["EMP_ID", "EMP_NAME", "DEPARTMENT", "HIRE_DATE", "SALARY"],
+  "data": [...]
+}
+```
+
+第二批：`batch_offset: 500`，第三批：`batch_offset: 1000`（`has_more: false`）。
+
+#### 5.3.4 `fetch_mode = "top_n"` — 取前 N 筆
+
+不執行 COUNT 查詢，效能最佳。適合只需要前幾筆結果的場景。
+
+```json
+{
+  "query_name": "employees",
+  "fetch_mode": "top_n",
+  "top_n": 5
+}
+```
+
+```json
+{
+  "success": true,
+  "query_name": "employees",
+  "fetch_mode": "top_n",
+  "total": 5,
+  "columns": ["EMP_ID", "EMP_NAME", "DEPARTMENT", "HIRE_DATE", "SALARY"],
+  "data": [...]
+}
+```
+
+#### 5.3.5 `fetch_mode = "one"` — 取一筆
+
+僅回傳一筆資料，無資料時回傳 HTTP 400。
+
+```json
+{
+  "query_name": "employees",
+  "params": {"dept": "CEO"},
+  "fetch_mode": "one"
+}
+```
+
+```json
+{
+  "success": true,
+  "query_name": "employees",
+  "fetch_mode": "one",
+  "total": 1,
   "columns": ["EMP_ID", "EMP_NAME", "DEPARTMENT", "HIRE_DATE", "SALARY"],
   "data": [
     {
       "EMP_ID": 1001,
       "EMP_NAME": "王小明",
-      "DEPARTMENT": "IT",
+      "DEPARTMENT": "CEO",
       "HIRE_DATE": "2020-03-15T00:00:00",
-      "SALARY": 65000
+      "SALARY": 200000
     }
   ]
 }

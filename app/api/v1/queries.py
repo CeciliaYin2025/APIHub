@@ -40,7 +40,15 @@ def reload_definitions(current_user: User = Depends(get_current_user)):
 
 @router.post("/execute", response_model=QueryResponse)
 def execute(request: QueryRequest, current_user: User = Depends(get_current_user)):
-    """Execute a registered SQL query and return results in open data format."""
+    """Execute a registered SQL query and return results in open data format.
+
+    Supports multiple fetch modes:
+    - **page**: paginated (default). Use ``page`` + ``page_size``.
+    - **all**: return all rows.
+    - **batch**: fixed-size batch with offset. Use ``batch_size`` + ``batch_offset``.
+    - **top_n**: first N rows. Use ``top_n``.
+    - **one**: exactly one row (404 if none).
+    """
     definition = sql_registry.get(request.query_name)
     if not definition:
         raise HTTPException(status_code=404, detail=f"Query definition '{request.query_name}' not found")
@@ -50,7 +58,16 @@ def execute(request: QueryRequest, current_user: User = Depends(get_current_user
     checker(current_user)
 
     try:
-        columns, data, total = execute_query(definition, request.params, request.page, request.page_size)
+        result = execute_query(
+            definition,
+            request.params,
+            request.fetch_mode,
+            page=request.page,
+            page_size=request.page_size,
+            batch_size=request.batch_size,
+            batch_offset=request.batch_offset,
+            top_n=request.top_n,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -58,9 +75,13 @@ def execute(request: QueryRequest, current_user: User = Depends(get_current_user
 
     return QueryResponse(
         query_name=request.query_name,
-        total=total,
-        page=request.page,
-        page_size=request.page_size,
-        columns=columns,
-        data=data,
+        fetch_mode=request.fetch_mode,
+        total=result["total"],
+        page=result.get("page"),
+        page_size=result.get("page_size"),
+        batch_offset=result.get("batch_offset"),
+        batch_size=result.get("batch_size"),
+        has_more=result.get("has_more"),
+        columns=result["columns"],
+        data=result["data"],
     )
