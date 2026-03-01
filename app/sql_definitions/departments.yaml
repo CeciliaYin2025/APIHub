@@ -1,0 +1,8 @@
+name: departments
+description: "List all departments"
+sql: |
+  SELECT dept_id, dept_name, manager_id, location
+  FROM departments
+  ORDER BY dept_name
+params: {}
+permission: "query:departments"

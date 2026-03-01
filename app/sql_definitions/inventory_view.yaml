@@ -1,0 +1,18 @@
+name: inventory_view
+description: "Query inventory view with optional product code and warehouse filters"
+sql: |
+  SELECT product_code, product_name, warehouse, quantity, last_updated
+  FROM v_inventory
+  WHERE (:product_code IS NULL OR product_code = :product_code)
+  AND (:warehouse IS NULL OR warehouse = :warehouse)
+  ORDER BY product_code
+params:
+  product_code:
+    type: string
+    required: false
+    description: "Filter by product code"
+  warehouse:
+    type: string
+    required: false
+    description: "Filter by warehouse name"
+permission: "query:inventory_view"

@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  # ── API Server ──────────────────────────────────────────────────────────
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+    volumes:
+      - ./app/sql_definitions:/app/app/sql_definitions
+
+  # ── Celery Worker (write queue) ─────────────────────────────────────────
+  celery-write-worker:
+    build: .
+    command: celery -A app.tasks.celery_app worker -Q write -l info --concurrency=4
+    env_file: .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ── Celery Worker (procedure queue) ─────────────────────────────────────
+  celery-proc-worker:
+    build: .
+    command: celery -A app.tasks.celery_app worker -Q procedure -l info --concurrency=2
+    env_file: .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ── Celery Flower (monitoring dashboard) ────────────────────────────────
+  flower:
+    build: .
+    command: celery -A app.tasks.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    env_file: .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ── Redis (message broker & result backend) ─────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  redis_data:

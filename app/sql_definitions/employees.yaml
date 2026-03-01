@@ -1,0 +1,14 @@
+name: employees
+description: "Query active employees with optional department filter"
+sql: |
+  SELECT emp_id, emp_name, department, hire_date, salary
+  FROM employees
+  WHERE status = 'ACTIVE'
+  AND (:dept IS NULL OR department = :dept)
+  ORDER BY emp_id
+params:
+  dept:
+    type: string
+    required: false
+    description: "Filter by department code"
+permission: "query:employees"
