@@ -1,14 +1,21 @@
 """Endpoints for writing data back to Oracle (INSERT/UPDATE/DELETE).
 
 Supports synchronous and asynchronous (Celery) execution modes.
+Batch endpoint wraps multiple operations in a single transaction.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.models.user import User
-from app.schemas.query import TaskStatusResponse, WriteRequest, WriteResponse
+from app.schemas.query import (
+    BatchWriteRequest,
+    BatchWriteResponse,
+    TaskStatusResponse,
+    WriteRequest,
+    WriteResponse,
+)
 from app.services.auth_service import PermissionChecker, get_current_user
-from app.services.write_service import execute_write
+from app.services.write_service import BatchWriteError, execute_batch_write, execute_write
 from app.tasks.write_tasks import async_write
 
 router = APIRouter(prefix="/writes", tags=["Writes"])
@@ -50,6 +57,55 @@ def execute(request: WriteRequest, current_user: User = Depends(get_current_user
         operation=request.operation,
         affected_rows=affected,
         message=f"{request.operation.upper()} completed successfully",
+    )
+
+
+@router.post("/batch", response_model=BatchWriteResponse)
+def batch_execute(request: BatchWriteRequest, current_user: User = Depends(get_current_user)):
+    """Execute multiple DML operations within a single database transaction.
+
+    All operations target the same table. If ANY operation fails, the entire
+    transaction is **rolled back** — no partial writes are committed.
+
+    Supports async mode via Celery for heavy batch workloads.
+    """
+    resource = f"table:{request.table}"
+    checker = PermissionChecker(resource, "write")
+    checker(current_user)
+
+    ops = [op.model_dump() for op in request.operations]
+
+    if request.async_mode:
+        from app.tasks.write_tasks import async_batch_write
+
+        task = async_batch_write.delay(table=request.table, operations=ops)
+        return BatchWriteResponse(
+            table=request.table,
+            task_id=task.id,
+            message="Batch transaction enqueued for async processing",
+        )
+
+    try:
+        result = execute_batch_write(table=request.table, operations=ops)
+    except BatchWriteError as e:
+        raise HTTPException(status_code=400, detail={
+            "message": str(e),
+            "failed_index": e.failed_index,
+            "committed": e.committed,
+            "completed_operations": e.results,
+        })
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch write error: {e}")
+
+    return BatchWriteResponse(
+        table=request.table,
+        total_affected=result["total_affected"],
+        operation_count=result["operation_count"],
+        committed=result["committed"],
+        results=result["results"],
+        message="Batch transaction committed successfully",
     )
 
 

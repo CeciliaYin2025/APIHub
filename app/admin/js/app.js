@@ -115,14 +115,16 @@ function navigateTo(page) {
     dashboard: 'Dashboard', users: 'User Management', roles: 'Role Management',
     permissions: 'Permission Management', 'sql-definitions': 'SQL Definitions',
     'query-console': 'Query Console', 'procedure-console': 'Procedure Console',
-    'write-console': 'Write Console', tasks: 'Async Tasks',
+    'write-console': 'Write Console', 'data-maintenance': 'Data Maintenance',
+    tasks: 'Async Tasks',
   };
   document.getElementById('pageTitle').textContent = titles[page] || page;
   const renderers = {
     dashboard: renderDashboard, users: renderUsers, roles: renderRoles,
     permissions: renderPermissions, 'sql-definitions': renderSqlDefs,
     'query-console': renderQueryConsole, 'procedure-console': renderProcConsole,
-    'write-console': renderWriteConsole, tasks: renderTasks,
+    'write-console': renderWriteConsole, 'data-maintenance': renderDataMaintenance,
+    tasks: renderTasks,
   };
   (renderers[page] || renderDashboard)();
 }
@@ -865,3 +867,300 @@ window.checkTask = async function() {
     resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
   }
 };
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Data Maintenance — schema-driven write UI with transaction support
+   ══════════════════════════════════════════════════════════════════════════ */
+
+let _dmSchema = null;   // current table schema
+let _dmRows = [];       // rows being edited
+let _dmRowCounter = 0;
+
+function renderDataMaintenance() {
+  _dmSchema = null;
+  _dmRows = [];
+  _dmRowCounter = 0;
+
+  const area = document.getElementById('contentArea');
+  area.innerHTML = `
+    <div class="card">
+      <div class="card-header"><h2>Data Maintenance</h2></div>
+      <div class="card-body">
+        <p class="text-sm text-muted mb-4">
+          Enter a table name to load its schema. The system reads column definitions from Oracle and
+          generates a dynamic form. Supports single-row and batch operations with full transaction control.
+        </p>
+        <div class="form-group">
+          <label>Table Name</label>
+          <div class="flex gap-2">
+            <input type="text" id="dmTable" placeholder="e.g. HR.EMPLOYEES" style="flex:1">
+            <button class="btn btn-primary" onclick="dmLoadSchema()">Load Schema</button>
+          </div>
+        </div>
+        <div id="dmSchemaArea"></div>
+        <div id="dmEditorArea"></div>
+        <div id="dmResultArea"></div>
+      </div>
+    </div>
+  `;
+}
+
+window.dmLoadSchema = async function() {
+  const table = document.getElementById('dmTable').value.trim();
+  if (!table) return toast('Please enter a table name', 'error');
+
+  const schemaArea = document.getElementById('dmSchemaArea');
+  const editorArea = document.getElementById('dmEditorArea');
+  const resultArea = document.getElementById('dmResultArea');
+  schemaArea.innerHTML = '<div class="spinner"></div>';
+  editorArea.innerHTML = '';
+  resultArea.innerHTML = '';
+
+  try {
+    _dmSchema = await api('GET', `/schemas/describe/${encodeURIComponent(table)}`);
+    _dmRows = [];
+    _dmRowCounter = 0;
+
+    // Render schema info
+    schemaArea.innerHTML = `
+      <div class="card mt-4">
+        <div class="card-header">
+          <h2>Schema: ${esc(_dmSchema.table)}</h2>
+          <span class="text-sm text-muted">${_dmSchema.column_count} columns${_dmSchema.primary_keys.length ? ' | PK: ' + _dmSchema.primary_keys.join(', ') : ''}</span>
+        </div>
+        <div class="card-body">
+          <div class="dm-schema-info">
+            ${_dmSchema.columns.map(c => `
+              <span class="col-tag ${c.is_pk ? 'pk' : ''}">
+                ${c.is_pk ? '<span class="dm-field"><label><span class="pk-badge">PK</span></label></span>' : ''}
+                <strong>${esc(c.name)}</strong>
+                <span class="text-muted">${esc(c.data_type)}${c.data_precision ? '(' + c.data_precision + (c.data_scale ? ',' + c.data_scale : '') + ')' : c.data_length && c.data_type === 'VARCHAR2' ? '(' + c.data_length + ')' : ''}</span>
+                ${!c.nullable ? '<span style="color:var(--danger)">*</span>' : ''}
+              </span>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Render the editor
+    dmRenderEditor();
+  } catch (err) {
+    schemaArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
+  }
+};
+
+function dmRenderEditor() {
+  const editorArea = document.getElementById('dmEditorArea');
+
+  editorArea.innerHTML = `
+    <div class="card mt-4">
+      <div class="card-header">
+        <h2>Operations</h2>
+        <div class="btn-group">
+          <button class="btn btn-sm btn-primary" onclick="dmAddRow('insert')">+ Insert Row</button>
+          <button class="btn btn-sm btn-secondary" onclick="dmAddRow('update')">+ Update Row</button>
+          <button class="btn btn-sm btn-danger" onclick="dmAddRow('delete')">+ Delete Row</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div id="dmRowsContainer">
+          ${_dmRows.length === 0 ? '<div class="empty-state"><div class="icon">&#9998;</div><p>Click a button above to add an operation</p></div>' : ''}
+        </div>
+        ${_dmRows.length > 0 ? `
+          <div class="dm-toolbar mt-4">
+            <button class="btn btn-success" onclick="dmExecute(false)">&#9654; Execute (Transaction)</button>
+            <button class="btn btn-outline" onclick="dmExecute(true)">&#8987; Execute Async</button>
+            <span class="text-sm text-muted">${_dmRows.length} operation(s) — all wrapped in one transaction</span>
+          </div>
+        ` : ''}
+      </div>
+    </div>
+  `;
+
+  // Re-render existing row cards
+  const container = document.getElementById('dmRowsContainer');
+  if (_dmRows.length > 0) {
+    container.innerHTML = _dmRows.map((row, idx) => dmRenderRowCard(row, idx)).join('');
+  }
+}
+
+window.dmAddRow = function(operation) {
+  const id = _dmRowCounter++;
+  _dmRows.push({ id, operation, values: {}, where: {} });
+  dmRenderEditor();
+};
+
+window.dmRemoveRow = function(idx) {
+  _dmRows.splice(idx, 1);
+  dmRenderEditor();
+};
+
+function dmRenderRowCard(row, idx) {
+  const cols = _dmSchema.columns;
+  const opColors = { insert: 'badge-green', update: 'badge-blue', delete: 'badge-red' };
+  const opLabels = { insert: 'INSERT', update: 'UPDATE', delete: 'DELETE' };
+  const showData = row.operation !== 'delete';
+  const showWhere = row.operation !== 'insert';
+
+  let html = `<div class="dm-row-card">
+    <div class="row-header">
+      <span class="row-label"><span class="badge ${opColors[row.operation]}">${opLabels[row.operation]}</span> Operation #${idx + 1}</span>
+      <button class="btn btn-sm btn-danger" onclick="dmRemoveRow(${idx})">&times; Remove</button>
+    </div>`;
+
+  if (showData) {
+    const label = row.operation === 'insert' ? 'Column Values' : 'SET Values';
+    html += `<p class="text-sm text-muted mb-4">${label}</p><div class="dm-fields-grid">`;
+    for (const col of cols) {
+      const val = row.values[col.name] || '';
+      html += `<div class="dm-field">
+        <label>
+          ${col.is_pk ? '<span class="pk-badge">PK </span>' : ''}${esc(col.name)}
+          <span class="type-hint">${esc(col.data_type)}</span>
+          ${!col.nullable ? '<span class="req-star">*</span>' : ''}
+        </label>
+        <input type="text" data-idx="${idx}" data-target="values" data-col="${esc(col.name)}"
+               value="${esc(val)}" onchange="dmFieldChange(this)"
+               placeholder="${col.nullable ? 'NULL' : 'required'}">
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  if (showWhere) {
+    const pkCols = _dmSchema.primary_keys.length > 0 ? _dmSchema.primary_keys : cols.map(c => c.name);
+    html += `<p class="text-sm text-muted mt-4 mb-4">WHERE Conditions (identify target rows)</p><div class="dm-fields-grid">`;
+    for (const pkName of pkCols) {
+      const col = cols.find(c => c.name === pkName);
+      if (!col) continue;
+      const val = row.where[col.name] || '';
+      html += `<div class="dm-field">
+        <label>
+          ${col.is_pk ? '<span class="pk-badge">PK </span>' : ''}${esc(col.name)}
+          <span class="type-hint">${esc(col.data_type)}</span>
+        </label>
+        <input type="text" data-idx="${idx}" data-target="where" data-col="${esc(col.name)}"
+               value="${esc(val)}" onchange="dmFieldChange(this)" placeholder="value">
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+window.dmFieldChange = function(input) {
+  const idx = parseInt(input.dataset.idx);
+  const target = input.dataset.target; // "values" or "where"
+  const col = input.dataset.col;
+  const val = input.value;
+  if (_dmRows[idx]) {
+    _dmRows[idx][target][col] = val;
+  }
+};
+
+window.dmExecute = async function(asyncMode) {
+  if (!_dmSchema || _dmRows.length === 0) return toast('No operations to execute', 'error');
+
+  // Build operations payload
+  const operations = _dmRows.map(row => {
+    const op = { operation: row.operation };
+
+    if (row.operation !== 'delete') {
+      // Build data array — filter out empty values
+      const dataObj = {};
+      for (const [k, v] of Object.entries(row.values)) {
+        if (v !== '') dataObj[k] = _castValue(k, v);
+      }
+      op.data = [dataObj];
+    } else {
+      op.data = [];
+    }
+
+    if (row.operation !== 'insert') {
+      const whereObj = {};
+      for (const [k, v] of Object.entries(row.where)) {
+        if (v !== '') whereObj[k] = _castValue(k, v);
+      }
+      if (Object.keys(whereObj).length > 0) op.where = whereObj;
+    }
+
+    return op;
+  });
+
+  const body = {
+    table: _dmSchema.table,
+    operations,
+    async_mode: asyncMode,
+  };
+
+  const resultArea = document.getElementById('dmResultArea');
+  resultArea.innerHTML = '<div style="text-align:center;padding:20px"><div class="spinner"></div></div>';
+
+  try {
+    const result = await api('POST', '/writes/batch', body);
+    if (result.task_id) {
+      resultArea.innerHTML = `
+        <div class="card mt-4">
+          <div class="card-header"><h2>Result</h2></div>
+          <div class="card-body">
+            <span class="badge badge-yellow">ASYNC</span>
+            <span class="text-sm" style="margin-left:8px">Task ID: <code>${esc(result.task_id)}</code></span>
+            <p class="mt-2 text-sm text-muted">${esc(result.message)}</p>
+          </div>
+        </div>
+      `;
+    } else {
+      resultArea.innerHTML = `
+        <div class="card mt-4">
+          <div class="card-header"><h2>Result</h2></div>
+          <div class="card-body">
+            <span class="badge badge-green">COMMITTED</span>
+            <span class="text-sm" style="margin-left:8px">${result.total_affected} rows affected across ${result.operation_count} operation(s)</span>
+            <div class="dm-batch-summary mt-4">
+              <table class="data-table">
+                <thead><tr><th>#</th><th>Operation</th><th>Affected Rows</th></tr></thead>
+                <tbody>${result.results.map(r => `<tr>
+                  <td>${r.index + 1}</td>
+                  <td><span class="badge badge-blue">${esc(r.operation.toUpperCase())}</span></td>
+                  <td>${r.affected_rows}</td>
+                </tr>`).join('')}</tbody>
+              </table>
+            </div>
+            <details class="mt-4"><summary class="text-sm" style="cursor:pointer">Raw JSON</summary>
+              <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+            </details>
+          </div>
+        </div>
+      `;
+    }
+    toast('Transaction executed successfully', 'success');
+  } catch (err) {
+    let detail = err.message;
+    try { detail = JSON.stringify(JSON.parse(err.message), null, 2); } catch {}
+    resultArea.innerHTML = `
+      <div class="card mt-4">
+        <div class="card-header"><h2>Result</h2></div>
+        <div class="card-body">
+          <span class="badge badge-red">ROLLED BACK</span>
+          <span class="text-sm" style="margin-left:8px">Transaction failed — no data was committed</span>
+          <pre class="mt-4">${esc(detail)}</pre>
+        </div>
+      </div>
+    `;
+    toast('Transaction failed and was rolled back', 'error');
+  }
+};
+
+function _castValue(colName, value) {
+  if (!_dmSchema) return value;
+  const col = _dmSchema.columns.find(c => c.name === colName);
+  if (!col) return value;
+  if (col.data_type === 'NUMBER' && value !== '') {
+    const n = Number(value);
+    if (!isNaN(n)) return n;
+  }
+  return value;
+}

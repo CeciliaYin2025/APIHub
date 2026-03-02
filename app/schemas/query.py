@@ -80,6 +80,35 @@ class WriteResponse(BaseModel):
     message: str = ""
 
 
+class BatchOperation(BaseModel):
+    """A single operation within a batch transaction."""
+    operation: str = Field(..., pattern="^(insert|update|delete)$")
+    data: list[dict[str, Any]] = Field(default_factory=list, description="Rows to process")
+    where: dict[str, Any] | None = Field(default=None, description="WHERE clause params (for update/delete)")
+
+
+class BatchWriteRequest(BaseModel):
+    """Execute multiple DML operations within a single database transaction.
+
+    All operations target the same table. If any operation fails, the entire
+    transaction is rolled back (atomicity).
+    """
+    table: str = Field(..., description="Target table name")
+    operations: list[BatchOperation] = Field(..., min_length=1, description="Ordered list of DML operations")
+    async_mode: bool = Field(default=False, description="If true, enqueue via Celery")
+
+
+class BatchWriteResponse(BaseModel):
+    success: bool = True
+    table: str
+    total_affected: int = 0
+    operation_count: int = 0
+    committed: bool = False
+    results: list[dict[str, Any]] = []
+    task_id: str | None = None
+    message: str = ""
+
+
 class TaskStatusResponse(BaseModel):
     task_id: str
     status: str

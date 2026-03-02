@@ -104,3 +104,85 @@ def _do_delete(cursor, table: str, where: dict[str, Any] | None) -> int:
     sql = f"DELETE FROM {table} WHERE {where_clause}"
     cursor.execute(sql, binds)
     return cursor.rowcount
+
+
+# ── Batch transactional write ───────────────────────────────────────────────
+
+
+def execute_batch_write(
+    table: str,
+    operations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Execute multiple DML operations within a single transaction.
+
+    Each item in *operations* is a dict:
+        {"operation": "insert"|"update"|"delete",
+         "data": [...],
+         "where": {...} | None}
+
+    If ANY operation fails the entire transaction is rolled back.
+
+    Returns a summary with per-operation results.
+    """
+    table = validate_table_name(table)
+    results: list[dict[str, Any]] = []
+    total_affected = 0
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            for idx, op in enumerate(operations):
+                operation = op.get("operation", "")
+                data = op.get("data", [])
+                where = op.get("where")
+
+                if operation == "insert":
+                    affected = _do_insert(cursor, table, data)
+                elif operation == "update":
+                    affected = _do_update(cursor, table, data, where)
+                elif operation == "delete":
+                    affected = _do_delete(cursor, table, where)
+                else:
+                    raise ValueError(f"Operation #{idx}: unsupported operation '{operation}'")
+
+                results.append({
+                    "index": idx,
+                    "operation": operation,
+                    "affected_rows": affected,
+                })
+                total_affected += affected
+
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            raise BatchWriteError(
+                message=str(exc),
+                failed_index=idx,
+                committed=False,
+                results=results,
+            ) from exc
+        finally:
+            cursor.close()
+
+    return {
+        "total_affected": total_affected,
+        "operation_count": len(operations),
+        "committed": True,
+        "results": results,
+    }
+
+
+class BatchWriteError(Exception):
+    """Raised when a batch transaction fails; carries partial results."""
+
+    def __init__(
+        self,
+        message: str,
+        failed_index: int,
+        committed: bool,
+        results: list[dict[str, Any]],
+    ):
+        super().__init__(message)
+        self.failed_index = failed_index
+        self.committed = committed
+        self.results = results

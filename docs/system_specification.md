@@ -3,7 +3,7 @@
 | 項目 | 內容 |
 |------|------|
 | 文件名稱 | Oracle RESTful API Hub 系統規格書 |
-| 版本 | 1.0.0 |
+| 版本 | 1.1.0 |
 | 目標資料庫 | Oracle Database 11g (11.1.0.4) |
 | 框架 | FastAPI (Python 3.10+) |
 | 文件日期 | 2026-03-01 |
@@ -86,11 +86,11 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
                     │                                                     │
                     │  ┌──────────────────────────────────────────────┐  │
                     │  │              API Layer (v1)                   │  │
-                    │  │  ┌────────┐ ┌────────┐ ┌──────┐ ┌───────┐  │  │
-                    │  │  │  Auth  │ │Queries │ │Procs │ │Writes │  │  │
-                    │  │  │ Router │ │ Router │ │Router│ │Router │  │  │
-                    │  │  └───┬────┘ └───┬────┘ └──┬───┘ └───┬───┘  │  │
-                    │  └──────┼──────────┼─────────┼─────────┼──────┘  │
+                    │  │  ┌──────┐ ┌───────┐ ┌──────┐ ┌──────┐ ┌───────┐ │  │
+                    │  │  │ Auth │ │Queries│ │Procs │ │Writes│ │Schemas│ │  │
+                    │  │  │Router│ │Router │ │Router│ │Router│ │Router │ │  │
+                    │  │  └──┬───┘ └──┬────┘ └──┬───┘ └──┬───┘ └──┬────┘ │  │
+                    │  └─────┼────────┼─────────┼────────┼────────┼──────┘  │
                     │         │          │         │         │          │
                     │  ┌──────▼──────────▼─────────▼─────────▼──────┐  │
                     │  │             Service Layer                   │  │
@@ -100,7 +100,10 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
                     │  │  ├─────────┤ ├──────────┤ ├────────────┤  │  │
                     │  │  │  SQL    │ │  Write   │ │ Permission │  │  │
                     │  │  │Registry │ │ Service  │ │  Checker   │  │  │
-                    │  │  └─────────┘ └──────────┘ └────────────┘  │  │
+                    │  │  ├─────────┤ └──────────┘ └────────────┘  │  │
+                    │  │  │ Schema  │                               │  │
+                    │  │  │ Service │                               │  │
+                    │  │  └─────────┘                               │  │
                     │  └──────────────────┬────────────────────────┘  │
                     │                     │                            │
                     │         ┌───────────┼───────────┐               │
@@ -331,9 +334,38 @@ SELECT * FROM ({原始 SQL}) WHERE ROWNUM <= :_top_n
 |------|------|
 | `validate_table_name(table)` | 正則驗證表名，防止 SQL injection |
 | `execute_write(operation, table, data, where)` | DML 主入口，回傳受影響筆數 |
+| `execute_batch_write(table, operations)` | 批次交易寫入，所有操作在同一交易中執行；任一失敗即全部回滾 |
 | `_do_insert(cursor, table, data)` | 使用 `executemany` 批次新增 |
 | `_do_update(cursor, table, data, where)` | 逐筆更新，SET 與 WHERE 均為綁定參數 |
 | `_do_delete(cursor, table, where)` | 條件刪除 |
+
+**批次交易寫入 (`execute_batch_write`)：**
+
+在單一資料庫連線內依序執行多個 DML 操作，全部成功才 `commit`，任一失敗即 `rollback` 並拋出 `BatchWriteError`（攜帶已執行的部分結果與失敗索引）。
+
+```python
+def execute_batch_write(table, operations) -> dict:
+    """回傳 {total_affected, operation_count, committed, results}"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            for idx, op in enumerate(operations):
+                # 依 op["operation"] 分派 insert/update/delete
+                ...
+            conn.commit()       # 全部成功 → 提交
+        except Exception:
+            conn.rollback()     # 任一失敗 → 回滾
+            raise BatchWriteError(...)
+```
+
+**`BatchWriteError` 例外類別：**
+
+| 屬性 | 型態 | 說明 |
+|------|------|------|
+| `message` | `str` | 錯誤訊息 |
+| `failed_index` | `int` | 失敗的操作索引（0-based） |
+| `committed` | `bool` | 交易是否已提交（失敗時永遠為 `False`） |
+| `results` | `list[dict]` | 失敗前已執行的操作結果 |
 
 **表名驗證正則：**
 ```
@@ -352,7 +384,48 @@ UPDATE employees SET emp_name = :set_emp_name WHERE emp_id = :wh_emp_id
 DELETE FROM employees WHERE emp_id = :wh_emp_id
 ```
 
-### 4.9 認證服務 — `app/services/auth_service.py`
+### 4.9 表結構探查服務 — `app/services/schema_service.py`
+
+透過 Oracle 資料字典（`ALL_TAB_COLUMNS`、`ALL_CONSTRAINTS`、`ALL_CONS_COLUMNS`）動態讀取目標表或 View 的欄位定義與主鍵資訊。
+
+| 函式 | 說明 |
+|------|------|
+| `describe_table(table)` | 回傳目標表/View 的所有欄位 metadata 與主鍵列表 |
+| `validate_table_name(table)` | 重用 write_service 的表名正則驗證 |
+
+**回傳格式：**
+
+```json
+{
+  "table": "HR.EMPLOYEES",
+  "owner": "HR",
+  "table_name": "EMPLOYEES",
+  "column_count": 8,
+  "primary_keys": ["EMP_ID"],
+  "columns": [
+    {
+      "name": "EMP_ID",
+      "data_type": "NUMBER",
+      "data_length": 22,
+      "data_precision": 10,
+      "data_scale": 0,
+      "nullable": false,
+      "data_default": null,
+      "is_pk": true
+    }
+  ]
+}
+```
+
+**Oracle 資料字典查詢：**
+
+| 查詢目標 | 資料字典 View | 用途 |
+|----------|--------------|------|
+| 欄位定義 | `ALL_TAB_COLUMNS` | 取得欄位名稱、型態、長度、精度、可空、預設值 |
+| 主鍵約束 | `ALL_CONSTRAINTS` (constraint_type = 'P') | 識別主鍵約束名稱 |
+| 主鍵欄位 | `ALL_CONS_COLUMNS` | 取得主鍵約束所包含的欄位 |
+
+### 4.10 認證服務 — `app/services/auth_service.py`
 
 | 元件 | 說明 |
 |------|------|
@@ -634,7 +707,8 @@ POST /api/v1/procedures/execute
 
 | 方法 | 路徑 | 認證 | 權限 | 說明 |
 |------|------|------|------|------|
-| `POST` | `/writes/execute` | Bearer Token | `table:{table}:write` | 執行 INSERT / UPDATE / DELETE |
+| `POST` | `/writes/execute` | Bearer Token | `table:{table}:write` | 執行單筆 INSERT / UPDATE / DELETE |
+| `POST` | `/writes/batch` | Bearer Token | `table:{table}:write` | 批次交易寫入（多個 DML 操作在同一交易） |
 | `GET` | `/writes/tasks/{task_id}` | Bearer Token | 無特殊權限 | 查詢非同步任務狀態 |
 
 **INSERT 請求（同步）：**
@@ -701,6 +775,123 @@ GET /api/v1/writes/tasks/b4c2d1e0-f5a6-7890-bcde-fg2345678901
   "result": {"success": true, "operation": "update", "affected_rows": 1}
 }
 ```
+
+**批次交易寫入請求（同步）：**
+
+所有操作在同一資料庫交易中執行，任一操作失敗即全部回滾。
+
+```json
+POST /api/v1/writes/batch
+{
+  "table": "HR.EMPLOYEES",
+  "operations": [
+    {
+      "operation": "insert",
+      "data": [{"emp_name": "新員工C", "department": "RD", "salary": 58000}]
+    },
+    {
+      "operation": "update",
+      "data": [{"salary": 62000}],
+      "where": {"emp_id": 1001}
+    },
+    {
+      "operation": "delete",
+      "where": {"emp_id": 9999}
+    }
+  ],
+  "async_mode": false
+}
+```
+
+**批次成功回應：**
+
+```json
+{
+  "success": true,
+  "table": "HR.EMPLOYEES",
+  "total_affected": 4,
+  "operation_count": 3,
+  "committed": true,
+  "results": [
+    {"index": 0, "operation": "insert", "affected_rows": 1},
+    {"index": 1, "operation": "update", "affected_rows": 2},
+    {"index": 2, "operation": "delete", "affected_rows": 1}
+  ],
+  "task_id": null,
+  "message": "Batch transaction committed — 3 operations, 4 rows affected"
+}
+```
+
+**批次失敗回應（交易回滾）：**
+
+```json
+{
+  "success": false,
+  "table": "HR.EMPLOYEES",
+  "total_affected": 0,
+  "operation_count": 3,
+  "committed": false,
+  "results": [
+    {"index": 0, "operation": "insert", "affected_rows": 1}
+  ],
+  "task_id": null,
+  "message": "ORA-02291: integrity constraint violated — ROLLED BACK (failed at operation #1)"
+}
+```
+
+### 5.6 表結構探查端點 (`/api/v1/schemas`)
+
+| 方法 | 路徑 | 認證 | 說明 |
+|------|------|------|------|
+| `GET` | `/schemas/describe/{table}` | Bearer Token | 取得目標表/View 的欄位定義與主鍵資訊 |
+
+**請求範例：**
+
+```
+GET /api/v1/schemas/describe/HR.EMPLOYEES
+Authorization: Bearer <token>
+```
+
+**回應範例：**
+
+```json
+{
+  "table": "HR.EMPLOYEES",
+  "owner": "HR",
+  "table_name": "EMPLOYEES",
+  "column_count": 5,
+  "primary_keys": ["EMP_ID"],
+  "columns": [
+    {
+      "name": "EMP_ID",
+      "data_type": "NUMBER",
+      "data_length": 22,
+      "data_precision": 10,
+      "data_scale": 0,
+      "nullable": false,
+      "data_default": null,
+      "is_pk": true
+    },
+    {
+      "name": "EMP_NAME",
+      "data_type": "VARCHAR2",
+      "data_length": 100,
+      "data_precision": null,
+      "data_scale": null,
+      "nullable": false,
+      "data_default": null,
+      "is_pk": false
+    }
+  ]
+}
+```
+
+**支援的表名格式：**
+
+| 格式 | 範例 | 說明 |
+|------|------|------|
+| 簡單名稱 | `EMPLOYEES` | 使用目前連線使用者的 Schema |
+| Schema 限定 | `HR.EMPLOYEES` | 指定 Schema（Owner） |
 
 ---
 
@@ -942,6 +1133,7 @@ GET /api/v1/writes/tasks/b4c2d1e0-f5a6-7890-bcde-fg2345678901
 | 任務名稱 | 佇列 | Worker 並行數 |
 |----------|------|---------------|
 | `app.tasks.write_tasks.async_write` | `write` | 4 |
+| `app.tasks.write_tasks.async_batch_write` | `write` | 4 |
 | `app.tasks.procedure_tasks.async_procedure` | `procedure` | 2 |
 
 ### 8.4 重試策略
@@ -1108,6 +1300,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 | **Query Console** | — | 互動式查詢測試台（選擇 fetch mode、填入參數、即時查看結果表格） |
 | **Procedure Console** | — | 執行 Procedure / Function（支援 OUT 參數、非同步模式） |
 | **Write Console** | — | 執行 INSERT / UPDATE / DELETE（支援非同步佇列模式） |
+| **Data Maintenance** | — | 資料維護介面：讀取表結構 → 動態產生表單 → 支援單筆/批次交易寫入 |
 | **Async Tasks** | — | 查詢 Celery 任務狀態、連結至 Flower 監控面板 |
 
 ### 10.3 UI 元件
@@ -1126,6 +1319,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 │  │ Query    │  │  │  (dynamically rendered per page)        │ │ │
 │  │ Proc     │  │  │                                         │ │ │
 │  │ Write    │  │  └─────────────────────────────────────────┘ │ │
+│  │ DataMaint│  │                                              │ │
 │  │ Tasks    │  │                                              │ │
 │  │          │  │                                              │ │
 │  └──────────┘  └──────────────────────────────────────────────┘ │
@@ -1176,6 +1370,49 @@ def admin_spa(rest_of_path: str = ""):
 ```
 
 所有 `/admin/*` 路徑均回傳 `index.html`，由前端 JavaScript 負責頁面路由。
+
+### 10.8 資料維護頁面 (Data Maintenance)
+
+資料維護頁面是一個動態表單產生器，能讀取目標表的結構描述（Schema），自動建立對應的操作表單，支援單筆或批次交易寫入。
+
+**操作流程：**
+
+```
+使用者輸入表名 → 呼叫 GET /schemas/describe/{table}
+                        ↓
+               取得欄位定義 + 主鍵資訊
+                        ↓
+               顯示表結構摘要（欄位標籤含型態/PK/可空）
+                        ↓
+    使用者新增操作 → Insert / Update / Delete 動態表單卡片
+                        ↓
+  Insert: 依所有欄位產生輸入框
+  Update: SET 區域 + WHERE 區域（預設填入 PK 欄位）
+  Delete: 僅 WHERE 區域（預設填入 PK 欄位）
+                        ↓
+  送出 → POST /writes/batch（同步或非同步）
+                        ↓
+  顯示交易結果：成功（已提交）/ 失敗（已回滾 + 失敗位置）
+```
+
+**主要功能：**
+
+| 功能 | 說明 |
+|------|------|
+| 表結構探查 | 輸入表名後自動載入欄位定義，顯示資料型態、主鍵、可空屬性 |
+| 動態表單產生 | 依欄位定義自動產生輸入框，NUMBER 型態自動轉型 |
+| 多操作編輯器 | 可新增多個 Insert / Update / Delete 操作卡片 |
+| 交易處理 | 所有操作在單一交易中執行，全部成功才 Commit，任一失敗全部 Rollback |
+| 非同步模式 | 可選擇透過 Celery 佇列非同步執行 |
+| 結果摘要 | 顯示每個操作的受影響筆數、總計、交易狀態 |
+
+**欄位標籤顯示：**
+
+每個欄位以標籤方式呈現，包含：
+- 欄位名稱
+- 資料型態（如 `VARCHAR2(100)`、`NUMBER(10,2)`）
+- 🔑 PK 標記（主鍵欄位）
+- ⚪ Nullable 標記（可空欄位）
 
 ---
 
@@ -1388,18 +1625,19 @@ Oracle-api-hub/
 │   ├── schemas/
 │   │   ├── __init__.py
 │   │   ├── auth.py                      # 認證相關 Pydantic Schema
-│   │   └── query.py                     # 查詢 / 程序 / 寫入 Pydantic Schema
+│   │   └── query.py                     # 查詢 / 程序 / 寫入 / 批次交易 Pydantic Schema
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── auth_service.py              # 認證邏輯 + PermissionChecker
 │   │   ├── sql_registry.py              # YAML SQL 定義載入器（Singleton）
 │   │   ├── query_service.py             # SQL 查詢執行 + ROWNUM 分頁
 │   │   ├── procedure_service.py         # Oracle Procedure / Function 呼叫
-│   │   └── write_service.py             # DML 操作（INSERT/UPDATE/DELETE）
+│   │   ├── write_service.py             # DML 操作（INSERT/UPDATE/DELETE + 批次交易）
+│   │   └── schema_service.py            # 表結構探查（ALL_TAB_COLUMNS / 主鍵偵測）
 │   ├── tasks/
 │   │   ├── __init__.py
 │   │   ├── celery_app.py                # Celery 組態 + 佇列路由
-│   │   ├── write_tasks.py               # 非同步寫入任務
+│   │   ├── write_tasks.py               # 非同步寫入任務（含批次交易）
 │   │   └── procedure_tasks.py           # 非同步程序呼叫任務
 │   ├── middleware/
 │   │   ├── __init__.py
@@ -1412,7 +1650,8 @@ Oracle-api-hub/
 │   │       ├── health.py                # 健康檢查端點
 │   │       ├── queries.py               # 查詢端點（定義列表 / 重載 / 執行）
 │   │       ├── procedures.py            # 程序端點（同步 / 非同步）
-│   │       └── writes.py                # 寫入端點（同步 / 非同步 / 狀態查詢）
+│   │       ├── writes.py                # 寫入端點（單筆 / 批次 / 非同步 / 狀態查詢）
+│   │       └── schemas.py              # 表結構探查端點
 │   ├── admin/                           # 管理介面 SPA
 │   │   ├── index.html                   # SPA 主頁面
 │   │   ├── css/

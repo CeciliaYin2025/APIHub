@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1 import auth, health, procedures, queries, writes
+from app.api.v1 import auth, health, procedures, queries, schemas, writes
 from app.core.config import settings
 from app.db.oracle_pool import close_pool, init_pool
 from app.middleware.rate_limiter import RateLimiterMiddleware
@@ -57,6 +57,7 @@ app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(queries.router, prefix=settings.api_prefix)
 app.include_router(procedures.router, prefix=settings.api_prefix)
 app.include_router(writes.router, prefix=settings.api_prefix)
+app.include_router(schemas.router, prefix=settings.api_prefix)
 
 # ── Admin UI (static SPA) ────────────────────────────────────────────────────
 app.mount("/admin/css", StaticFiles(directory=str(_ADMIN_DIR / "css")), name="admin-css")

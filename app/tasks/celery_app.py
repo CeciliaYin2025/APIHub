@@ -22,6 +22,7 @@ celery_app.conf.update(
     task_default_queue="default",
     task_routes={
         "app.tasks.write_tasks.async_write": {"queue": "write"},
+        "app.tasks.write_tasks.async_batch_write": {"queue": "write"},
         "app.tasks.procedure_tasks.async_procedure": {"queue": "procedure"},
     },
 )
