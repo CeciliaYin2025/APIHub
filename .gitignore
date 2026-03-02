@@ -20,3 +20,5 @@ venv/
 htmlcov/
 .pytest_cache/
 celerybeat-schedule
+temp/
+.claude/

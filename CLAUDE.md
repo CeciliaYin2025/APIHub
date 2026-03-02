@@ -76,6 +76,10 @@ YAML files in `app/sql_definitions/` define queries with SQL, bind parameters, a
 
 Celery with Redis broker. Two dedicated queues: `write` and `procedure`. Tasks retry up to 3 times with exponential backoff. `prefetch_multiplier=1` to protect DB connections.
 
+### Temporary Files
+
+測試資料、API 回應暫存檔等放在 `temp/` 目錄下，該目錄已加入 `.gitignore`，不會被版控追蹤。
+
 ## Code Conventions
 
 - **Python**: 3.10+, line length 120, linted with ruff
