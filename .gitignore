@@ -10,7 +10,8 @@ build/
 .venv/
 venv/
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
 *.swp
 *.swo
 .DS_Store
