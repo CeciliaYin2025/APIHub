@@ -3,10 +3,10 @@
 | 項目 | 內容 |
 |------|------|
 | 文件名稱 | Oracle RESTful API Hub 系統規格書 |
-| 版本 | 1.1.0 |
-| 目標資料庫 | Oracle Database 11g (11.1.0.4) |
+| 版本 | 1.2.0 |
+| 目標資料庫 | Oracle Database 11g (11.1.0.4)（支援多資料庫） |
 | 框架 | FastAPI (Python 3.10+) |
-| 文件日期 | 2026-03-01 |
+| 文件日期 | 2026-03-02 |
 
 ---
 
@@ -47,24 +47,29 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
 | 負載緩解 | 透過 Celery + Redis 工作佇列將寫入與程序呼叫非同步化 |
 | 權限控管 | JWT 認證搭配 RBAC（角色基礎存取控制），支援萬用字元權限 |
 | 管理介面 | 內建 Web 管理 UI（SPA），提供使用者/角色/權限 CRUD、查詢測試、任務監控 |
+| 多資料庫支援 | 透過 YAML 設定多個 Oracle 資料庫，以 `/{db}/` 路徑前綴選擇目標資料庫 |
 | 11g 相容 | 使用 cx_Oracle SessionPool 與 ROWNUM 分頁，完全相容 Oracle 11.1.0.4 |
 
 ### 1.3 系統邊界
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        Oracle API Hub                                │
-│                                                                      │
-│  ┌──────────┐    ┌───────────┐    ┌──────────────┐    ┌──────────┐  │
-│  │ 外部系統  │───▶│  FastAPI   │───▶│   Service     │───▶│  Oracle  │  │
-│  │ (Client)  │◀──│  Router    │◀──│   Layer       │◀──│  11g DB  │  │
-│  └──────────┘    └───────────┘    └──────┬───────┘    └──────────┘  │
-│                                          │                           │
-│                                   ┌──────▼───────┐                   │
-│                                   │ Celery Worker │                   │
-│                                   │ (Redis Queue) │                   │
-│                                   └──────────────┘                   │
-└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          Oracle API Hub                                   │
+│                                                                          │
+│  ┌──────────┐    ┌───────────┐    ┌──────────────┐    ┌──────────────┐  │
+│  │ 外部系統  │───▶│  FastAPI   │───▶│   Service     │───▶│  Oracle DB A │  │
+│  │ (Client)  │◀──│  Router    │◀──│   Layer       │──▶│  Oracle DB B │  │
+│  └──────────┘    └───────────┘    └──────┬───────┘──▶│  Oracle DB C │  │
+│                                          │            └──────────────┘  │
+│                                   ┌──────▼───────┐          ▲           │
+│                  /{db}/ 路徑 ─────│DatabaseRegistry│─────────┘           │
+│                   前綴選擇         │ (Multi-Pool)  │                     │
+│                                   └──────┬───────┘                      │
+│                                   ┌──────▼───────┐                      │
+│                                   │ Celery Worker │                      │
+│                                   │ (Redis Queue) │                      │
+│                                   └──────────────┘                      │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -84,13 +89,13 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
   │          │      │  │  └────────────┘  └─────────────────────┘   │  │
   └──────────┘      │  └──────────────────────────────────────────────┘  │
                     │                                                     │
-                    │  ┌──────────────────────────────────────────────┐  │
-                    │  │              API Layer (v1)                   │  │
-                    │  │  ┌──────┐ ┌───────┐ ┌──────┐ ┌──────┐ ┌───────┐ │  │
-                    │  │  │ Auth │ │Queries│ │Procs │ │Writes│ │Schemas│ │  │
-                    │  │  │Router│ │Router │ │Router│ │Router│ │Router │ │  │
-                    │  │  └──┬───┘ └──┬────┘ └──┬───┘ └──┬───┘ └──┬────┘ │  │
-                    │  └─────┼────────┼─────────┼────────┼────────┼──────┘  │
+                    │  ┌───────────────────────────────────────────────────────┐  │
+                    │  │              API Layer (v1)                              │  │
+                    │  │  ┌──────┐ ┌─────┐ ┌───────┐ ┌──────┐ ┌──────┐ ┌──────┐ │  │
+                    │  │  │ Auth │ │ DBs │ │Queries│ │Procs │ │Writes│ │Schema│ │  │
+                    │  │  │Router│ │Route│ │Router │ │Router│ │Router│ │Router│ │  │
+                    │  │  └──┬───┘ └──┬──┘ └──┬────┘ └──┬───┘ └──┬───┘ └──┬──┘ │  │
+                    │  └─────┼────────┼───────┼─────────┼────────┼────────┼────┘  │
                     │         │          │         │         │          │
                     │  ┌──────▼──────────▼─────────▼─────────▼──────┐  │
                     │  │             Service Layer                   │  │
@@ -109,17 +114,17 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
                     │         ┌───────────┼───────────┐               │
                     │         ▼           ▼           ▼               │
                     │  ┌───────────┐ ┌─────────┐ ┌──────────┐        │
-                    │  │cx_Oracle  │ │SQLAlchemy│ │  Celery  │        │
-                    │  │  Pool     │ │  ORM     │ │  Tasks   │        │
-                    │  └─────┬─────┘ └────┬────┘ └─────┬────┘        │
+                    │  │ Database  │ │SQLAlchemy│ │  Celery  │        │
+                    │  │ Registry  │ │  ORM     │ │  Tasks   │        │
+                    │  │(cx_Oracle)│ └────┬────┘ └─────┬────┘        │
+                    │  └─────┬─────┘      │            │             │
                     └────────┼────────────┼────────────┼──────────────┘
-                             │            │            │
-                             ▼            ▼            ▼
-                    ┌─────────────┐                ┌────────┐
-                    │   Oracle    │                │  Redis  │
-                    │  Database   │                │ Broker  │
-                    │  11.1.0.4   │                └────────┘
-                    └─────────────┘
+                    ┌────────┼────────┐   │            │
+                    ▼        ▼        ▼   ▼            ▼
+               ┌────────┐┌────────┐┌────────┐     ┌────────┐
+               │Oracle A││Oracle B││Oracle C│     │  Redis  │
+               │  11g   ││  11g   ││  11g   │     │ Broker  │
+               └────────┘└────────┘└────────┘     └────────┘
 ```
 
 ### 2.2 分層說明
@@ -129,7 +134,7 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
 | **中介層 (Middleware)** | CORS 跨域、速率限制 | `app/middleware/rate_limiter.py` |
 | **路由層 (Router)** | HTTP 端點定義、請求驗證 | `app/api/v1/*.py` |
 | **服務層 (Service)** | 業務邏輯、SQL 執行、權限檢查 | `app/services/*.py` |
-| **資料存取層 (Data)** | 連線池管理、ORM Session | `app/db/*.py` |
+| **資料存取層 (Data)** | 多資料庫連線池管理（DatabaseRegistry）、ORM Session | `app/db/*.py` |
 | **任務層 (Task)** | 非同步工作佇列 | `app/tasks/*.py` |
 | **模型層 (Model)** | ORM 模型定義 | `app/models/*.py` |
 | **綱要層 (Schema)** | 請求/回應資料結構 | `app/schemas/*.py` |
@@ -203,6 +208,7 @@ class Settings(BaseSettings):
     debug: bool = False
     rate_limit_per_minute: int = 60
     sql_definitions_dir: str = "app/sql_definitions"
+    database_definitions_dir: str = "app/database_definitions"
 ```
 
 ### 4.2 安全模組 — `app/core/security.py`
@@ -213,28 +219,89 @@ class Settings(BaseSettings):
 | `get_password_hash` | `(password: str) -> str` | 產生 bcrypt 雜湊值 |
 | `create_access_token` | `(data: dict, expires_delta?) -> str` | 產生 HS256 簽章之 JWT Token，預設 60 分鐘過期 |
 
-### 4.3 Oracle 連線池 — `app/db/oracle_pool.py`
+### 4.3 多資料庫連線池管理
 
-使用 `cx_Oracle.SessionPool` 管理連線生命週期。
+系統支援同時連接多個 Oracle 資料庫，透過 `DatabaseRegistry` 單例管理所有連線池。
 
-| 函式 | 說明 |
+#### 4.3.1 資料庫定義 — `app/database_definitions/*.yaml`
+
+以 YAML 檔案定義各資料庫連線參數。每個檔案包含一個或多個資料庫設定。
+
+```yaml
+- alias: hr_db
+  description: "HR 人力資源資料庫"
+  dsn: "hr-oracle.company.com:1521/hrdb"
+  user: "hr_api_user"
+  password: "changeme"       # 可透過環境變數 DB_HR_DB_PASSWORD 覆蓋
+  pool_min: 2
+  pool_max: 10
+  pool_increment: 1
+
+- alias: finance_db
+  description: "財務資料庫"
+  dsn: "fin-oracle.company.com:1521/findb"
+  user: "fin_api_user"
+  password: "changeme"
+  pool_min: 2
+  pool_max: 5
+  pool_increment: 1
+```
+
+**密碼安全：** 支援以環境變數 `DB_{ALIAS}_PASSWORD`（大寫）覆蓋 YAML 中的密碼，避免在檔案中儲存正式密碼。
+
+#### 4.3.2 多連線池管理器 — `app/db/multi_pool.py`
+
+**資料類別 `DatabaseConfig`：**
+
+| 欄位 | 型態 | 說明 |
+|------|------|------|
+| `alias` | `str` | 資料庫別名（用於 URL 路徑） |
+| `description` | `str` | 人類可讀說明 |
+| `dsn` | `str` | Oracle 連線字串 |
+| `user` | `str` | 資料庫使用者 |
+| `password` | `str` | 資料庫密碼 |
+| `pool_min` | `int` | 連線池最小連線數（預設 2） |
+| `pool_max` | `int` | 連線池最大連線數（預設 10） |
+| `pool_increment` | `int` | 連線池增長步階（預設 1） |
+
+**類別 `DatabaseRegistry`（Singleton）：**
+
+| 方法 | 說明 |
 |------|------|
-| `init_pool()` | 啟動時初始化 SessionPool（Singleton） |
-| `close_pool()` | 關閉時釋放所有連線 |
-| `get_connection()` | Context Manager，取得連線並自動歸還 |
-| `get_cursor()` | Context Manager，取得 Cursor 並自動關閉 |
+| `load(directory?)` | 從指定目錄載入所有 `*.yaml` / `*.yml` 資料庫定義 |
+| `init_all_pools()` | 為所有已載入的資料庫初始化 cx_Oracle SessionPool |
+| `init_pool(alias)` | 為指定資料庫初始化 SessionPool |
+| `close_all_pools()` | 關閉所有 SessionPool |
+| `get_connection(alias)` | Context Manager，依別名取得連線並自動歸還 |
+| `get_cursor(alias)` | Context Manager，依別名取得 Cursor 並自動關閉 |
+| `list_databases()` | 列出所有已設定的資料庫（別名、說明、狀態） |
+| `has(alias)` | 檢查指定別名是否已註冊 |
+| `aliases()` | 回傳所有已註冊的別名列表 |
 
-**連線池組態：**
+**每個資料庫的連線池組態：**
 
 ```python
 cx_Oracle.SessionPool(
-    user=..., password=..., dsn=...,
-    min=2, max=10, increment=1,
+    user=config.user, password=config.password, dsn=config.dsn,
+    min=config.pool_min, max=config.pool_max, increment=config.pool_increment,
     encoding="UTF-8",
     threaded=True,                          # 執行緒安全
     getmode=cx_Oracle.SPOOL_ATTRVAL_WAIT,   # 連線用盡時等待（不拋例外）
 )
 ```
+
+**Legacy 單庫向下相容：** 若 `database_definitions` 目錄中無 YAML 檔案，系統自動從環境變數（`ORACLE_DSN`、`ORACLE_USER`、`ORACLE_PASSWORD`）建立名為 `default` 的資料庫項目，確保向下相容。
+
+#### 4.3.3 向下相容封裝 — `app/db/oracle_pool.py`
+
+改寫為 `DatabaseRegistry` 的薄封裝層，保持既有 API 介面向下相容。
+
+| 函式 | 說明 |
+|------|------|
+| `init_pool()` | 載入並初始化所有資料庫連線池 |
+| `close_pool()` | 關閉所有資料庫連線池 |
+| `get_connection(db_alias?)` | Context Manager，依別名取得連線（省略時使用第一個資料庫） |
+| `get_cursor(db_alias?)` | Context Manager，依別名取得 Cursor |
 
 ### 4.4 SQLAlchemy Session — `app/db/session.py`
 
@@ -270,9 +337,11 @@ cx_Oracle.SessionPool(
 **函式 `execute_query`：**
 
 ```
-(definition, params, fetch_mode, *, page, page_size, batch_size, batch_offset, top_n)
+(definition, params, fetch_mode, *, page, page_size, batch_size, batch_offset, top_n, db_alias=None)
   -> dict[str, Any]   # 包含 columns, data, total, 及模式特有的分頁資訊
 ```
+
+> `db_alias` 參數指定目標資料庫別名，由路由層的 `{db}` 路徑參數傳入。
 
 **支援五種資料擷取模式 (fetch_mode)：**
 
@@ -315,7 +384,7 @@ SELECT * FROM ({原始 SQL}) WHERE ROWNUM <= :_top_n
 
 | 函式 | 說明 |
 |------|------|
-| `execute_procedure(name, params, out_params, is_function)` | 主入口，回傳 `{"result": ..., "out_params": {...}}` |
+| `execute_procedure(name, params, out_params, is_function, db_alias=None)` | 主入口，回傳 `{"result": ..., "out_params": {...}}` |
 | `_call_function(cursor, name, params)` | 使用 `cursor.callfunc()` 呼叫 Function |
 | `_call_procedure(cursor, name, params, out_param_names)` | 使用 `cursor.callproc(keywordParameters=...)` 呼叫 Procedure |
 | `_convert(value)` | 將 `cx_Oracle.LOB` 轉為可序列化類型 |
@@ -333,8 +402,8 @@ SELECT * FROM ({原始 SQL}) WHERE ROWNUM <= :_top_n
 | 函式 | 說明 |
 |------|------|
 | `validate_table_name(table)` | 正則驗證表名，防止 SQL injection |
-| `execute_write(operation, table, data, where)` | DML 主入口，回傳受影響筆數 |
-| `execute_batch_write(table, operations)` | 批次交易寫入，所有操作在同一交易中執行；任一失敗即全部回滾 |
+| `execute_write(operation, table, data, where, db_alias=None)` | DML 主入口，回傳受影響筆數 |
+| `execute_batch_write(table, operations, db_alias=None)` | 批次交易寫入，所有操作在同一交易中執行；任一失敗即全部回滾 |
 | `_do_insert(cursor, table, data)` | 使用 `executemany` 批次新增 |
 | `_do_update(cursor, table, data, where)` | 逐筆更新，SET 與 WHERE 均為綁定參數 |
 | `_do_delete(cursor, table, where)` | 條件刪除 |
@@ -344,9 +413,9 @@ SELECT * FROM ({原始 SQL}) WHERE ROWNUM <= :_top_n
 在單一資料庫連線內依序執行多個 DML 操作，全部成功才 `commit`，任一失敗即 `rollback` 並拋出 `BatchWriteError`（攜帶已執行的部分結果與失敗索引）。
 
 ```python
-def execute_batch_write(table, operations) -> dict:
+def execute_batch_write(table, operations, db_alias=None) -> dict:
     """回傳 {total_affected, operation_count, committed, results}"""
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         cursor = conn.cursor()
         try:
             for idx, op in enumerate(operations):
@@ -390,7 +459,7 @@ DELETE FROM employees WHERE emp_id = :wh_emp_id
 
 | 函式 | 說明 |
 |------|------|
-| `describe_table(table)` | 回傳目標表/View 的所有欄位 metadata 與主鍵列表 |
+| `describe_table(table, db_alias=None)` | 回傳目標表/View 的所有欄位 metadata 與主鍵列表 |
 | `validate_table_name(table)` | 重用 write_service 的表名正則驗證 |
 
 **回傳格式：**
@@ -441,13 +510,57 @@ DELETE FROM employees WHERE emp_id = :wh_emp_id
 
 **基本路徑 (Base URL):** `/api/v1`
 
+**端點分類：**
+
+| 類別 | 路徑模式 | 說明 |
+|------|----------|------|
+| 全域端點 | `/api/v1/{endpoint}` | 不依賴特定資料庫（健康檢查、認證、資料庫列表、SQL 定義、任務狀態） |
+| 資料庫範圍端點 | `/api/v1/{db}/{endpoint}` | 需要指定目標資料庫（查詢執行、寫入、程序、表結構探查） |
+
 ### 5.1 健康檢查
 
 | 方法 | 路徑 | 認證 | 說明 |
 |------|------|------|------|
 | `GET` | `/api/v1/health` | 不需要 | 回傳 `{"status": "ok"}` |
 
-### 5.2 認證端點 (`/api/v1/auth`)
+### 5.2 資料庫端點 (`/api/v1/databases`)
+
+| 方法 | 路徑 | 認證 | 說明 |
+|------|------|------|------|
+| `GET` | `/api/v1/databases` | Bearer Token | 列出所有已設定的 Oracle 資料庫連線 |
+
+**回應範例：**
+
+```json
+[
+  {
+    "alias": "hr_db",
+    "description": "HR 人力資源資料庫",
+    "dsn": "hr-oracle.company.com:1521/hrdb",
+    "user": "hr_api_user",
+    "pool_min": 2,
+    "pool_max": 10,
+    "pool_increment": 1
+  },
+  {
+    "alias": "finance_db",
+    "description": "財務資料庫",
+    "dsn": "fin-oracle.company.com:1521/findb",
+    "user": "fin_api_user",
+    "pool_min": 2,
+    "pool_max": 5,
+    "pool_increment": 1
+  }
+]
+```
+
+**`get_db_alias` 共用依賴：**
+
+所有資料庫範圍端點使用 `Depends(get_db_alias)` 驗證 `{db}` 路徑參數：
+- 若別名已註冊 → 回傳別名字串
+- 若別名未註冊 → 回傳 HTTP 404 並列出可用的資料庫
+
+### 5.3 認證端點 (`/api/v1/auth`)
 
 | 方法 | 路徑 | 認證 | 說明 |
 |------|------|------|------|
@@ -488,13 +601,13 @@ username=admin&password=changeme
 }
 ```
 
-### 5.3 查詢端點 (`/api/v1/queries`)
+### 5.4 查詢端點 (`/api/v1/queries`)
 
 | 方法 | 路徑 | 認證 | 權限 | 說明 |
 |------|------|------|------|------|
-| `GET` | `/queries/definitions` | Bearer Token | 無特殊權限 | 列出所有可用查詢定義（僅 metadata） |
-| `POST` | `/queries/definitions/reload` | 超級管理員 | — | 從磁碟熱重載 SQL 定義 |
-| `POST` | `/queries/execute` | Bearer Token | `{permission}:read` | 執行已註冊的查詢定義 |
+| `GET` | `/queries/definitions` | Bearer Token | 無特殊權限 | 列出所有可用查詢定義（僅 metadata）— 全域 |
+| `POST` | `/queries/definitions/reload` | 超級管理員 | — | 從磁碟熱重載 SQL 定義 — 全域 |
+| `POST` | `/{db}/queries/execute` | Bearer Token | `{permission}:read` | 對指定資料庫執行已註冊的查詢定義 |
 
 **查詢請求參數說明：**
 
@@ -509,10 +622,10 @@ username=admin&password=changeme
 | `batch_offset` | int (>=0) | `0` | 起始偏移量（`batch` 模式） |
 | `top_n` | int (1-1000) | `10` | 取前 N 筆（`top_n` 模式） |
 
-#### 5.3.1 `fetch_mode = "page"` — 分頁模式（預設）
+#### 5.4.1 `fetch_mode = "page"` — 分頁模式（預設）
 
 ```json
-POST /api/v1/queries/execute
+POST /api/v1/{db}/queries/execute
 {
   "query_name": "employees",
   "params": {"dept": "IT"},
@@ -535,7 +648,7 @@ POST /api/v1/queries/execute
 }
 ```
 
-#### 5.3.2 `fetch_mode = "all"` — 整批取回
+#### 5.4.2 `fetch_mode = "all"` — 整批取回
 
 ```json
 {
@@ -555,7 +668,7 @@ POST /api/v1/queries/execute
 }
 ```
 
-#### 5.3.3 `fetch_mode = "batch"` — 分批取用
+#### 5.4.3 `fetch_mode = "batch"` — 分批取用
 
 適合大量資料的游標式逐批處理，客戶端持續遞增 `batch_offset` 直到 `has_more = false`。
 
@@ -584,7 +697,7 @@ POST /api/v1/queries/execute
 
 第二批：`batch_offset: 500`，第三批：`batch_offset: 1000`（`has_more: false`）。
 
-#### 5.3.4 `fetch_mode = "top_n"` — 取前 N 筆
+#### 5.4.4 `fetch_mode = "top_n"` — 取前 N 筆
 
 不執行 COUNT 查詢，效能最佳。適合只需要前幾筆結果的場景。
 
@@ -607,7 +720,7 @@ POST /api/v1/queries/execute
 }
 ```
 
-#### 5.3.5 `fetch_mode = "one"` — 取一筆
+#### 5.4.5 `fetch_mode = "one"` — 取一筆
 
 僅回傳一筆資料，無資料時回傳 HTTP 400。
 
@@ -638,17 +751,17 @@ POST /api/v1/queries/execute
 }
 ```
 
-### 5.4 程序端點 (`/api/v1/procedures`)
+### 5.5 程序端點 (`/api/v1/{db}/procedures`)
 
 | 方法 | 路徑 | 認證 | 權限 | 說明 |
 |------|------|------|------|------|
-| `POST` | `/procedures/execute` | Bearer Token | `procedure:{name}:execute` | 同步執行 Procedure / Function |
-| `POST` | `/procedures/execute-async` | Bearer Token | `procedure:{name}:execute` | 非同步執行，回傳 task_id |
+| `POST` | `/{db}/procedures/execute` | Bearer Token | `procedure:{name}:execute` | 同步執行 Procedure / Function |
+| `POST` | `/{db}/procedures/execute-async` | Bearer Token | `procedure:{name}:execute` | 非同步執行，回傳 task_id |
 
 **Procedure 呼叫請求：**
 
 ```json
-POST /api/v1/procedures/execute
+POST /api/v1/{db}/procedures/execute
 {
   "name": "PKG_HR.GET_EMPLOYEE_SALARY",
   "params": {"p_emp_id": 1001},
@@ -703,18 +816,18 @@ POST /api/v1/procedures/execute
 }
 ```
 
-### 5.5 寫入端點 (`/api/v1/writes`)
+### 5.6 寫入端點 (`/api/v1/{db}/writes`)
 
 | 方法 | 路徑 | 認證 | 權限 | 說明 |
 |------|------|------|------|------|
-| `POST` | `/writes/execute` | Bearer Token | `table:{table}:write` | 執行單筆 INSERT / UPDATE / DELETE |
-| `POST` | `/writes/batch` | Bearer Token | `table:{table}:write` | 批次交易寫入（多個 DML 操作在同一交易） |
-| `GET` | `/writes/tasks/{task_id}` | Bearer Token | 無特殊權限 | 查詢非同步任務狀態 |
+| `POST` | `/{db}/writes/execute` | Bearer Token | `table:{table}:write` | 對指定資料庫執行單筆 INSERT / UPDATE / DELETE |
+| `POST` | `/{db}/writes/batch` | Bearer Token | `table:{table}:write` | 對指定資料庫批次交易寫入（多個 DML 操作在同一交易） |
+| `GET` | `/tasks/{task_id}` | Bearer Token | 無特殊權限 | 查詢非同步任務狀態 — 全域 |
 
 **INSERT 請求（同步）：**
 
 ```json
-POST /api/v1/writes/execute
+POST /api/v1/{db}/writes/execute
 {
   "operation": "insert",
   "table": "HR.EMPLOYEES",
@@ -765,7 +878,7 @@ POST /api/v1/writes/execute
 **任務狀態查詢：**
 
 ```
-GET /api/v1/writes/tasks/b4c2d1e0-f5a6-7890-bcde-fg2345678901
+GET /api/v1/tasks/b4c2d1e0-f5a6-7890-bcde-fg2345678901
 ```
 
 ```json
@@ -781,7 +894,7 @@ GET /api/v1/writes/tasks/b4c2d1e0-f5a6-7890-bcde-fg2345678901
 所有操作在同一資料庫交易中執行，任一操作失敗即全部回滾。
 
 ```json
-POST /api/v1/writes/batch
+POST /api/v1/{db}/writes/batch
 {
   "table": "HR.EMPLOYEES",
   "operations": [
@@ -839,16 +952,16 @@ POST /api/v1/writes/batch
 }
 ```
 
-### 5.6 表結構探查端點 (`/api/v1/schemas`)
+### 5.7 表結構探查端點 (`/api/v1/{db}/schemas`)
 
 | 方法 | 路徑 | 認證 | 說明 |
 |------|------|------|------|
-| `GET` | `/schemas/describe/{table}` | Bearer Token | 取得目標表/View 的欄位定義與主鍵資訊 |
+| `GET` | `/{db}/schemas/describe/{table}` | Bearer Token | 取得指定資料庫中目標表/View 的欄位定義與主鍵資訊 |
 
 **請求範例：**
 
 ```
-GET /api/v1/schemas/describe/HR.EMPLOYEES
+GET /api/v1/hr_db/schemas/describe/HR.EMPLOYEES
 Authorization: Bearer <token>
 ```
 
@@ -1011,7 +1124,7 @@ Authorization: Bearer <token>
     │  {"access_token": "eyJ..."}   │                              │
     │◀──────────────────────────────│                              │
     │                                │                              │
-    │  GET /queries/execute          │                              │
+    │  POST /{db}/queries/execute    │                              │
     │  Authorization: Bearer eyJ... │                              │
     │──────────────────────────────▶│                              │
     │                                │  解碼 JWT                    │
@@ -1136,6 +1249,8 @@ Authorization: Bearer <token>
 | `app.tasks.write_tasks.async_batch_write` | `write` | 4 |
 | `app.tasks.procedure_tasks.async_procedure` | `procedure` | 2 |
 
+> 所有非同步任務均接受 `db_alias` 參數，指定在哪個資料庫上執行操作。Worker 進程在首次執行任務時會初始化所有資料庫的連線池。
+
 ### 8.4 重試策略
 
 | 參數 | 值 |
@@ -1158,7 +1273,7 @@ Authorization: Bearer <token>
 
 ### 8.6 Worker 連線池管理
 
-每個 Celery Worker 進程在首次執行任務時呼叫 `init_pool()` 初始化自己的 cx_Oracle 連線池。設定 `worker_prefetch_multiplier=1` 確保每個 worker 一次只處理一個任務，避免過度消耗資料庫連線。
+每個 Celery Worker 進程在首次執行任務時呼叫 `init_pool()` 初始化所有資料庫的 cx_Oracle 連線池（透過 `DatabaseRegistry`）。設定 `worker_prefetch_multiplier=1` 確保每個 worker 一次只處理一個任務，避免過度消耗資料庫連線。
 
 ### 8.7 Flower 監控
 
@@ -1292,7 +1407,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 | 頁面 | 路徑 | 說明 |
 |------|------|------|
 | **Login** | `/admin` | JWT 登入頁面（帳號密碼表單） |
-| **Dashboard** | — | 統計總覽（使用者數、角色數、權限數、SQL 定義數）、快捷資訊 |
+| **Dashboard** | — | 統計總覽（使用者數、角色數、權限數、SQL 定義數、資料庫數）、資料庫列表、快捷資訊 |
 | **Users** | — | 使用者清單 + 新增使用者（帳號、密碼、角色指派、超級管理員設定） |
 | **Roles** | — | 角色清單 + 新增角色（名稱、描述、權限指派） |
 | **Permissions** | — | 權限清單 + 新增權限（resource、action、描述） |
@@ -1308,7 +1423,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  ┌──────────┐  ┌──────────────────────────────────────────────┐ │
-│  │          │  │  Top Header        [user badge] [Logout]     │ │
+│  │          │  │  Top Header  [DB: ▼ hr_db] [user] [Logout]  │ │
 │  │  Sidebar │  ├──────────────────────────────────────────────┤ │
 │  │          │  │                                              │ │
 │  │ Dashboard│  │  Content Area                                │ │
@@ -1333,7 +1448,9 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 3. Token 儲存於 `localStorage`（key: `hub_token`）
 4. 後續所有 API 請求附帶 `Authorization: Bearer <token>` 標頭
 5. Token 過期或無效時自動導回 Login 頁面
-6. Logout 清除 `localStorage` 中的 Token
+6. 登入成功後載入可用資料庫列表（`GET /databases`），填充 Header 中的資料庫選擇器
+7. 選擇的資料庫儲存於 `localStorage`（key: `hub_current_db`），頁面重載後自動恢復
+8. Logout 清除 `localStorage` 中的 Token
 
 ### 10.5 Query Console 功能
 
@@ -1378,7 +1495,9 @@ def admin_spa(rest_of_path: str = ""):
 **操作流程：**
 
 ```
-使用者輸入表名 → 呼叫 GET /schemas/describe/{table}
+選擇目標資料庫（Header DB Selector）
+                        ↓
+使用者輸入表名 → 呼叫 GET /{db}/schemas/describe/{table}
                         ↓
                取得欄位定義 + 主鍵資訊
                         ↓
@@ -1390,7 +1509,7 @@ def admin_spa(rest_of_path: str = ""):
   Update: SET 區域 + WHERE 區域（預設填入 PK 欄位）
   Delete: 僅 WHERE 區域（預設填入 PK 欄位）
                         ↓
-  送出 → POST /writes/batch（同步或非同步）
+  送出 → POST /{db}/writes/batch（同步或非同步）
                         ↓
   顯示交易結果：成功（已提交）/ 失敗（已回滾 + 失敗位置）
 ```
@@ -1503,12 +1622,13 @@ CORSMiddleware(
 │  └───────────────┘                                         │
 └────────────────────────────────┬────────────────────────────┘
                                  │
-                                 ▼
-                    ┌──────────────────────┐
-                    │   Oracle Database    │
-                    │   11.1.0.4           │
-                    │   (外部或同網段)      │
-                    └──────────────────────┘
+                    ┌────────────┼────────────┐
+                    ▼            ▼            ▼
+           ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+           │ Oracle DB A  │ │ Oracle DB B  │ │ Oracle DB C  │
+           │ (hr_db)      │ │ (finance_db) │ │ (...)        │
+           │  11.1.0.4    │ │  11.1.0.4    │ │  11.1.0.4    │
+           └──────────────┘ └──────────────┘ └──────────────┘
 ```
 
 ### 12.4 Volume 掛載
@@ -1516,6 +1636,7 @@ CORSMiddleware(
 | 掛載 | 說明 |
 |------|------|
 | `./app/sql_definitions` → `/app/app/sql_definitions` | SQL 定義檔熱更新 |
+| `./app/database_definitions` → `/app/app/database_definitions` | 資料庫定義檔 |
 | `redis_data` (named volume) | Redis 資料持久化 |
 
 ### 12.5 快速啟動
@@ -1523,20 +1644,29 @@ CORSMiddleware(
 ```bash
 # 1. 複製並編輯組態
 cp .env.example .env
-vi .env   # 設定 ORACLE_DSN、密碼、SECRET_KEY 等
+vi .env   # 設定 SECRET_KEY 等基本組態
 
-# 2. 啟動所有服務
+# 2. 設定多資料庫連線
+cp app/database_definitions/databases.yaml.example app/database_definitions/databases.yaml
+vi app/database_definitions/databases.yaml   # 設定各資料庫 DSN、帳號
+# 或使用環境變數覆蓋密碼：export DB_HR_DB_PASSWORD=real_password
+
+# 3. 啟動所有服務
 docker-compose up -d
 
-# 3. 初始化資料庫表與管理員帳號
+# 4. 初始化資料庫表與管理員帳號
 docker-compose exec api python -m scripts.init_db
 
-# 4. 取得 Token
+# 5. 取得 Token
 curl -X POST http://localhost:8000/api/v1/auth/token \
   -d "username=admin&password=changeme"
 
-# 5. 執行查詢
-curl -X POST http://localhost:8000/api/v1/queries/execute \
+# 6. 列出可用資料庫
+curl http://localhost:8000/api/v1/databases \
+  -H "Authorization: Bearer <token>"
+
+# 7. 對指定資料庫執行查詢
+curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"query_name": "employees", "params": {"dept": "IT"}}'
@@ -1557,7 +1687,8 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
 | **密碼洩漏** | bcrypt 雜湊儲存 | `security.py` |
 | **Token 偽造** | HS256 簽章驗證 + 過期時間 | `security.py` |
 | **DML Injection** | 表名正則 + 參數化 SQL | `write_service.py` |
-| **資料庫過載** | 連線池上限 + Celery 佇列緩衝 | `oracle_pool.py`, `celery_app.py` |
+| **資料庫過載** | 連線池上限 + Celery 佇列緩衝 | `multi_pool.py`, `celery_app.py` |
+| **密碼外洩（DB）** | 環境變數覆蓋 YAML 密碼（`DB_{ALIAS}_PASSWORD`） | `multi_pool.py` |
 
 ### 13.2 表名驗證規則
 
@@ -1573,7 +1704,7 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
 - [ ] 變更 `admin` 帳號的預設密碼
 - [ ] 將 `SECRET_KEY` 設為高強度隨機字串
 - [ ] 將 CORS `allow_origins` 限縮為實際前端網域
-- [ ] 變更 `ORACLE_PASSWORD` 為正式環境密碼
+- [ ] 使用 `DB_{ALIAS}_PASSWORD` 環境變數設定各資料庫正式密碼
 - [ ] 若部署多實例，將速率限制改為 Redis-backed
 - [ ] 若在反向代理後方，配置 `X-Forwarded-For` 信任
 
@@ -1601,6 +1732,8 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
 | `DEBUG` | `false` | 除錯模式（啟用後 log level 為 DEBUG） |
 | `RATE_LIMIT_PER_MINUTE` | `60` | 每客戶端每分鐘最大請求數 |
 | `SQL_DEFINITIONS_DIR` | `app/sql_definitions` | SQL 定義檔目錄路徑 |
+| `DATABASE_DEFINITIONS_DIR` | `app/database_definitions` | 資料庫定義檔目錄路徑 |
+| `DB_{ALIAS}_PASSWORD` | — | 覆蓋指定資料庫別名的密碼（如 `DB_HR_DB_PASSWORD`） |
 
 ---
 
@@ -1617,7 +1750,8 @@ Oracle-api-hub/
 │   │   └── security.py                  # JWT 產生 + bcrypt 密碼處理
 │   ├── db/
 │   │   ├── __init__.py
-│   │   ├── oracle_pool.py               # cx_Oracle SessionPool 連線池管理
+│   │   ├── multi_pool.py                # DatabaseRegistry — 多資料庫連線池管理器
+│   │   ├── oracle_pool.py               # 向下相容封裝（委派至 DatabaseRegistry）
 │   │   └── session.py                   # SQLAlchemy ORM Engine / Session
 │   ├── models/
 │   │   ├── __init__.py
@@ -1648,16 +1782,19 @@ Oracle-api-hub/
 │   │       ├── __init__.py
 │   │       ├── auth.py                  # 認證端點（登入 / 使用者 / 角色 / 權限 CRUD）
 │   │       ├── health.py                # 健康檢查端點
-│   │       ├── queries.py               # 查詢端點（定義列表 / 重載 / 執行）
-│   │       ├── procedures.py            # 程序端點（同步 / 非同步）
-│   │       ├── writes.py                # 寫入端點（單筆 / 批次 / 非同步 / 狀態查詢）
-│   │       └── schemas.py              # 表結構探查端點
+│   │       ├── databases.py             # 資料庫列表端點 + get_db_alias 依賴
+│   │       ├── queries.py               # 查詢端點（定義列表 / 重載 / /{db}/執行）
+│   │       ├── procedures.py            # 程序端點（/{db}/同步 / 非同步）
+│   │       ├── writes.py                # 寫入端點（/{db}/單筆 / 批次 / 非同步 / 狀態查詢）
+│   │       └── schemas.py              # 表結構探查端點（/{db}/describe）
 │   ├── admin/                           # 管理介面 SPA
 │   │   ├── index.html                   # SPA 主頁面
 │   │   ├── css/
 │   │   │   └── style.css                # UI 樣式
 │   │   └── js/
 │   │       └── app.js                   # 前端邏輯（路由、API、頁面渲染）
+│   ├── database_definitions/             # 多資料庫連線定義
+│   │   └── databases.yaml.example       # 資料庫定義範例
 │   └── sql_definitions/                 # SQL 查詢定義 YAML 檔
 │       ├── employees.yaml               # 員工查詢範例
 │       ├── departments.yaml             # 部門查詢範例

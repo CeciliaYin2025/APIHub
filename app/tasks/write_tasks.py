@@ -17,15 +17,16 @@ def async_write(
     table: str,
     data: list[dict[str, Any]],
     where: dict[str, Any] | None = None,
+    db_alias: str | None = None,
 ) -> dict:
     """Execute a write operation asynchronously via Celery.
 
     Retries up to 3 times with exponential backoff on transient failures.
     """
-    # Ensure the pool is initialized in the worker process
+    # Ensure all pools are initialized in the worker process
     init_pool()
     try:
-        affected = execute_write(operation, table, data, where)
+        affected = execute_write(operation, table, data, where, db_alias=db_alias)
         return {"success": True, "operation": operation, "affected_rows": affected}
     except Exception as exc:
         logger.exception("Async write failed (attempt %d)", self.request.retries + 1)
@@ -37,11 +38,12 @@ def async_batch_write(
     self,
     table: str,
     operations: list[dict[str, Any]],
+    db_alias: str | None = None,
 ) -> dict:
     """Execute a batch transactional write asynchronously via Celery."""
     init_pool()
     try:
-        result = execute_batch_write(table, operations)
+        result = execute_batch_write(table, operations, db_alias=db_alias)
         return {"success": True, **result}
     except Exception as exc:
         logger.exception("Async batch write failed (attempt %d)", self.request.retries + 1)

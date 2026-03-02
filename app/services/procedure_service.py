@@ -24,6 +24,7 @@ def execute_procedure(
     params: dict[str, Any],
     out_params: list[str] | None = None,
     is_function: bool = False,
+    db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Execute an Oracle procedure or function.
 
@@ -33,13 +34,14 @@ def execute_procedure(
         out_params: List of OUT parameter names. Their types are inferred
                     or default to string (VARCHAR2).
         is_function: If True, calls as a function and captures the return value.
+        db_alias: Database alias to execute against.
 
     Returns:
         Dictionary with 'result' (function return) and 'out_params'.
     """
     out_params = out_params or []
 
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         cursor = conn.cursor()
         try:
             if is_function:

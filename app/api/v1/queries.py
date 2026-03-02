@@ -1,17 +1,25 @@
-"""Query endpoints — read tables/views as open data via registered SQL definitions."""
+"""Query endpoints — read tables/views as open data via registered SQL definitions.
+
+SQL definition management (list / reload) is database-independent.
+Query execution requires a ``{db}`` path parameter to target a specific database.
+"""
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.v1.databases import get_db_alias
 from app.models.user import User
 from app.schemas.query import QueryRequest, QueryResponse
 from app.services.auth_service import PermissionChecker, get_current_user
 from app.services.query_service import execute_query
 from app.services.sql_registry import sql_registry
 
-router = APIRouter(prefix="/queries", tags=["Queries"])
+router = APIRouter(tags=["Queries"])
 
 
-@router.get("/definitions")
+# ── SQL definition management (database-independent) ─────────────────────
+
+
+@router.get("/queries/definitions")
 def list_definitions(current_user: User = Depends(get_current_user)):
     """List all available SQL definitions (metadata only, not the SQL itself)."""
     definitions = sql_registry.list_all()
@@ -29,7 +37,7 @@ def list_definitions(current_user: User = Depends(get_current_user)):
     ]
 
 
-@router.post("/definitions/reload")
+@router.post("/queries/definitions/reload")
 def reload_definitions(current_user: User = Depends(get_current_user)):
     """Hot-reload SQL definitions from disk (superuser only)."""
     if not current_user.is_superuser:
@@ -38,9 +46,16 @@ def reload_definitions(current_user: User = Depends(get_current_user)):
     return {"message": "SQL definitions reloaded", "count": len(sql_registry.list_all())}
 
 
-@router.post("/execute", response_model=QueryResponse)
-def execute(request: QueryRequest, current_user: User = Depends(get_current_user)):
-    """Execute a registered SQL query and return results in open data format.
+# ── Query execution (database-specific) ──────────────────────────────────
+
+
+@router.post("/{db}/queries/execute", response_model=QueryResponse)
+def execute(
+    request: QueryRequest,
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+):
+    """Execute a registered SQL query against the specified database.
 
     Supports multiple fetch modes:
     - **page**: paginated (default). Use ``page`` + ``page_size``.
@@ -67,6 +82,7 @@ def execute(request: QueryRequest, current_user: User = Depends(get_current_user
             batch_size=request.batch_size,
             batch_offset=request.batch_offset,
             top_n=request.top_n,
+            db_alias=db,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

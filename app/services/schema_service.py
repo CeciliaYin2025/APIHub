@@ -14,11 +14,14 @@ from app.services.write_service import validate_table_name
 logger = logging.getLogger(__name__)
 
 
-def describe_table(table: str) -> dict[str, Any]:
+def describe_table(table: str, db_alias: str | None = None) -> dict[str, Any]:
     """Return column metadata and primary key info for a table or view.
 
     Supports both plain table names (EMPLOYEES) and schema-qualified
     names (HR.EMPLOYEES).
+
+    Args:
+        db_alias: Database alias to query against.
     """
     table = validate_table_name(table)
 
@@ -32,7 +35,7 @@ def describe_table(table: str) -> dict[str, Any]:
     owner_upper = owner.upper() if owner else None
     tname_upper = tname.upper()
 
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         columns = _get_columns(conn, owner_upper, tname_upper)
         pk_columns = _get_primary_key(conn, owner_upper, tname_upper)
 

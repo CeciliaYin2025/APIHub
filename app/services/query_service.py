@@ -32,8 +32,13 @@ def execute_query(
     batch_size: int = 500,
     batch_offset: int = 0,
     top_n: int = 10,
+    db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Execute a registered SQL definition and return results.
+
+    Args:
+        db_alias: Database alias to execute against. ``None`` uses the first
+                  registered database (backward compatible).
 
     Returns a dict with keys:
         columns, data, total, and mode-specific pagination metadata.
@@ -41,15 +46,15 @@ def execute_query(
     bind_params = _prepare_binds(definition, params)
 
     if fetch_mode == "page":
-        return _fetch_page(definition.sql, bind_params, page, page_size)
+        return _fetch_page(definition.sql, bind_params, page, page_size, db_alias)
     elif fetch_mode == "all":
-        return _fetch_all(definition.sql, bind_params)
+        return _fetch_all(definition.sql, bind_params, db_alias)
     elif fetch_mode == "batch":
-        return _fetch_batch(definition.sql, bind_params, batch_size, batch_offset)
+        return _fetch_batch(definition.sql, bind_params, batch_size, batch_offset, db_alias)
     elif fetch_mode == "top_n":
-        return _fetch_top_n(definition.sql, bind_params, top_n)
+        return _fetch_top_n(definition.sql, bind_params, top_n, db_alias)
     elif fetch_mode == "one":
-        return _fetch_one(definition.sql, bind_params)
+        return _fetch_one(definition.sql, bind_params, db_alias)
     else:
         raise ValueError(f"Unknown fetch_mode: {fetch_mode}")
 
@@ -58,7 +63,8 @@ def execute_query(
 
 
 def _fetch_page(
-    sql: str, binds: dict[str, Any], page: int, page_size: int
+    sql: str, binds: dict[str, Any], page: int, page_size: int,
+    db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Paginated query using Oracle 11g compatible ROWNUM."""
     offset = (page - 1) * page_size
@@ -67,7 +73,7 @@ def _fetch_page(
     paginated_sql = _wrap_rownum(sql)
     page_binds = {**binds, "_max_row": offset + page_size, "_min_row": offset}
 
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         total = _get_count(conn, count_sql, binds)
         columns, data = _execute_and_map(conn, paginated_sql, page_binds)
 
@@ -80,11 +86,13 @@ def _fetch_page(
     }
 
 
-def _fetch_all(sql: str, binds: dict[str, Any]) -> dict[str, Any]:
+def _fetch_all(
+    sql: str, binds: dict[str, Any], db_alias: str | None = None,
+) -> dict[str, Any]:
     """Return every row without pagination."""
     count_sql = f"SELECT COUNT(*) FROM ({sql})"
 
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         total = _get_count(conn, count_sql, binds)
         columns, data = _execute_and_map(conn, sql, binds)
 
@@ -96,7 +104,8 @@ def _fetch_all(sql: str, binds: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fetch_batch(
-    sql: str, binds: dict[str, Any], batch_size: int, batch_offset: int
+    sql: str, binds: dict[str, Any], batch_size: int, batch_offset: int,
+    db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Return a fixed-size batch starting at batch_offset.
 
@@ -107,7 +116,7 @@ def _fetch_batch(
     paginated_sql = _wrap_rownum(sql)
     page_binds = {**binds, "_max_row": batch_offset + batch_size, "_min_row": batch_offset}
 
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         total = _get_count(conn, count_sql, binds)
         columns, data = _execute_and_map(conn, paginated_sql, page_binds)
 
@@ -123,12 +132,14 @@ def _fetch_batch(
     }
 
 
-def _fetch_top_n(sql: str, binds: dict[str, Any], top_n: int) -> dict[str, Any]:
+def _fetch_top_n(
+    sql: str, binds: dict[str, Any], top_n: int, db_alias: str | None = None,
+) -> dict[str, Any]:
     """Return the first N rows only (no full count query for performance)."""
     top_sql = f"SELECT * FROM ({sql}) WHERE ROWNUM <= :_top_n"
     page_binds = {**binds, "_top_n": top_n}
 
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         columns, data = _execute_and_map(conn, top_sql, page_binds)
 
     return {
@@ -138,11 +149,13 @@ def _fetch_top_n(sql: str, binds: dict[str, Any], top_n: int) -> dict[str, Any]:
     }
 
 
-def _fetch_one(sql: str, binds: dict[str, Any]) -> dict[str, Any]:
+def _fetch_one(
+    sql: str, binds: dict[str, Any], db_alias: str | None = None,
+) -> dict[str, Any]:
     """Return exactly one row. Raises ValueError if no rows found."""
     top_sql = f"SELECT * FROM ({sql}) WHERE ROWNUM <= 1"
 
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         columns, data = _execute_and_map(conn, top_sql, binds)
 
     if not data:

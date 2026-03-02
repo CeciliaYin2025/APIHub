@@ -87,6 +87,14 @@ a:hover { text-decoration: underline; }
 }
 .top-header .page-title { font-size: 1.1rem; font-weight: 600; }
 .top-header .header-actions { display: flex; align-items: center; gap: 12px; }
+.db-selector { display: flex; align-items: center; gap: 6px; }
+.db-selector label { font-size: .8rem; font-weight: 600; color: var(--gray-500); }
+.db-selector select {
+  padding: 4px 8px; border: 1px solid var(--gray-300); border-radius: 4px;
+  font-size: .85rem; background: #fff; color: var(--gray-800); cursor: pointer;
+  min-width: 120px;
+}
+.db-selector select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-light); }
 .top-header .user-badge {
   background: var(--primary-light); color: var(--primary); padding: 4px 12px;
   border-radius: 20px; font-size: .85rem; font-weight: 500;

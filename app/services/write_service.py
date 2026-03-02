@@ -27,15 +27,18 @@ def execute_write(
     table: str,
     data: list[dict[str, Any]],
     where: dict[str, Any] | None = None,
+    db_alias: str | None = None,
 ) -> int:
     """Execute a DML operation and return the number of affected rows.
 
-    This is called either directly (sync) or from Celery tasks (async).
+    Args:
+        db_alias: Database alias to execute against. ``None`` uses the first
+                  registered database (backward compatible).
     """
     table = validate_table_name(table)
     total_affected = 0
 
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         cursor = conn.cursor()
         try:
             if operation == "insert":
@@ -112,6 +115,7 @@ def _do_delete(cursor, table: str, where: dict[str, Any] | None) -> int:
 def execute_batch_write(
     table: str,
     operations: list[dict[str, Any]],
+    db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Execute multiple DML operations within a single transaction.
 
@@ -122,13 +126,16 @@ def execute_batch_write(
 
     If ANY operation fails the entire transaction is rolled back.
 
+    Args:
+        db_alias: Database alias to execute against.
+
     Returns a summary with per-operation results.
     """
     table = validate_table_name(table)
     results: list[dict[str, Any]] = []
     total_affected = 0
 
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         cursor = conn.cursor()
         try:
             for idx, op in enumerate(operations):

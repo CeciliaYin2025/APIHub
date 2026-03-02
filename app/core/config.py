@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # SQL definitions
     sql_definitions_dir: str = "app/sql_definitions"
 
+    # Database definitions (multi-database support)
+    database_definitions_dir: str = "app/database_definitions"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

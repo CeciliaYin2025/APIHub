@@ -9,8 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1 import auth, health, procedures, queries, schemas, writes
+from app.api.v1 import auth, databases, health, procedures, queries, schemas, writes
 from app.core.config import settings
+from app.db.multi_pool import db_registry
 from app.db.oracle_pool import close_pool, init_pool
 from app.middleware.rate_limiter import RateLimiterMiddleware
 from app.services.sql_registry import sql_registry
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     logger.info("Starting Oracle API Hub v%s", settings.api_version)
+    db_registry.load()
     init_pool()
     sql_registry.load()
     yield
@@ -52,8 +54,13 @@ app.add_middleware(
 app.add_middleware(RateLimiterMiddleware)
 
 # ── Routers ──────────────────────────────────────────────────────────────────
+# Database-independent endpoints
 app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(auth.router, prefix=settings.api_prefix)
+app.include_router(databases.router, prefix=settings.api_prefix)
+
+# These routers contain both global paths (e.g. /queries/definitions)
+# and database-scoped paths (e.g. /{db}/queries/execute)
 app.include_router(queries.router, prefix=settings.api_prefix)
 app.include_router(procedures.router, prefix=settings.api_prefix)
 app.include_router(writes.router, prefix=settings.api_prefix)

@@ -1,7 +1,10 @@
 """Oracle connection pool management using cx_Oracle.
 
-Uses cx_Oracle SessionPool for efficient connection reuse, which is critical
-for Oracle 11g compatibility (no async driver available).
+This module now delegates to :pymod:`app.db.multi_pool` for actual pool
+management.  The legacy helper functions (``init_pool``, ``close_pool``,
+``get_connection``, ``get_cursor``) are retained for backward compatibility
+and always operate on the **first registered database** (or the ``default``
+alias when using the legacy single-DB environment variable).
 """
 
 import logging
@@ -10,66 +13,52 @@ from typing import Generator
 
 import cx_Oracle
 
-from app.core.config import settings
+from app.db.multi_pool import db_registry
 
 logger = logging.getLogger(__name__)
 
-_pool: cx_Oracle.SessionPool | None = None
+
+def _default_alias() -> str:
+    """Return the first (or only) registered database alias."""
+    aliases = db_registry.aliases()
+    if not aliases:
+        raise RuntimeError("No database configurations loaded. Check database_definitions_dir.")
+    return aliases[0]
 
 
-def init_pool() -> cx_Oracle.SessionPool:
-    """Initialize the Oracle connection pool. Called at application startup."""
-    global _pool
-    if _pool is not None:
-        return _pool
+def init_pool() -> None:
+    """Initialise pools for **all** registered databases.
 
-    logger.info("Initializing Oracle connection pool (DSN: %s)", settings.oracle_dsn)
-    _pool = cx_Oracle.SessionPool(
-        user=settings.oracle_user,
-        password=settings.oracle_password,
-        dsn=settings.oracle_dsn,
-        min=settings.oracle_pool_min,
-        max=settings.oracle_pool_max,
-        increment=settings.oracle_pool_increment,
-        encoding="UTF-8",
-        threaded=True,
-        getmode=cx_Oracle.SPOOL_ATTRVAL_WAIT,
-    )
-    logger.info("Oracle pool created (min=%d, max=%d)", settings.oracle_pool_min, settings.oracle_pool_max)
-    return _pool
+    Called at application startup and by Celery workers before executing
+    their first task.
+    """
+    # Ensure configs are loaded (idempotent — skips if already loaded).
+    if not db_registry.aliases():
+        db_registry.load()
+    db_registry.init_all_pools()
 
 
 def close_pool() -> None:
-    """Close the Oracle connection pool. Called at application shutdown."""
-    global _pool
-    if _pool is not None:
-        _pool.close()
-        _pool = None
-        logger.info("Oracle pool closed")
+    """Close every managed pool. Called at application shutdown."""
+    db_registry.close_all_pools()
 
 
 @contextmanager
-def get_connection() -> Generator[cx_Oracle.Connection, None, None]:
-    """Acquire a connection from the pool and release it when done.
+def get_connection(db_alias: str | None = None) -> Generator[cx_Oracle.Connection, None, None]:
+    """Acquire a connection from the pool identified by *db_alias*.
 
-    Usage:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM DUAL")
+    If *db_alias* is ``None``, the first registered database is used
+    (backward-compatible behaviour).
     """
-    if _pool is None:
-        raise RuntimeError("Oracle pool is not initialized. Call init_pool() first.")
-    conn = _pool.acquire()
-    try:
+    alias = db_alias or _default_alias()
+    with db_registry.get_connection(alias) as conn:
         yield conn
-    finally:
-        _pool.release(conn)
 
 
 @contextmanager
-def get_cursor() -> Generator[cx_Oracle.Cursor, None, None]:
+def get_cursor(db_alias: str | None = None) -> Generator[cx_Oracle.Cursor, None, None]:
     """Convenience: acquire a connection and return a cursor."""
-    with get_connection() as conn:
+    with get_connection(db_alias) as conn:
         cursor = conn.cursor()
         try:
             yield cursor

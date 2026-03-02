@@ -1,11 +1,12 @@
 """Endpoints for writing data back to Oracle (INSERT/UPDATE/DELETE).
 
-Supports synchronous and asynchronous (Celery) execution modes.
-Batch endpoint wraps multiple operations in a single transaction.
+Write operations require a ``{db}`` path parameter.
+Task status lookup is database-independent (Celery task ID is global).
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.v1.databases import get_db_alias
 from app.models.user import User
 from app.schemas.query import (
     BatchWriteRequest,
@@ -18,12 +19,35 @@ from app.services.auth_service import PermissionChecker, get_current_user
 from app.services.write_service import BatchWriteError, execute_batch_write, execute_write
 from app.tasks.write_tasks import async_write
 
-router = APIRouter(prefix="/writes", tags=["Writes"])
+router = APIRouter(tags=["Writes"])
 
 
-@router.post("/execute", response_model=WriteResponse)
-def execute(request: WriteRequest, current_user: User = Depends(get_current_user)):
-    """Execute a write operation (sync or async)."""
+# ── Task status (database-independent) ───────────────────────────────────
+
+
+@router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
+def get_task_status(task_id: str, _current_user: User = Depends(get_current_user)):
+    """Check the status of an async write or procedure task."""
+    from app.tasks.celery_app import celery_app
+
+    result = celery_app.AsyncResult(task_id)
+    return TaskStatusResponse(
+        task_id=task_id,
+        status=result.status,
+        result=result.result if result.ready() else None,
+    )
+
+
+# ── Write operations (database-specific) ─────────────────────────────────
+
+
+@router.post("/{db}/writes/execute", response_model=WriteResponse)
+def execute(
+    request: WriteRequest,
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+):
+    """Execute a write operation (sync or async) against the specified database."""
     resource = f"table:{request.table}"
     checker = PermissionChecker(resource, "write")
     checker(current_user)
@@ -34,6 +58,7 @@ def execute(request: WriteRequest, current_user: User = Depends(get_current_user
             table=request.table,
             data=request.data,
             where=request.where,
+            db_alias=db,
         )
         return WriteResponse(
             operation=request.operation,
@@ -47,6 +72,7 @@ def execute(request: WriteRequest, current_user: User = Depends(get_current_user
             table=request.table,
             data=request.data,
             where=request.where,
+            db_alias=db,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -60,14 +86,16 @@ def execute(request: WriteRequest, current_user: User = Depends(get_current_user
     )
 
 
-@router.post("/batch", response_model=BatchWriteResponse)
-def batch_execute(request: BatchWriteRequest, current_user: User = Depends(get_current_user)):
+@router.post("/{db}/writes/batch", response_model=BatchWriteResponse)
+def batch_execute(
+    request: BatchWriteRequest,
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+):
     """Execute multiple DML operations within a single database transaction.
 
-    All operations target the same table. If ANY operation fails, the entire
-    transaction is **rolled back** — no partial writes are committed.
-
-    Supports async mode via Celery for heavy batch workloads.
+    All operations target the same table on the specified database.
+    If ANY operation fails, the entire transaction is **rolled back**.
     """
     resource = f"table:{request.table}"
     checker = PermissionChecker(resource, "write")
@@ -78,7 +106,7 @@ def batch_execute(request: BatchWriteRequest, current_user: User = Depends(get_c
     if request.async_mode:
         from app.tasks.write_tasks import async_batch_write
 
-        task = async_batch_write.delay(table=request.table, operations=ops)
+        task = async_batch_write.delay(table=request.table, operations=ops, db_alias=db)
         return BatchWriteResponse(
             table=request.table,
             task_id=task.id,
@@ -86,7 +114,7 @@ def batch_execute(request: BatchWriteRequest, current_user: User = Depends(get_c
         )
 
     try:
-        result = execute_batch_write(table=request.table, operations=ops)
+        result = execute_batch_write(table=request.table, operations=ops, db_alias=db)
     except BatchWriteError as e:
         raise HTTPException(status_code=400, detail={
             "message": str(e),
@@ -106,17 +134,4 @@ def batch_execute(request: BatchWriteRequest, current_user: User = Depends(get_c
         committed=result["committed"],
         results=result["results"],
         message="Batch transaction committed successfully",
-    )
-
-
-@router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
-def get_task_status(task_id: str, _current_user: User = Depends(get_current_user)):
-    """Check the status of an async write or procedure task."""
-    from app.tasks.celery_app import celery_app
-
-    result = celery_app.AsyncResult(task_id)
-    return TaskStatusResponse(
-        task_id=task_id,
-        status=result.status,
-        result=result.result if result.ready() else None,
     )

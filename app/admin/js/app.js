@@ -8,6 +8,8 @@
 const API = '/api/v1';
 let token = localStorage.getItem('hub_token') || '';
 let currentUser = null;
+let currentDb = localStorage.getItem('hub_current_db') || '';
+let databases = [];
 
 /* ── Bootstrap ────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
@@ -28,10 +30,11 @@ function showLogin() {
   document.getElementById('appLayout').classList.add('hidden');
 }
 
-function showApp() {
+async function showApp() {
   document.getElementById('loginPage').classList.add('hidden');
   document.getElementById('appLayout').classList.remove('hidden');
   document.getElementById('userBadge').textContent = currentUser?.username || '?';
+  await loadDatabases();
   navigateTo('dashboard');
 }
 
@@ -73,6 +76,44 @@ async function fetchCurrentUser() {
     localStorage.removeItem('hub_token');
     return false;
   }
+}
+
+/* ── Database selector ───────────────────────────────────────────────── */
+async function loadDatabases() {
+  try {
+    databases = await api('GET', '/databases');
+  } catch {
+    databases = [];
+  }
+  const sel = document.getElementById('dbSelect');
+  sel.innerHTML = '';
+  if (databases.length === 0) {
+    sel.innerHTML = '<option value="">(no databases)</option>';
+    currentDb = '';
+  } else {
+    databases.forEach(db => {
+      const opt = document.createElement('option');
+      opt.value = db.alias;
+      opt.textContent = db.alias + (db.description ? ' — ' + db.description : '');
+      sel.appendChild(opt);
+    });
+    // Restore last selection if valid
+    if (currentDb && databases.some(d => d.alias === currentDb)) {
+      sel.value = currentDb;
+    } else {
+      currentDb = databases[0].alias;
+      sel.value = currentDb;
+    }
+    localStorage.setItem('hub_current_db', currentDb);
+  }
+  sel.addEventListener('change', () => {
+    currentDb = sel.value;
+    localStorage.setItem('hub_current_db', currentDb);
+  });
+}
+
+function dbPrefix() {
+  return currentDb ? `/${currentDb}` : '';
 }
 
 /* ── API helper ───────────────────────────────────────────────────────── */
@@ -207,6 +248,10 @@ async function renderDashboard() {
           <div class="stat-info"><h3>SQL Definitions</h3><div class="stat-value">${defs.length}</div></div>
           <div class="stat-icon blue">&#9998;</div>
         </div>
+        <div class="stat-card">
+          <div class="stat-info"><h3>Databases</h3><div class="stat-value">${databases.length}</div></div>
+          <div class="stat-icon green">&#9741;</div>
+        </div>
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
@@ -235,9 +280,23 @@ async function renderDashboard() {
       </div>
 
       <div class="card mt-4">
+        <div class="card-header"><h2>Databases (${databases.length})</h2></div>
+        <div class="card-body no-pad">
+          <table class="data-table"><thead><tr><th>Alias</th><th>Description</th><th>DSN</th><th>User</th></tr></thead>
+          <tbody>${databases.map(d => `<tr>
+            <td><strong>${esc(d.alias)}</strong>${d.alias === currentDb ? ' <span class="badge badge-blue">Active</span>' : ''}</td>
+            <td>${esc(d.description || '—')}</td>
+            <td><code>${esc(d.dsn)}</code></td>
+            <td>${esc(d.user)}</td>
+          </tr>`).join('')}</tbody></table>
+        </div>
+      </div>
+
+      <div class="card mt-4">
         <div class="card-header"><h2>System Info</h2></div>
         <div class="card-body">
           <p><strong>Current User:</strong> ${esc(currentUser?.username)} ${currentUser?.is_superuser ? '<span class="badge badge-blue">Superuser</span>' : ''}</p>
+          <p class="mt-2"><strong>Active Database:</strong> <code>${esc(currentDb)}</code></p>
           <p class="mt-2"><strong>API Base:</strong> <code>${API}</code></p>
           <p class="mt-2"><strong>Swagger UI:</strong> <a href="/docs" target="_blank">/docs</a></p>
         </div>
@@ -648,7 +707,7 @@ window.executeQuery = async function() {
   resultArea.innerHTML = '<div class="spinner"></div>';
 
   try {
-    const result = await api('POST', '/queries/execute', body);
+    const result = await api('POST', `${dbPrefix()}/queries/execute`, body);
     const meta = { ...result };
     delete meta.data;
     delete meta.columns;
@@ -724,7 +783,7 @@ window.executeProcedure = async function() {
   const isAsync = document.getElementById('pcAsync').checked;
 
   const body = { name, params, out_params: outParams, is_function: isFunction };
-  const endpoint = isAsync ? '/procedures/execute-async' : '/procedures/execute';
+  const endpoint = isAsync ? `${dbPrefix()}/procedures/execute-async` : `${dbPrefix()}/procedures/execute`;
   const resultArea = document.getElementById('pcResult');
   resultArea.innerHTML = '<div class="spinner"></div>';
 
@@ -803,7 +862,7 @@ window.executeWrite = async function() {
   resultArea.innerHTML = '<div class="spinner"></div>';
 
   try {
-    const result = await api('POST', '/writes/execute', body);
+    const result = await api('POST', `${dbPrefix()}/writes/execute`, body);
     resultArea.innerHTML = `
       <div class="mb-4"><span class="badge badge-green">SUCCESS</span></div>
       <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
@@ -850,7 +909,7 @@ window.checkTask = async function() {
   resultArea.innerHTML = '<div class="spinner"></div>';
 
   try {
-    const result = await api('GET', `/writes/tasks/${encodeURIComponent(taskId)}`);
+    const result = await api('GET', `/tasks/${encodeURIComponent(taskId)}`);
     const statusBadge = {
       SUCCESS: 'badge-green', FAILURE: 'badge-red', PENDING: 'badge-yellow',
       STARTED: 'badge-blue', RETRY: 'badge-yellow',
@@ -917,7 +976,7 @@ window.dmLoadSchema = async function() {
   resultArea.innerHTML = '';
 
   try {
-    _dmSchema = await api('GET', `/schemas/describe/${encodeURIComponent(table)}`);
+    _dmSchema = await api('GET', `${dbPrefix()}/schemas/describe/${encodeURIComponent(table)}`);
     _dmRows = [];
     _dmRowCounter = 0;
 
@@ -1100,7 +1159,7 @@ window.dmExecute = async function(asyncMode) {
   resultArea.innerHTML = '<div style="text-align:center;padding:20px"><div class="spinner"></div></div>';
 
   try {
-    const result = await api('POST', '/writes/batch', body);
+    const result = await api('POST', `${dbPrefix()}/writes/batch`, body);
     if (result.task_id) {
       resultArea.innerHTML = `
         <div class="card mt-4">

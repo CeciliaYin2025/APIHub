@@ -17,11 +17,12 @@ def async_procedure(
     params: dict[str, Any],
     out_params: list[str] | None = None,
     is_function: bool = False,
+    db_alias: str | None = None,
 ) -> dict:
     """Execute a procedure/function asynchronously via Celery."""
     init_pool()
     try:
-        result = execute_procedure(name, params, out_params, is_function)
+        result = execute_procedure(name, params, out_params, is_function, db_alias=db_alias)
         return {"success": True, "name": name, **result}
     except Exception as exc:
         logger.exception("Async procedure call failed (attempt %d)", self.request.retries + 1)
