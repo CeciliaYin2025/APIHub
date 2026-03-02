@@ -1,7 +1,7 @@
 """SQLAlchemy engine and session for ORM-based operations (user/role management).
 
-The ORM layer is only used for the internal permission tables.
-All dynamic SQL execution uses cx_Oracle directly via oracle_pool.
+The ORM layer is only used for the internal permission tables (PostgreSQL).
+All dynamic SQL execution against Oracle uses oracledb directly via oracle_pool.
 """
 
 from sqlalchemy import create_engine
@@ -9,12 +9,15 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import settings
 
-SQLALCHEMY_DATABASE_URL = f"oracle+cx_oracle://{settings.oracle_user}:{settings.oracle_password}@{settings.oracle_dsn}"
+SQLALCHEMY_DATABASE_URL = (
+    f"postgresql://{settings.postgres_user}:{settings.postgres_password}"
+    f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
+)
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    pool_size=settings.oracle_pool_min,
-    max_overflow=settings.oracle_pool_max - settings.oracle_pool_min,
+    pool_size=5,
+    max_overflow=10,
     pool_pre_ping=True,
 )
 

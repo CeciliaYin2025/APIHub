@@ -1,0 +1,11 @@
+name: sglp0021_temp
+description: "Query currency conversion rates from YSC.SGLP0021_TEMP"
+sql: |
+  SELECT source_from, from_currency, to_currency,
+         from_date, to_date, conversion_rate,
+         mode_flag, imported_date, imported_flag,
+         user_conversion_type, batch_number
+  FROM ysc.SGLP0021_TEMP
+  ORDER BY from_date DESC
+params: {}
+permission: "query:sglp0021_temp"

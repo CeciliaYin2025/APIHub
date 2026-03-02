@@ -4,13 +4,21 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Oracle Database
+    # Oracle Database (data source/target)
     oracle_dsn: str = "localhost:1521/orcl"
     oracle_user: str = "api_user"
     oracle_password: str = "changeme"
     oracle_pool_min: int = 2
     oracle_pool_max: int = 10
     oracle_pool_increment: int = 1
+    oracle_client_dir: str = ""  # Oracle Instant Client path for thick mode (required for 11g)
+
+    # PostgreSQL (internal user & permission management)
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_db: str = "api_hub"
+    postgres_user: str = "api_hub"
+    postgres_password: str = "changeme"
 
     # JWT
     secret_key: str = "replace-with-a-secure-random-string"

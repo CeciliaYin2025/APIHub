@@ -15,12 +15,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Generator
 
-import cx_Oracle
+import oracledb as cx_Oracle
 import yaml
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Enable thick mode for Oracle 11g compatibility
+_thick_mode_initialized = False
+
+
+def _ensure_thick_mode() -> None:
+    """Initialise Oracle Client (thick mode) once, if configured."""
+    global _thick_mode_initialized
+    if _thick_mode_initialized:
+        return
+    lib_dir = settings.oracle_client_dir or None
+    try:
+        cx_Oracle.init_oracle_client(lib_dir=lib_dir)
+        logger.info("Oracle thick mode enabled (lib_dir=%s)", lib_dir)
+    except cx_Oracle.ProgrammingError:
+        # Already initialised (e.g. in Celery worker)
+        pass
+    _thick_mode_initialized = True
 
 _ALIAS_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 
@@ -141,11 +159,13 @@ class DatabaseRegistry:
 
     def init_all_pools(self) -> None:
         """Create a ``cx_Oracle.SessionPool`` for every registered database."""
+        _ensure_thick_mode()
         for alias, cfg in self._configs.items():
             self.init_pool(alias)
 
     def init_pool(self, alias: str) -> cx_Oracle.SessionPool:
         """Initialise (or return existing) pool for *alias*."""
+        _ensure_thick_mode()
         if alias in self._pools:
             return self._pools[alias]
 

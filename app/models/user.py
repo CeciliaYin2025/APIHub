@@ -31,8 +31,8 @@ class User(Base):
     full_name = Column(String(200))
     is_active = Column(Boolean, default=True, nullable=False)
     is_superuser = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, server_default=func.sysdate())
-    updated_at = Column(DateTime, server_default=func.sysdate(), onupdate=func.sysdate())
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     roles = relationship("Role", secondary=user_roles, back_populates="users", lazy="joined")
 
@@ -43,7 +43,7 @@ class Role(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), unique=True, nullable=False)
     description = Column(Text)
-    created_at = Column(DateTime, server_default=func.sysdate())
+    created_at = Column(DateTime, server_default=func.now())
 
     users = relationship("User", secondary=user_roles, back_populates="roles")
     permissions = relationship("Permission", secondary=role_permissions, back_populates="roles", lazy="joined")

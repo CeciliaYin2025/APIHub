@@ -11,7 +11,7 @@ import logging
 from contextlib import contextmanager
 from typing import Generator
 
-import cx_Oracle
+import oracledb as cx_Oracle
 
 from app.db.multi_pool import db_registry
 

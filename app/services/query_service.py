@@ -11,7 +11,7 @@ Supports five fetch modes:
 import logging
 from typing import Any
 
-import cx_Oracle
+import oracledb as cx_Oracle
 
 from app.db.oracle_pool import get_connection
 from app.services.sql_registry import SqlDefinition
@@ -71,7 +71,7 @@ def _fetch_page(
 
     count_sql = f"SELECT COUNT(*) FROM ({sql})"
     paginated_sql = _wrap_rownum(sql)
-    page_binds = {**binds, "_max_row": offset + page_size, "_min_row": offset}
+    page_binds = {**binds, "pag_max_row": offset + page_size, "pag_min_row": offset}
 
     with get_connection(db_alias) as conn:
         total = _get_count(conn, count_sql, binds)
@@ -114,7 +114,7 @@ def _fetch_batch(
     """
     count_sql = f"SELECT COUNT(*) FROM ({sql})"
     paginated_sql = _wrap_rownum(sql)
-    page_binds = {**binds, "_max_row": batch_offset + batch_size, "_min_row": batch_offset}
+    page_binds = {**binds, "pag_max_row": batch_offset + batch_size, "pag_min_row": batch_offset}
 
     with get_connection(db_alias) as conn:
         total = _get_count(conn, count_sql, binds)
@@ -136,8 +136,8 @@ def _fetch_top_n(
     sql: str, binds: dict[str, Any], top_n: int, db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Return the first N rows only (no full count query for performance)."""
-    top_sql = f"SELECT * FROM ({sql}) WHERE ROWNUM <= :_top_n"
-    page_binds = {**binds, "_top_n": top_n}
+    top_sql = f"SELECT * FROM ({sql}) WHERE ROWNUM <= :pag_top_n"
+    page_binds = {**binds, "pag_top_n": top_n}
 
     with get_connection(db_alias) as conn:
         columns, data = _execute_and_map(conn, top_sql, page_binds)
@@ -178,9 +178,9 @@ def _wrap_rownum(sql: str) -> str:
             SELECT inner_.*, ROWNUM rnum_ FROM (
                 {sql}
             ) inner_
-            WHERE ROWNUM <= :_max_row
+            WHERE ROWNUM <= :pag_max_row
         )
-        WHERE rnum_ > :_min_row
+        WHERE rnum_ > :pag_min_row
     """
 
 

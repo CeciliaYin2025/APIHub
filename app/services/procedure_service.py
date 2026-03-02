@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-import cx_Oracle
+import oracledb as cx_Oracle
 
 from app.db.oracle_pool import get_connection
 
