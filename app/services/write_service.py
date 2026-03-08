@@ -1,4 +1,4 @@
-"""Service layer for writing data back to Oracle (INSERT/UPDATE/DELETE).
+"""Service layer for writing data (INSERT/UPDATE/DELETE) to any supported engine.
 
 Supports both synchronous execution and async mode via Celery task queue.
 Uses parameterized statements only — never string-interpolated SQL.
@@ -8,16 +8,22 @@ import logging
 import re
 from typing import Any
 
-from app.db.oracle_pool import get_connection
+from app.db.oracle_pool import get_connection, get_dialect_for
 
 logger = logging.getLogger(__name__)
 
-# Strict table name validation to prevent injection
+# Fallback table name regex (used when no dialect is available)
 _TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$.#]{0,127}$")
 
 
-def validate_table_name(table: str) -> str:
-    if not _TABLE_RE.match(table):
+def validate_table_name(table: str, db_alias: str | None = None) -> str:
+    """Validate table name against the dialect's regex (or fallback)."""
+    try:
+        dialect = get_dialect_for(db_alias)
+        pattern = dialect.table_name_regex()
+    except Exception:
+        pattern = _TABLE_RE
+    if not pattern.match(table):
         raise ValueError(f"Invalid table name: {table}")
     return table
 
@@ -35,18 +41,19 @@ def execute_write(
         db_alias: Database alias to execute against. ``None`` uses the first
                   registered database (backward compatible).
     """
-    table = validate_table_name(table)
+    table = validate_table_name(table, db_alias)
+    dialect = get_dialect_for(db_alias)
     total_affected = 0
 
     with get_connection(db_alias) as conn:
         cursor = conn.cursor()
         try:
             if operation == "insert":
-                total_affected = _do_insert(cursor, table, data)
+                total_affected = _do_insert(cursor, table, data, dialect)
             elif operation == "update":
-                total_affected = _do_update(cursor, table, data, where)
+                total_affected = _do_update(cursor, table, data, where, dialect)
             elif operation == "delete":
-                total_affected = _do_delete(cursor, table, where)
+                total_affected = _do_delete(cursor, table, where, dialect)
             else:
                 raise ValueError(f"Unsupported operation: {operation}")
             conn.commit()
@@ -59,32 +66,33 @@ def execute_write(
     return total_affected
 
 
-def _do_insert(cursor, table: str, data: list[dict[str, Any]]) -> int:
+def _do_insert(cursor: Any, table: str, data: list[dict[str, Any]], dialect: Any) -> int:
     """Batch insert using executemany for performance."""
     if not data:
         return 0
     columns = list(data[0].keys())
     col_str = ", ".join(columns)
-    bind_str = ", ".join(f":{c}" for c in columns)
+    bind_str = ", ".join(dialect.insert_bind_placeholder(c) for c in columns)
     sql = f"INSERT INTO {table} ({col_str}) VALUES ({bind_str})"
+    sql, _ = dialect.convert_bind_params(sql, {})
     cursor.executemany(sql, data)
     return cursor.rowcount
 
 
-def _do_update(cursor, table: str, data: list[dict[str, Any]], where: dict[str, Any] | None) -> int:
+def _do_update(cursor: Any, table: str, data: list[dict[str, Any]], where: dict[str, Any] | None, dialect: Any) -> int:
     """Update rows. Each dict in data provides SET values; where provides filter."""
     if not data:
         return 0
 
     affected = 0
     for row in data:
-        set_cols = [f"{k} = :set_{k}" for k in row]
+        set_cols = [f"{k} = {dialect.where_bind_placeholder(f'set_{k}')}" for k in row]
         set_clause = ", ".join(set_cols)
         binds: dict[str, Any] = {f"set_{k}": v for k, v in row.items()}
 
         where_clause = "1=1"
         if where:
-            where_parts = [f"{k} = :wh_{k}" for k in where]
+            where_parts = [f"{k} = {dialect.where_bind_placeholder(f'wh_{k}')}" for k in where]
             where_clause = " AND ".join(where_parts)
             binds.update({f"wh_{k}": v for k, v in where.items()})
 
@@ -95,12 +103,12 @@ def _do_update(cursor, table: str, data: list[dict[str, Any]], where: dict[str, 
     return affected
 
 
-def _do_delete(cursor, table: str, where: dict[str, Any] | None) -> int:
+def _do_delete(cursor: Any, table: str, where: dict[str, Any] | None, dialect: Any) -> int:
     """Delete rows matching the WHERE clause."""
     where_clause = "1=1"
     binds: dict[str, Any] = {}
     if where:
-        where_parts = [f"{k} = :wh_{k}" for k in where]
+        where_parts = [f"{k} = {dialect.where_bind_placeholder(f'wh_{k}')}" for k in where]
         where_clause = " AND ".join(where_parts)
         binds = {f"wh_{k}": v for k, v in where.items()}
 
@@ -131,7 +139,8 @@ def execute_batch_write(
 
     Returns a summary with per-operation results.
     """
-    table = validate_table_name(table)
+    table = validate_table_name(table, db_alias)
+    dialect = get_dialect_for(db_alias)
     results: list[dict[str, Any]] = []
     total_affected = 0
 
@@ -144,11 +153,11 @@ def execute_batch_write(
                 where = op.get("where")
 
                 if operation == "insert":
-                    affected = _do_insert(cursor, table, data)
+                    affected = _do_insert(cursor, table, data, dialect)
                 elif operation == "update":
-                    affected = _do_update(cursor, table, data, where)
+                    affected = _do_update(cursor, table, data, where, dialect)
                 elif operation == "delete":
-                    affected = _do_delete(cursor, table, where)
+                    affected = _do_delete(cursor, table, where, dialect)
                 else:
                     raise ValueError(f"Operation #{idx}: unsupported operation '{operation}'")
 

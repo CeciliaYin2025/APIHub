@@ -1,14 +1,13 @@
-"""Service layer for introspecting Oracle table/view schemas.
+"""Service layer for introspecting table/view schemas across database engines.
 
-Queries Oracle data dictionary views (ALL_TAB_COLUMNS, ALL_CONSTRAINTS,
-ALL_CONS_COLUMNS) to retrieve column metadata and primary key information.
-Compatible with Oracle 11g.
+Uses the dialect system to generate engine-appropriate introspection queries
+(Oracle ALL_TAB_COLUMNS, PG/MSSQL information_schema, etc.).
 """
 
 import logging
 from typing import Any
 
-from app.db.oracle_pool import get_connection
+from app.db.oracle_pool import get_connection, get_dialect_for
 from app.services.write_service import validate_table_name
 
 logger = logging.getLogger(__name__)
@@ -23,7 +22,8 @@ def describe_table(table: str, db_alias: str | None = None) -> dict[str, Any]:
     Args:
         db_alias: Database alias to query against.
     """
-    table = validate_table_name(table)
+    table = validate_table_name(table, db_alias)
+    dialect = get_dialect_for(db_alias)
 
     # Split owner.table if qualified
     if "." in table:
@@ -32,12 +32,11 @@ def describe_table(table: str, db_alias: str | None = None) -> dict[str, Any]:
         owner = None
         tname = table
 
-    owner_upper = owner.upper() if owner else None
-    tname_upper = tname.upper()
+    owner_norm, tname_norm = dialect.normalize_table_parts(owner, tname)
 
     with get_connection(db_alias) as conn:
-        columns = _get_columns(conn, owner_upper, tname_upper)
-        pk_columns = _get_primary_key(conn, owner_upper, tname_upper)
+        columns = _get_columns(conn, owner_norm, tname_norm, dialect)
+        pk_columns = _get_primary_key(conn, owner_norm, tname_norm, dialect)
 
     if not columns:
         raise ValueError(f"Table or view '{table}' not found or not accessible")
@@ -48,34 +47,18 @@ def describe_table(table: str, db_alias: str | None = None) -> dict[str, Any]:
 
     return {
         "table": table,
-        "owner": owner_upper,
-        "table_name": tname_upper,
+        "owner": owner_norm,
+        "table_name": tname_norm,
         "column_count": len(columns),
         "primary_keys": pk_columns,
         "columns": columns,
     }
 
 
-def _get_columns(conn, owner: str | None, table_name: str) -> list[dict[str, Any]]:
-    """Query ALL_TAB_COLUMNS for column metadata."""
-    if owner:
-        sql = """
-            SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION,
-                   DATA_SCALE, NULLABLE, DATA_DEFAULT, COLUMN_ID
-            FROM ALL_TAB_COLUMNS
-            WHERE OWNER = :owner AND TABLE_NAME = :tname
-            ORDER BY COLUMN_ID
-        """
-        binds = {"owner": owner, "tname": table_name}
-    else:
-        sql = """
-            SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION,
-                   DATA_SCALE, NULLABLE, DATA_DEFAULT, COLUMN_ID
-            FROM ALL_TAB_COLUMNS
-            WHERE TABLE_NAME = :tname
-            ORDER BY COLUMN_ID
-        """
-        binds = {"tname": table_name}
+def _get_columns(conn: Any, owner: str | None, table_name: str, dialect: Any) -> list[dict[str, Any]]:
+    """Query column metadata using dialect-specific SQL."""
+    sql, binds = dialect.get_columns_sql(owner, table_name)
+    sql, binds = dialect.convert_bind_params(sql, binds)
 
     cursor = conn.cursor()
     try:
@@ -84,57 +67,13 @@ def _get_columns(conn, owner: str | None, table_name: str) -> list[dict[str, Any
     finally:
         cursor.close()
 
-    columns = []
-    for row in rows:
-        col_name, dtype, dlen, prec, scale, nullable, default_val, col_id = row
-        # Read LOB default values
-        if hasattr(default_val, "read"):
-            default_val = default_val.read()
-        if isinstance(default_val, str):
-            default_val = default_val.strip()
-
-        columns.append({
-            "name": col_name,
-            "data_type": dtype,
-            "data_length": dlen,
-            "data_precision": prec,
-            "data_scale": scale,
-            "nullable": nullable == "Y",
-            "default_value": default_val,
-            "column_id": col_id,
-            "is_pk": False,
-        })
-
-    return columns
+    return [dialect.parse_column_row(row) for row in rows]
 
 
-def _get_primary_key(conn, owner: str | None, table_name: str) -> list[str]:
-    """Query ALL_CONSTRAINTS + ALL_CONS_COLUMNS for primary key columns."""
-    if owner:
-        sql = """
-            SELECT cc.COLUMN_NAME
-            FROM ALL_CONSTRAINTS c
-            JOIN ALL_CONS_COLUMNS cc
-              ON c.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
-             AND c.OWNER = cc.OWNER
-            WHERE c.OWNER = :owner
-              AND c.TABLE_NAME = :tname
-              AND c.CONSTRAINT_TYPE = 'P'
-            ORDER BY cc.POSITION
-        """
-        binds = {"owner": owner, "tname": table_name}
-    else:
-        sql = """
-            SELECT cc.COLUMN_NAME
-            FROM ALL_CONSTRAINTS c
-            JOIN ALL_CONS_COLUMNS cc
-              ON c.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
-             AND c.OWNER = cc.OWNER
-            WHERE c.TABLE_NAME = :tname
-              AND c.CONSTRAINT_TYPE = 'P'
-            ORDER BY cc.POSITION
-        """
-        binds = {"tname": table_name}
+def _get_primary_key(conn: Any, owner: str | None, table_name: str, dialect: Any) -> list[str]:
+    """Query primary key columns using dialect-specific SQL."""
+    sql, binds = dialect.get_primary_key_sql(owner, table_name)
+    sql, binds = dialect.convert_bind_params(sql, binds)
 
     cursor = conn.cursor()
     try:

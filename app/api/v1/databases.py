@@ -22,5 +22,5 @@ def get_db_alias(db: str = Path(..., description="Database alias")) -> str:
 
 @router.get("")
 def list_databases(current_user: User = Depends(get_current_user)):
-    """List all configured Oracle database connections."""
+    """List all configured database connections."""
     return db_registry.list_databases()

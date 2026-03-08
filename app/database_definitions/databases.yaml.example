@@ -1,9 +1,12 @@
 # Oracle API Hub — 資料庫連線定義
-# 每個條目定義一個 Oracle 資料庫連線，alias 會成為 API 路徑的一部分。
+# 每個條目定義一個資料庫連線，alias 會成為 API 路徑的一部分。
 # 例如：alias 為 "hr_db" 時，查詢端點為 POST /api/v1/hr_db/queries/execute
 #
+# 支援的 db_type：oracle（預設）、postgresql、mssql
 # 密碼可使用環境變數覆蓋：DB_{ALIAS}_PASSWORD（alias 大寫）
 # 例如：DB_HR_DB_PASSWORD=secure_password
+
+# ── Oracle（預設，不需要指定 db_type）──────────────────────────────────
 
 - alias: hr_db
   description: "HR 人力資源資料庫"
@@ -22,3 +25,29 @@
   pool_min: 2
   pool_max: 5
   pool_increment: 1
+
+# ── PostgreSQL ─────────────────────────────────────────────────────────
+
+- alias: analytics_pg
+  db_type: postgresql
+  description: "分析用 PostgreSQL 資料庫"
+  host: "pg-analytics.company.com"
+  port: 5432
+  database: "analytics"
+  user: "api_reader"
+  password: "changeme"
+  pool_min: 2
+  pool_max: 10
+
+# ── MS SQL Server ──────────────────────────────────────────────────────
+
+- alias: warehouse_mssql
+  db_type: mssql
+  description: "資料倉儲 MS SQL Server"
+  host: "mssql-warehouse.company.com"
+  port: 1433
+  database: "warehouse"
+  user: "api_user"
+  password: "changeme"
+  pool_min: 2
+  pool_max: 10

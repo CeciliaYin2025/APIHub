@@ -1,4 +1,4 @@
-"""Service layer for executing SQL queries against Oracle via cx_Oracle pool.
+"""Service layer for executing SQL queries via engine-agnostic pool and dialect.
 
 Supports five fetch modes:
 - page   : paginated via page + page_size (default)
@@ -11,9 +11,7 @@ Supports five fetch modes:
 import logging
 from typing import Any
 
-import oracledb as cx_Oracle
-
-from app.db.oracle_pool import get_connection
+from app.db.oracle_pool import get_connection, get_dialect_for
 from app.services.sql_registry import SqlDefinition
 
 logger = logging.getLogger(__name__)
@@ -66,16 +64,17 @@ def _fetch_page(
     sql: str, binds: dict[str, Any], page: int, page_size: int,
     db_alias: str | None = None,
 ) -> dict[str, Any]:
-    """Paginated query using Oracle 11g compatible ROWNUM."""
+    """Paginated query using engine-specific pagination."""
+    dialect = get_dialect_for(db_alias)
     offset = (page - 1) * page_size
 
-    count_sql = f"SELECT COUNT(*) FROM ({sql})"
-    paginated_sql = _wrap_rownum(sql)
-    page_binds = {**binds, "pag_max_row": offset + page_size, "pag_min_row": offset}
+    count_sql = dialect.wrap_count(sql)
+    paginated_sql = dialect.wrap_paginated(sql)
+    page_binds = {**binds, **dialect.pagination_binds(offset, page_size)}
 
     with get_connection(db_alias) as conn:
-        total = _get_count(conn, count_sql, binds)
-        columns, data = _execute_and_map(conn, paginated_sql, page_binds)
+        total = _get_count(conn, count_sql, binds, dialect)
+        columns, data = _execute_and_map(conn, paginated_sql, page_binds, dialect)
 
     return {
         "columns": columns,
@@ -90,11 +89,12 @@ def _fetch_all(
     sql: str, binds: dict[str, Any], db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Return every row without pagination."""
-    count_sql = f"SELECT COUNT(*) FROM ({sql})"
+    dialect = get_dialect_for(db_alias)
+    count_sql = dialect.wrap_count(sql)
 
     with get_connection(db_alias) as conn:
-        total = _get_count(conn, count_sql, binds)
-        columns, data = _execute_and_map(conn, sql, binds)
+        total = _get_count(conn, count_sql, binds, dialect)
+        columns, data = _execute_and_map(conn, sql, binds, dialect)
 
     return {
         "columns": columns,
@@ -112,13 +112,14 @@ def _fetch_batch(
     Useful for cursor-style iteration over large datasets. The client keeps
     incrementing ``batch_offset`` by ``batch_size`` until ``has_more`` is False.
     """
-    count_sql = f"SELECT COUNT(*) FROM ({sql})"
-    paginated_sql = _wrap_rownum(sql)
-    page_binds = {**binds, "pag_max_row": batch_offset + batch_size, "pag_min_row": batch_offset}
+    dialect = get_dialect_for(db_alias)
+    count_sql = dialect.wrap_count(sql)
+    paginated_sql = dialect.wrap_paginated(sql)
+    page_binds = {**binds, **dialect.pagination_binds(batch_offset, batch_size)}
 
     with get_connection(db_alias) as conn:
-        total = _get_count(conn, count_sql, binds)
-        columns, data = _execute_and_map(conn, paginated_sql, page_binds)
+        total = _get_count(conn, count_sql, binds, dialect)
+        columns, data = _execute_and_map(conn, paginated_sql, page_binds, dialect)
 
     has_more = (batch_offset + batch_size) < total
 
@@ -136,11 +137,12 @@ def _fetch_top_n(
     sql: str, binds: dict[str, Any], top_n: int, db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Return the first N rows only (no full count query for performance)."""
-    top_sql = f"SELECT * FROM ({sql}) WHERE ROWNUM <= :pag_top_n"
-    page_binds = {**binds, "pag_top_n": top_n}
+    dialect = get_dialect_for(db_alias)
+    top_sql = dialect.wrap_top_n(sql)
+    page_binds = {**binds, **dialect.top_n_binds(top_n)}
 
     with get_connection(db_alias) as conn:
-        columns, data = _execute_and_map(conn, top_sql, page_binds)
+        columns, data = _execute_and_map(conn, top_sql, page_binds, dialect)
 
     return {
         "columns": columns,
@@ -153,10 +155,11 @@ def _fetch_one(
     sql: str, binds: dict[str, Any], db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Return exactly one row. Raises ValueError if no rows found."""
-    top_sql = f"SELECT * FROM ({sql}) WHERE ROWNUM <= 1"
+    dialect = get_dialect_for(db_alias)
+    top_sql = dialect.wrap_one(sql)
 
     with get_connection(db_alias) as conn:
-        columns, data = _execute_and_map(conn, top_sql, binds)
+        columns, data = _execute_and_map(conn, top_sql, binds, dialect)
 
     if not data:
         raise ValueError("Query returned no rows")
@@ -171,45 +174,37 @@ def _fetch_one(
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 
-def _wrap_rownum(sql: str) -> str:
-    """Wrap a SQL statement with Oracle 11g ROWNUM pagination."""
-    return f"""
-        SELECT * FROM (
-            SELECT inner_.*, ROWNUM rnum_ FROM (
-                {sql}
-            ) inner_
-            WHERE ROWNUM <= :pag_max_row
-        )
-        WHERE rnum_ > :pag_min_row
-    """
-
-
-def _get_count(conn, count_sql: str, binds: dict[str, Any]) -> int:
+def _get_count(conn: Any, count_sql: str, binds: dict[str, Any], dialect: Any) -> int:
+    converted_sql, converted_binds = dialect.convert_bind_params(count_sql, binds)
     cursor = conn.cursor()
     try:
-        cursor.execute(count_sql, binds)
+        cursor.execute(converted_sql, converted_binds)
         return cursor.fetchone()[0]
     finally:
         cursor.close()
 
 
 def _execute_and_map(
-    conn, sql: str, binds: dict[str, Any]
+    conn: Any, sql: str, binds: dict[str, Any], dialect: Any
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Execute SQL and return (columns, rows_as_dicts), filtering out RNUM_."""
+    """Execute SQL and return (columns, rows_as_dicts), filtering out pagination columns."""
+    converted_sql, converted_binds = dialect.convert_bind_params(sql, binds)
+    pag_col = dialect.pagination_column
     cursor = conn.cursor()
     try:
-        cursor.execute(sql, binds)
-        col_names = [desc[0] for desc in cursor.description if desc[0] != "RNUM_"]
+        cursor.execute(converted_sql, converted_binds)
+        col_names = [
+            desc[0] for desc in cursor.description
+            if pag_col is None or desc[0] != pag_col
+        ]
         rows = []
         for row in cursor:
             row_dict = {}
             for i, col in enumerate(cursor.description):
-                if col[0] == "RNUM_":
+                if pag_col is not None and col[0] == pag_col:
                     continue
                 value = row[i]
-                if isinstance(value, cx_Oracle.LOB):
-                    value = value.read()
+                value = dialect.convert_value(value)
                 row_dict[col[0]] = value
             rows.append(row_dict)
         return col_names, rows

@@ -1,14 +1,23 @@
 """Query endpoints — read tables/views as open data via registered SQL definitions.
 
-SQL definition management (list / reload) is database-independent.
-Query execution requires a ``{db}`` path parameter to target a specific database.
+SQL definitions are scoped by database alias. CRUD endpoints are under
+``/{db}/queries/definitions``.  Query execution is ``/{db}/queries/execute``.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import date
+
+import yaml
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import Response
+from sqlalchemy.orm import Session
 
 from app.api.v1.databases import get_db_alias
+from app.core.config import settings
+from app.db.session import get_db
+from app.models.sql_definition import SqlDefinitionModel
 from app.models.user import User
 from app.schemas.query import QueryRequest, QueryResponse
+from app.schemas.sql_definition import SqlDefinitionCreate, SqlDefinitionOut, SqlDefinitionUpdate
 from app.services.auth_service import PermissionChecker, get_current_user
 from app.services.query_service import execute_query
 from app.services.sql_registry import sql_registry
@@ -16,34 +25,339 @@ from app.services.sql_registry import sql_registry
 router = APIRouter(tags=["Queries"])
 
 
-# ── SQL definition management (database-independent) ─────────────────────
+# ── helpers ──────────────────────────────────────────────────────────────
 
 
-@router.get("/queries/definitions")
-def list_definitions(current_user: User = Depends(get_current_user)):
-    """List all available SQL definitions (metadata only, not the SQL itself)."""
-    definitions = sql_registry.list_all()
+def _require_superuser(user: User):
+    if not user.is_superuser:
+        raise HTTPException(status_code=403, detail="Superuser privileges required")
+
+
+def _row_to_out(row: SqlDefinitionModel) -> dict:
+    """Convert ORM row to a dict matching SqlDefinitionOut."""
+    return {
+        "id": row.id,
+        "name": row.name,
+        "db_alias": row.db_alias or "default",
+        "description": row.description or "",
+        "sql": row.sql,
+        "permission": row.permission,
+        "params": row.params or {},
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+# ── SQL definition management (scoped by database) ───────────────────────
+# NOTE: Static paths (reload, import-yaml) MUST come before {name} param path.
+
+
+@router.get("/{db}/queries/definitions")
+def list_definitions(
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+):
+    """List SQL definitions for a specific database."""
+    definitions = sql_registry.list_all(db_alias=db)
     return [
         {
             "name": d.name,
+            "db_alias": d.db_alias,
             "description": d.description,
             "permission": d.permission,
             "params": {
-                k: {"type": v.type, "required": v.required, "description": v.description}
-                for k, v in d.params.items()
+                k: {"type": v.type, "required": v.required, "description": v.description} for k, v in d.params.items()
             },
         }
         for d in definitions
     ]
 
 
-@router.post("/queries/definitions/reload")
-def reload_definitions(current_user: User = Depends(get_current_user)):
-    """Hot-reload SQL definitions from disk (superuser only)."""
-    if not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Superuser privileges required")
+@router.post("/{db}/queries/definitions/reload")
+def reload_definitions(
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+):
+    """Hot-reload SQL definitions from DB (or YAML fallback). Superuser only."""
+    _require_superuser(current_user)
     sql_registry.reload()
-    return {"message": "SQL definitions reloaded", "count": len(sql_registry.list_all())}
+    count = len(sql_registry.list_all(db_alias=db))
+    return {"message": "SQL definitions reloaded", "count": count}
+
+
+@router.post("/{db}/queries/definitions/import-yaml")
+def import_yaml_definitions(
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+    pgdb: Session = Depends(get_db),
+):
+    """Import YAML definitions into the database for this db_alias. Existing names are skipped. Superuser only."""
+    _require_superuser(current_user)
+
+    from pathlib import Path
+
+    base = Path(settings.sql_definitions_dir)
+    if not base.exists():
+        raise HTTPException(status_code=404, detail=f"YAML directory not found: {base}")
+
+    imported = 0
+    skipped = 0
+    errors = []
+
+    for path in sorted(base.glob("*.y*ml")):
+        try:
+            with open(path) as f:
+                raw = yaml.safe_load(f)
+
+            name = raw["name"]
+            file_db_alias = raw.get("db_alias", "default")
+
+            # Only import definitions that match this database
+            if file_db_alias != db:
+                continue
+
+            existing = (
+                pgdb.query(SqlDefinitionModel)
+                .filter(SqlDefinitionModel.name == name, SqlDefinitionModel.db_alias == db)
+                .first()
+            )
+            if existing:
+                skipped += 1
+                continue
+
+            params = {}
+            for pname, pdef in (raw.get("params") or {}).items():
+                params[pname] = {
+                    "type": pdef.get("type", "string"),
+                    "required": pdef.get("required", False),
+                    "description": pdef.get("description", ""),
+                }
+
+            row = SqlDefinitionModel(
+                name=name,
+                db_alias=db,
+                description=raw.get("description", ""),
+                sql=raw["sql"].strip(),
+                permission=raw.get("permission", f"query:{name}"),
+                params=params,
+            )
+            pgdb.add(row)
+            imported += 1
+        except Exception as e:
+            errors.append(f"{path.name}: {e}")
+
+    pgdb.commit()
+    sql_registry.reload_from_db()
+
+    return {
+        "message": "YAML import completed",
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+@router.get("/{db}/queries/definitions/export-yaml")
+def export_definitions_yaml(
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+    pgdb: Session = Depends(get_db),
+):
+    """Export all SQL definitions for this database as a downloadable YAML file. Superuser only."""
+    _require_superuser(current_user)
+    rows = pgdb.query(SqlDefinitionModel).filter(SqlDefinitionModel.db_alias == db).order_by(SqlDefinitionModel.name).all()
+
+    defs_list = []
+    for row in rows:
+        entry = {
+            "name": row.name,
+            "description": row.description or "",
+            "sql": row.sql,
+            "permission": row.permission,
+            "params": row.params or {},
+        }
+        defs_list.append(entry)
+
+    content = yaml.dump(defs_list, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    filename = f"sql_definitions_{db}_{date.today().isoformat()}.yaml"
+
+    return Response(
+        content=content,
+        media_type="application/x-yaml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/{db}/queries/definitions/import-yaml-file")
+async def import_yaml_file(
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+    pgdb: Session = Depends(get_db),
+    file: UploadFile = File(...),
+):
+    """Import SQL definitions from an uploaded YAML file. Existing names are skipped. Superuser only."""
+    _require_superuser(current_user)
+
+    content = await file.read()
+    try:
+        raw_list = yaml.safe_load(content.decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+
+    if not isinstance(raw_list, list):
+        raw_list = [raw_list]
+
+    imported, skipped, errors = 0, 0, []
+    for i, raw in enumerate(raw_list):
+        try:
+            name = raw["name"]
+            existing = (
+                pgdb.query(SqlDefinitionModel)
+                .filter(SqlDefinitionModel.name == name, SqlDefinitionModel.db_alias == db)
+                .first()
+            )
+            if existing:
+                skipped += 1
+                continue
+
+            params = {}
+            for pname, pdef in (raw.get("params") or {}).items():
+                params[pname] = {
+                    "type": pdef.get("type", "string"),
+                    "required": pdef.get("required", False),
+                    "description": pdef.get("description", ""),
+                }
+
+            row = SqlDefinitionModel(
+                name=name,
+                db_alias=db,
+                description=raw.get("description", ""),
+                sql=raw["sql"].strip(),
+                permission=raw.get("permission", f"query:{name}"),
+                params=params,
+            )
+            pgdb.add(row)
+            imported += 1
+        except Exception as e:
+            errors.append(f"Item {i}: {e}")
+
+    pgdb.commit()
+    sql_registry.reload_from_db()
+    return {"imported": imported, "skipped": skipped, "errors": errors}
+
+
+@router.post("/{db}/queries/definitions", response_model=SqlDefinitionOut, status_code=201)
+def create_definition(
+    body: SqlDefinitionCreate,
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+    pgdb: Session = Depends(get_db),
+):
+    """Create a new SQL definition for this database. Superuser only."""
+    _require_superuser(current_user)
+
+    existing = (
+        pgdb.query(SqlDefinitionModel)
+        .filter(SqlDefinitionModel.name == body.name, SqlDefinitionModel.db_alias == db)
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Definition '{body.name}' already exists for database '{db}'")
+
+    permission = body.permission or f"query:{body.name}"
+    params = {k: v.model_dump() for k, v in body.params.items()} if body.params else {}
+
+    row = SqlDefinitionModel(
+        name=body.name,
+        db_alias=db,
+        description=body.description,
+        sql=body.sql.strip(),
+        permission=permission,
+        params=params,
+    )
+    pgdb.add(row)
+    pgdb.commit()
+    pgdb.refresh(row)
+    sql_registry.reload_from_db()
+    return _row_to_out(row)
+
+
+@router.get("/{db}/queries/definitions/{name}", response_model=SqlDefinitionOut)
+def get_definition(
+    name: str,
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+    pgdb: Session = Depends(get_db),
+):
+    """Get a single SQL definition with full details. Superuser only."""
+    _require_superuser(current_user)
+
+    row = (
+        pgdb.query(SqlDefinitionModel)
+        .filter(SqlDefinitionModel.name == name, SqlDefinitionModel.db_alias == db)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Definition '{name}' not found for database '{db}'")
+    return _row_to_out(row)
+
+
+@router.put("/{db}/queries/definitions/{name}", response_model=SqlDefinitionOut)
+def update_definition(
+    name: str,
+    body: SqlDefinitionUpdate,
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+    pgdb: Session = Depends(get_db),
+):
+    """Update an existing SQL definition. Superuser only."""
+    _require_superuser(current_user)
+
+    row = (
+        pgdb.query(SqlDefinitionModel)
+        .filter(SqlDefinitionModel.name == name, SqlDefinitionModel.db_alias == db)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Definition '{name}' not found for database '{db}'")
+
+    if body.description is not None:
+        row.description = body.description
+    if body.sql is not None:
+        row.sql = body.sql.strip()
+    if body.permission is not None:
+        row.permission = body.permission
+    if body.params is not None:
+        row.params = {k: v.model_dump() for k, v in body.params.items()}
+
+    pgdb.commit()
+    pgdb.refresh(row)
+    sql_registry.reload_from_db()
+    return _row_to_out(row)
+
+
+@router.delete("/{db}/queries/definitions/{name}")
+def delete_definition(
+    name: str,
+    db: str = Depends(get_db_alias),
+    current_user: User = Depends(get_current_user),
+    pgdb: Session = Depends(get_db),
+):
+    """Delete a SQL definition. Superuser only."""
+    _require_superuser(current_user)
+
+    row = (
+        pgdb.query(SqlDefinitionModel)
+        .filter(SqlDefinitionModel.name == name, SqlDefinitionModel.db_alias == db)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Definition '{name}' not found for database '{db}'")
+
+    pgdb.delete(row)
+    pgdb.commit()
+    sql_registry.reload_from_db()
+    return {"message": f"Definition '{name}' deleted from database '{db}'"}
 
 
 # ── Query execution (database-specific) ──────────────────────────────────
@@ -64,9 +378,9 @@ def execute(
     - **top_n**: first N rows. Use ``top_n``.
     - **one**: exactly one row (404 if none).
     """
-    definition = sql_registry.get(request.query_name)
+    definition = sql_registry.get(request.query_name, db_alias=db)
     if not definition:
-        raise HTTPException(status_code=404, detail=f"Query definition '{request.query_name}' not found")
+        raise HTTPException(status_code=404, detail=f"Query definition '{request.query_name}' not found for database '{db}'")
 
     # Check permission
     checker = PermissionChecker(definition.permission, "read")

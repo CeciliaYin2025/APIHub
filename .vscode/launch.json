@@ -6,6 +6,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "uvicorn",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "args": [
                 "app.main:app",
                 "--host", "0.0.0.0",
@@ -20,6 +21,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "celery",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "args": [
                 "-A", "app.tasks.celery_app",
                 "worker",
@@ -35,6 +37,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "celery",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "args": [
                 "-A", "app.tasks.celery_app",
                 "worker",
@@ -50,6 +53,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "celery",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "args": [
                 "-A", "app.tasks.celery_app",
                 "flower",
@@ -63,6 +67,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "scripts.init_db",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "envFile": "${workspaceFolder}/.env",
             "cwd": "${workspaceFolder}"
         },
@@ -71,6 +76,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "args": ["-v"],
             "envFile": "${workspaceFolder}/.env",
             "cwd": "${workspaceFolder}"

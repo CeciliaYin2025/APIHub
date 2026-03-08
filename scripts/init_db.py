@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.security import get_password_hash
 from app.db.session import Base, SessionLocal, engine
+from app.models.sql_definition import SqlDefinitionModel  # noqa: F401 — registers model
 from app.models.user import Permission, Role, User  # noqa: F401 — registers models
 
 

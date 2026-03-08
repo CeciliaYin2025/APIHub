@@ -1,22 +1,11 @@
-"""Service layer for executing Oracle stored procedures and functions."""
+"""Service layer for executing stored procedures and functions across engines."""
 
 import logging
 from typing import Any
 
-import oracledb as cx_Oracle
-
-from app.db.oracle_pool import get_connection
+from app.db.oracle_pool import get_connection, get_dialect_for
 
 logger = logging.getLogger(__name__)
-
-# Map simple type names to cx_Oracle types for OUT parameters
-_TYPE_MAP = {
-    "string": cx_Oracle.DB_TYPE_VARCHAR,
-    "number": cx_Oracle.DB_TYPE_NUMBER,
-    "date": cx_Oracle.DB_TYPE_DATE,
-    "clob": cx_Oracle.DB_TYPE_CLOB,
-    "cursor": cx_Oracle.CURSOR,
-}
 
 
 def execute_procedure(
@@ -26,7 +15,7 @@ def execute_procedure(
     is_function: bool = False,
     db_alias: str | None = None,
 ) -> dict[str, Any]:
-    """Execute an Oracle procedure or function.
+    """Execute a stored procedure or function.
 
     Args:
         name: Fully qualified name (e.g. "PKG_EXAMPLE.MY_PROC").
@@ -40,15 +29,16 @@ def execute_procedure(
         Dictionary with 'result' (function return) and 'out_params'.
     """
     out_params = out_params or []
+    dialect = get_dialect_for(db_alias)
 
     with get_connection(db_alias) as conn:
         cursor = conn.cursor()
         try:
             if is_function:
-                result = _call_function(cursor, name, params)
-                return {"result": _convert(result), "out_params": {}}
+                result = dialect.call_function(cursor, name, params)
+                return {"result": dialect.convert_value(result), "out_params": {}}
             else:
-                out_values = _call_procedure(cursor, name, params, out_params)
+                out_values = dialect.call_procedure(cursor, name, params, out_params)
                 conn.commit()
                 return {"result": None, "out_params": out_values}
         except Exception:
@@ -56,39 +46,3 @@ def execute_procedure(
             raise
         finally:
             cursor.close()
-
-
-def _call_function(cursor: cx_Oracle.Cursor, name: str, params: dict[str, Any]) -> Any:
-    """Call an Oracle function and return its result."""
-    # Build ordered positional args from the params dict
-    param_keys = sorted(params.keys())
-    args = [params[k] for k in param_keys]
-    return cursor.callfunc(name, cx_Oracle.DB_TYPE_VARCHAR, args)
-
-
-def _call_procedure(
-    cursor: cx_Oracle.Cursor,
-    name: str,
-    params: dict[str, Any],
-    out_param_names: list[str],
-) -> dict[str, Any]:
-    """Call an Oracle procedure with IN and OUT parameters."""
-    # Prepare keyword arguments: input params + OUT variable placeholders
-    kw_args: dict[str, Any] = dict(params)
-    out_vars: dict[str, cx_Oracle.Var] = {}
-
-    for op_name in out_param_names:
-        var = cursor.var(cx_Oracle.DB_TYPE_VARCHAR, 4000)
-        kw_args[op_name] = var
-        out_vars[op_name] = var
-
-    cursor.callproc(name, keywordParameters=kw_args)
-
-    return {k: _convert(v.getvalue()) for k, v in out_vars.items()}
-
-
-def _convert(value: Any) -> Any:
-    """Convert Oracle-specific types to JSON-serializable Python types."""
-    if isinstance(value, cx_Oracle.LOB):
-        return value.read()
-    return value

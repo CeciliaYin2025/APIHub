@@ -1,8 +1,8 @@
 """Multi-database connection pool manager.
 
 Loads database configurations from YAML files under the configured
-``database_definitions_dir`` directory and manages one ``cx_Oracle.SessionPool``
-per database alias.
+``database_definitions_dir`` directory and manages one ``PoolAdapter``
+per database alias.  Supports Oracle, PostgreSQL, and MS SQL Server engines.
 """
 
 from __future__ import annotations
@@ -11,45 +11,36 @@ import logging
 import os
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator
 
-import oracledb as cx_Oracle
 import yaml
 
 from app.core.config import settings
+from app.db.pool_adapter import PoolAdapter
+from app.db.pool_factory import create_pool_adapter
+from app.db.types import DbType
 
 logger = logging.getLogger(__name__)
-
-# Enable thick mode for Oracle 11g compatibility
-_thick_mode_initialized = False
-
-
-def _ensure_thick_mode() -> None:
-    """Initialise Oracle Client (thick mode) once, if configured."""
-    global _thick_mode_initialized
-    if _thick_mode_initialized:
-        return
-    lib_dir = settings.oracle_client_dir or None
-    try:
-        cx_Oracle.init_oracle_client(lib_dir=lib_dir)
-        logger.info("Oracle thick mode enabled (lib_dir=%s)", lib_dir)
-    except cx_Oracle.ProgrammingError:
-        # Already initialised (e.g. in Celery worker)
-        pass
-    _thick_mode_initialized = True
 
 _ALIAS_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 
 
 @dataclass
 class DatabaseConfig:
-    """Configuration for a single Oracle database connection."""
+    """Configuration for a single database connection."""
 
     alias: str
+    db_type: DbType = "oracle"
     description: str = ""
+    # Oracle-specific
     dsn: str = ""
+    # PostgreSQL / MSSQL fields
+    host: str = ""
+    port: int = 0
+    database: str = ""
+    # Common
     user: str = ""
     password: str = ""
     pool_min: int = 2
@@ -58,7 +49,7 @@ class DatabaseConfig:
 
 
 class DatabaseRegistry:
-    """Singleton registry that manages multiple Oracle connection pools."""
+    """Singleton registry that manages multiple database connection pools."""
 
     _instance: DatabaseRegistry | None = None
 
@@ -66,7 +57,7 @@ class DatabaseRegistry:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._configs: dict[str, DatabaseConfig] = {}
-            cls._instance._pools: dict[str, cx_Oracle.SessionPool] = {}
+            cls._instance._pools: dict[str, PoolAdapter] = {}
         return cls._instance
 
     # ------------------------------------------------------------------
@@ -96,6 +87,7 @@ class DatabaseRegistry:
         if count == 0 and settings.oracle_dsn:
             self._configs["default"] = DatabaseConfig(
                 alias="default",
+                db_type="oracle",
                 description="Default database (from environment variables)",
                 dsn=settings.oracle_dsn,
                 user=settings.oracle_user,
@@ -137,10 +129,16 @@ class DatabaseRegistry:
             env_key = f"DB_{alias.upper()}_PASSWORD"
             password = os.environ.get(env_key, entry.get("password", ""))
 
+            db_type: DbType = entry.get("db_type", "oracle")
+
             cfg = DatabaseConfig(
                 alias=alias,
+                db_type=db_type,
                 description=entry.get("description", ""),
                 dsn=entry.get("dsn", ""),
+                host=entry.get("host", ""),
+                port=entry.get("port", 0),
+                database=entry.get("database", ""),
                 user=entry.get("user", ""),
                 password=password,
                 pool_min=entry.get("pool_min", 2),
@@ -149,7 +147,7 @@ class DatabaseRegistry:
             )
             self._configs[alias] = cfg
             loaded += 1
-            logger.info("Registered database: %s (%s)", alias, cfg.dsn)
+            logger.info("Registered database: %s (type=%s)", alias, db_type)
 
         return loaded
 
@@ -158,14 +156,12 @@ class DatabaseRegistry:
     # ------------------------------------------------------------------
 
     def init_all_pools(self) -> None:
-        """Create a ``cx_Oracle.SessionPool`` for every registered database."""
-        _ensure_thick_mode()
-        for alias, cfg in self._configs.items():
+        """Create a pool adapter for every registered database."""
+        for alias in self._configs:
             self.init_pool(alias)
 
-    def init_pool(self, alias: str) -> cx_Oracle.SessionPool:
+    def init_pool(self, alias: str) -> PoolAdapter:
         """Initialise (or return existing) pool for *alias*."""
-        _ensure_thick_mode()
         if alias in self._pools:
             return self._pools[alias]
 
@@ -173,26 +169,19 @@ class DatabaseRegistry:
         if cfg is None:
             raise ValueError(f"Unknown database alias: {alias!r}")
 
-        pool = cx_Oracle.SessionPool(
-            user=cfg.user,
-            password=cfg.password,
-            dsn=cfg.dsn,
-            min=cfg.pool_min,
-            max=cfg.pool_max,
-            increment=cfg.pool_increment,
-            encoding="UTF-8",
-            threaded=True,
-            getmode=cx_Oracle.SPOOL_ATTRVAL_WAIT,
+        adapter = create_pool_adapter(cfg.db_type)
+        adapter.create(cfg)
+        self._pools[alias] = adapter
+        logger.info(
+            "Initialised %s pool for '%s' (min=%d, max=%d)", cfg.db_type, alias, cfg.pool_min, cfg.pool_max
         )
-        self._pools[alias] = pool
-        logger.info("Initialised pool for '%s' (min=%d, max=%d)", alias, cfg.pool_min, cfg.pool_max)
-        return pool
+        return adapter
 
     def close_all_pools(self) -> None:
         """Close every managed pool."""
-        for alias, pool in list(self._pools.items()):
+        for alias, adapter in list(self._pools.items()):
             try:
-                pool.close(force=True)
+                adapter.close(force=True)
                 logger.info("Closed pool for '%s'", alias)
             except Exception:
                 logger.exception("Error closing pool for '%s'", alias)
@@ -203,20 +192,17 @@ class DatabaseRegistry:
     # ------------------------------------------------------------------
 
     @contextmanager
-    def get_connection(self, alias: str) -> Generator[cx_Oracle.Connection, None, None]:
+    def get_connection(self, alias: str) -> Generator[Any, None, None]:
         """Acquire a connection from the pool identified by *alias*."""
-        pool = self._pools.get(alias)
-        if pool is None:
+        adapter = self._pools.get(alias)
+        if adapter is None:
             # Attempt lazy init (useful for Celery workers)
-            pool = self.init_pool(alias)
-        conn = pool.acquire()
-        try:
+            adapter = self.init_pool(alias)
+        with adapter.connection() as conn:
             yield conn
-        finally:
-            pool.release(conn)
 
     @contextmanager
-    def get_cursor(self, alias: str) -> Generator[cx_Oracle.Cursor, None, None]:
+    def get_cursor(self, alias: str) -> Generator[Any, None, None]:
         """Acquire a cursor from the pool identified by *alias*."""
         with self.get_connection(alias) as conn:
             cursor = conn.cursor()
@@ -226,17 +212,32 @@ class DatabaseRegistry:
                 cursor.close()
 
     # ------------------------------------------------------------------
+    # Engine type helpers
+    # ------------------------------------------------------------------
+
+    def get_db_type(self, alias: str) -> DbType:
+        """Return the engine type for *alias*."""
+        cfg = self._configs.get(alias)
+        if cfg is None:
+            raise ValueError(f"Unknown database alias: {alias!r}")
+        return cfg.db_type
+
+    # ------------------------------------------------------------------
     # Introspection
     # ------------------------------------------------------------------
 
     def list_databases(self) -> list[dict[str, Any]]:
-        """Return a list of configured databases (alias + description)."""
+        """Return a list of configured databases (alias + description + db_type)."""
         result = []
         for alias, cfg in self._configs.items():
             result.append({
                 "alias": cfg.alias,
+                "db_type": cfg.db_type,
                 "description": cfg.description,
                 "dsn": cfg.dsn,
+                "host": cfg.host,
+                "port": cfg.port,
+                "database": cfg.database,
                 "user": cfg.user,
                 "pool_min": cfg.pool_min,
                 "pool_max": cfg.pool_max,

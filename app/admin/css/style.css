@@ -183,6 +183,7 @@ textarea { resize: vertical; min-height: 80px; }
 .badge-blue { background: var(--primary-light); color: var(--primary); }
 .badge-yellow { background: var(--warning-light); color: #92400e; }
 .badge-gray { background: var(--gray-100); color: var(--gray-600); }
+.badge-amber { background: #fef3c7; color: #92400e; }
 
 /* ── Modal ────────────────────────────────────────────────────────────── */
 .modal-overlay {
@@ -216,8 +217,19 @@ textarea { resize: vertical; min-height: 80px; }
 .toast.info { background: var(--primary); }
 @keyframes toastIn { from { transform: translateX(60px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
+/* ── Monospace textarea & SQL preview ─────────────────────────────────── */
+textarea.monospace,
+.query-console textarea {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: .85rem; min-height: 120px;
+  tab-size: 2;
+}
+.sql-preview {
+  background: var(--gray-900); color: #e5e7eb; padding: 12px 16px; border-radius: var(--radius);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: .82rem;
+  overflow-x: auto; max-height: 300px; overflow-y: auto; white-space: pre-wrap;
+}
+
 /* ── Query Console ───────────────────────────────────────────────────── */
-.query-console textarea { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: .85rem; min-height: 120px; }
 .result-area { margin-top: 16px; }
 .result-area pre {
   background: var(--gray-900); color: #e5e7eb; padding: 16px; border-radius: var(--radius);

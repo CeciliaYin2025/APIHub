@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "oracle-api-hub"
 version = "1.0.0"
-description = "Oracle Database RESTful API Hub - A generic platform to expose Oracle tables, views, functions and procedures as REST APIs"
+description = "Oracle Database RESTful API Hub - A generic platform to expose Oracle tables, views, functions and procedures as REST APIs with DB-managed SQL definitions"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110.0,<1.0.0",
@@ -24,6 +24,7 @@ dependencies = [
     "tenacity>=8.2.0",
     "oracledb>=3.4.2",
     "psycopg2-binary>=2.9.9",
+    "pymssql>=2.2.8",
 ]
 
 [project.optional-dependencies]

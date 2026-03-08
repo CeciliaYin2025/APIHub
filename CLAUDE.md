@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Oracle API Hub is a FastAPI-based REST gateway that exposes Oracle Database (11g+) resources as REST APIs. It uses YAML-driven SQL definitions (no code changes needed to add queries), oracledb for direct Oracle access, PostgreSQL + SQLAlchemy ORM for internal user/permission management, and Celery+Redis for async task processing.
+Oracle API Hub is a FastAPI-based REST gateway that exposes Oracle Database (11g+) resources as REST APIs. It uses DB-managed SQL definitions with Admin UI CRUD (YAML import supported for migration), oracledb for direct Oracle access, PostgreSQL + SQLAlchemy ORM for internal user/permission/SQL-definition management, and Celery+Redis for async task processing.
 
 ## Commands
 
@@ -52,13 +52,13 @@ celery -A app.tasks.celery_app flower --port=5555
 - **Services** (`app/services/`): Business logic layer called by routers
 - **DB layer** (`app/db/`): Connection pool management
 - **Tasks** (`app/tasks/`): Celery async task definitions
-- **Models** (`app/models/user.py`): SQLAlchemy ORM for User/Role/Permission tables only
+- **Models** (`app/models/`): SQLAlchemy ORM for User/Role/Permission and SQL Definition tables
 - **Admin UI** (`app/admin/`): Vanilla JS SPA served as static files at `/admin`
 
 ### Dual Database Strategy
 
 - **Oracle** (via oracledb pools, `app/db/multi_pool.py`): The data source/target. All dynamic SQL execution (queries, writes, procedures). `DatabaseRegistry` singleton manages one pool per configured database alias.
-- **PostgreSQL** (via SQLAlchemy ORM, `app/db/session.py`): Platform-internal user and permission management only (`api_hub_users`, `api_hub_roles`, `api_hub_permissions`).
+- **PostgreSQL** (via SQLAlchemy ORM, `app/db/session.py`): Platform-internal data — user/permission management (`api_hub_users`, `api_hub_roles`, `api_hub_permissions`) and SQL definitions (`api_hub_sql_definitions`).
 
 ### Multi-Database Routing
 
@@ -70,7 +70,7 @@ The query service (`app/services/query_service.py`) supports: `page` (ROWNUM-bas
 
 ### SQL Definition System
 
-YAML files in `app/sql_definitions/` define queries with SQL, bind parameters, and permission requirements. `SqlRegistry` singleton loads at startup; hot-reload via `POST /api/v1/queries/definitions/reload`.
+SQL definitions are stored in PostgreSQL (`api_hub_sql_definitions` table) as the primary source. At startup, `SqlRegistry` loads from DB; if the DB table is empty it falls back to YAML files in `app/sql_definitions/`. A one-time `POST /api/v1/queries/definitions/import-yaml` endpoint imports existing YAML definitions into the database. Full CRUD is available via API (`GET/POST/PUT/DELETE /api/v1/queries/definitions`) and the Admin UI. The in-memory registry is automatically refreshed after any CRUD operation.
 
 ### Async Task Processing
 

@@ -94,7 +94,8 @@ async function loadDatabases() {
     databases.forEach(db => {
       const opt = document.createElement('option');
       opt.value = db.alias;
-      opt.textContent = db.alias + (db.description ? ' — ' + db.description : '');
+      const typeBadge = db.db_type && db.db_type !== 'oracle' ? ` [${db.db_type.toUpperCase()}]` : '';
+      opt.textContent = db.alias + typeBadge + (db.description ? ' — ' + db.description : '');
       sel.appendChild(opt);
     });
     // Restore last selection if valid
@@ -227,7 +228,7 @@ async function renderDashboard() {
       api('GET', '/auth/users').catch(() => []),
       api('GET', '/auth/roles').catch(() => []),
       api('GET', '/auth/permissions').catch(() => []),
-      api('GET', '/queries/definitions').catch(() => []),
+      api('GET', `${dbPrefix()}/queries/definitions`).catch(() => []),
     ]);
 
     area.innerHTML = `
@@ -282,11 +283,12 @@ async function renderDashboard() {
       <div class="card mt-4">
         <div class="card-header"><h2>Databases (${databases.length})</h2></div>
         <div class="card-body no-pad">
-          <table class="data-table"><thead><tr><th>Alias</th><th>Description</th><th>DSN</th><th>User</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Alias</th><th>Type</th><th>Description</th><th>Connection</th><th>User</th></tr></thead>
           <tbody>${databases.map(d => `<tr>
             <td><strong>${esc(d.alias)}</strong>${d.alias === currentDb ? ' <span class="badge badge-blue">Active</span>' : ''}</td>
+            <td><span class="badge ${d.db_type === 'oracle' ? 'badge-blue' : d.db_type === 'postgresql' ? 'badge-green' : 'badge-amber'}">${esc((d.db_type || 'oracle').toUpperCase())}</span></td>
             <td>${esc(d.description || '—')}</td>
-            <td><code>${esc(d.dsn)}</code></td>
+            <td><code>${esc(d.dsn || (d.host ? d.host + ':' + d.port + '/' + d.database : '—'))}</code></td>
             <td>${esc(d.user)}</td>
           </tr>`).join('')}</tbody></table>
         </div>
@@ -554,13 +556,21 @@ async function renderSqlDefs() {
   const area = document.getElementById('contentArea');
   area.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
 
+  const isSuperuser = currentUser && currentUser.is_superuser;
+
   try {
-    const defs = await api('GET', '/queries/definitions');
+    const defs = await api('GET', `${dbPrefix()}/queries/definitions`);
     area.innerHTML = `
       <div class="card">
         <div class="card-header">
-          <h2>SQL Definitions (${defs.length})</h2>
+          <h2>SQL Definitions — ${esc(currentDb)} (${defs.length})</h2>
           <div class="btn-group">
+            ${isSuperuser ? `
+              <button class="btn btn-success btn-sm" onclick="openSqlDefModal('create')">+ New Definition</button>
+              <button class="btn btn-info btn-sm" onclick="exportYamlDefs()">Export YAML</button>
+              <button class="btn btn-primary btn-sm" onclick="uploadYamlFile()">Upload YAML</button>
+              <button class="btn btn-primary btn-sm" onclick="importYamlDefs()">Import YAML</button>
+            ` : ''}
             <button class="btn btn-secondary btn-sm" onclick="reloadDefs()">&#8635; Reload</button>
           </div>
         </div>
@@ -576,7 +586,15 @@ async function renderSqlDefs() {
               const p = d.params[k];
               return `<span class="tag">${esc(k)}${p.required ? '*' : ''}</span>`;
             }).join(' ') || '—'}</td>
-            <td><button class="btn btn-sm btn-outline" onclick="viewSqlDef('${esc(d.name)}')">Detail</button></td>
+            <td>
+              <div class="btn-group">
+                <button class="btn btn-sm btn-outline" onclick="viewSqlDef('${esc(d.name)}')">Detail</button>
+                ${isSuperuser ? `
+                  <button class="btn btn-sm btn-primary" onclick="openSqlDefModal('edit','${esc(d.name)}')">Edit</button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteSqlDef('${esc(d.name)}')">Delete</button>
+                ` : ''}
+              </div>
+            </td>
           </tr>`).join('')}</tbody></table>
         </div>
       </div>
@@ -589,7 +607,7 @@ async function renderSqlDefs() {
 
 window.reloadDefs = async function() {
   try {
-    const res = await api('POST', '/queries/definitions/reload');
+    const res = await api('POST', `${dbPrefix()}/queries/definitions/reload`);
     toast(`Reloaded ${res.count} definitions`, 'success');
     renderSqlDefs();
   } catch (err) {
@@ -597,13 +615,184 @@ window.reloadDefs = async function() {
   }
 };
 
-window.viewSqlDef = function(name) {
-  const d = (window._cachedDefs || []).find(x => x.name === name);
+window.importYamlDefs = async function() {
+  if (!confirm('Import all YAML definitions into the database? Existing names will be skipped.')) return;
+  try {
+    const res = await api('POST', `${dbPrefix()}/queries/definitions/import-yaml`);
+    toast(`Imported ${res.imported}, skipped ${res.skipped}${res.errors.length ? ', errors: ' + res.errors.length : ''}`, 'success');
+    renderSqlDefs();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.exportYamlDefs = async function() {
+  try {
+    const res = await fetch(`${API}/${currentDb}/queries/definitions/export-yaml`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]
+                 || `sql_definitions_${currentDb}.yaml`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast('YAML exported', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.uploadYamlFile = async function() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.yaml,.yml';
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    if (!confirm(`Import definitions from "${file.name}" into database "${currentDb}"? Existing names will be skipped.`)) return;
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const res = await fetch(`${API}/${currentDb}/queries/definitions/import-yaml-file`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || `Import failed: ${res.status}`);
+      }
+      const data = await res.json();
+      toast(`Imported ${data.imported}, skipped ${data.skipped}${data.errors.length ? ', errors: ' + data.errors.length : ''}`, 'success');
+      renderSqlDefs();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+  input.click();
+};
+
+window.openSqlDefModal = async function(mode, name) {
+  let data = { name: '', description: '', sql: '', permission: '', params: {} };
+  if (mode === 'edit' && name) {
+    try {
+      data = await api('GET', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`);
+    } catch (err) {
+      toast(err.message, 'error');
+      return;
+    }
+  }
+
+  const isEdit = mode === 'edit';
+  const title = isEdit ? `Edit: ${name}` : 'New SQL Definition';
+  const paramsJson = Object.keys(data.params || {}).length > 0
+    ? JSON.stringify(data.params, null, 2)
+    : '{}';
+
+  const body = `
+    <div class="form-group">
+      <label>Name</label>
+      <input type="text" id="sdName" value="${esc(data.name)}" ${isEdit ? 'disabled' : ''} placeholder="e.g. employees">
+      ${isEdit ? '' : '<div class="hint">Unique identifier, cannot be changed later</div>'}
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <input type="text" id="sdDesc" value="${esc(data.description)}" placeholder="Short description">
+    </div>
+    <div class="form-group">
+      <label>Permission</label>
+      <input type="text" id="sdPerm" value="${esc(data.permission)}" placeholder="query:name (auto-generated if empty)">
+      <div class="hint">Format: query:&lt;name&gt;</div>
+    </div>
+    <div class="form-group">
+      <label>SQL</label>
+      <textarea id="sdSql" class="monospace" rows="8" placeholder="SELECT ... FROM ... WHERE ...">${esc(data.sql || '')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Parameters (JSON)</label>
+      <textarea id="sdParams" class="monospace" rows="5" placeholder='{"param": {"type":"string","required":false,"description":"..."}}'>${esc(paramsJson)}</textarea>
+      <div class="hint">JSON object: { "param_name": { "type": "string|number|date", "required": false, "description": "..." } }</div>
+    </div>
+  `;
+
+  const footer = `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitSqlDef('${mode}', '${esc(name || '')}')">${isEdit ? 'Update' : 'Create'}</button>
+  `;
+
+  openModal(title, body, footer);
+};
+
+window.submitSqlDef = async function(mode, name) {
+  const nameVal = document.getElementById('sdName').value.trim();
+  const desc = document.getElementById('sdDesc').value.trim();
+  const perm = document.getElementById('sdPerm').value.trim();
+  const sql = document.getElementById('sdSql').value;
+  const paramsRaw = document.getElementById('sdParams').value.trim();
+
+  if (!nameVal && mode === 'create') { toast('Name is required', 'error'); return; }
+  if (!sql.trim()) { toast('SQL is required', 'error'); return; }
+
+  let params = {};
+  try {
+    params = paramsRaw ? JSON.parse(paramsRaw) : {};
+  } catch (e) {
+    toast('Invalid JSON in Parameters: ' + e.message, 'error');
+    return;
+  }
+
+  try {
+    if (mode === 'create') {
+      await api('POST', `${dbPrefix()}/queries/definitions`, { name: nameVal, description: desc, sql, permission: perm, params });
+      toast(`Definition '${nameVal}' created`, 'success');
+    } else {
+      const body = { description: desc, sql, permission: perm, params };
+      await api('PUT', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`, body);
+      toast(`Definition '${name}' updated`, 'success');
+    }
+    closeModal();
+    renderSqlDefs();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.deleteSqlDef = async function(name) {
+  if (!confirm(`Delete SQL definition "${name}"? This cannot be undone.`)) return;
+  try {
+    await api('DELETE', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`);
+    toast(`Definition '${name}' deleted`, 'success');
+    renderSqlDefs();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.viewSqlDef = async function(name) {
+  let d;
+  // Try to get full details (with SQL) for superusers
+  if (currentUser && currentUser.is_superuser) {
+    try {
+      d = await api('GET', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`);
+    } catch (_) {
+      d = (window._cachedDefs || []).find(x => x.name === name);
+    }
+  } else {
+    d = (window._cachedDefs || []).find(x => x.name === name);
+  }
   if (!d) return;
+
   const body = `
     <div class="form-group"><label>Name</label><input type="text" value="${esc(d.name)}" disabled></div>
     <div class="form-group"><label>Description</label><input type="text" value="${esc(d.description)}" disabled></div>
     <div class="form-group"><label>Permission</label><input type="text" value="${esc(d.permission)}" disabled></div>
+    ${d.sql ? `<div class="form-group"><label>SQL</label><pre class="sql-preview">${esc(d.sql)}</pre></div>` : ''}
     <div class="form-group">
       <label>Parameters</label>
       ${Object.keys(d.params || {}).length === 0 ? '<p class="text-muted">No parameters</p>' :
@@ -615,10 +804,10 @@ window.viewSqlDef = function(name) {
         </tr>`).join('')}</tbody></table>`}
     </div>
     <div class="mt-4">
-      <button class="btn btn-primary btn-sm" onclick="closeModal();prefillQuery('${esc(name)}')">Open in Query Console</button>
+      <button class="btn btn-primary btn-sm" onclick="closeModal();prefillQuery('${esc(d.name)}')">Open in Query Console</button>
     </div>
   `;
-  openModal(`SQL Definition: ${name}`, body, '');
+  openModal(`SQL Definition: ${d.name}`, body, '');
 };
 
 window.prefillQuery = function(name) {

@@ -3,10 +3,10 @@
 | 項目 | 內容 |
 |------|------|
 | 文件名稱 | Oracle RESTful API Hub 系統規格書 |
-| 版本 | 1.2.0 |
+| 版本 | 1.4.0 |
 | 目標資料庫 | Oracle Database 11g (11.1.0.4)（支援多資料庫） |
 | 框架 | FastAPI (Python 3.10+) |
-| 文件日期 | 2026-03-02 |
+| 文件日期 | 2026-03-04 |
 
 ---
 
@@ -40,7 +40,7 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
 
 | 目標 | 說明 |
 |------|------|
-| 通用性 | 透過 YAML 定義 SQL，無需撰寫程式碼即可新增查詢端點 |
+| 通用性 | 透過 Admin UI 或 API 管理 SQL 定義，無需撰寫程式碼即可新增查詢端點（支援 YAML 匯出/匯入跨資料庫遷移） |
 | 開放資料格式 | 查詢結果回傳結構化 JSON（含欄位名稱、分頁資訊、資料列） |
 | 程序呼叫 | 支援呼叫 Oracle Function / Procedure（含 IN/OUT 參數） |
 | 資料寫入 | 支援 INSERT / UPDATE / DELETE，並可切換同步或非同步模式 |
@@ -151,14 +151,15 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
 | FastAPI | >= 0.110.0, < 1.0 | Web 框架 |
 | Uvicorn | >= 0.27.0 | ASGI 伺服器 |
 | cx_Oracle | >= 8.3.0 | Oracle 資料庫驅動（與 11g 相容） |
-| SQLAlchemy | >= 2.0.0, < 3.0 | ORM（僅用於使用者/角色管理表） |
+| SQLAlchemy | >= 2.0.0, < 3.0 | ORM（使用者/角色管理表 + SQL 定義表） |
 | Pydantic | >= 2.0.0 | 資料驗證與序列化 |
 | pydantic-settings | >= 2.0.0 | 環境變數組態管理 |
 | python-jose | >= 3.3.0 | JWT Token 編解碼 |
 | passlib[bcrypt] | >= 1.7.4 | 密碼雜湊（bcrypt） |
 | Celery[redis] | >= 5.3.0 | 分散式工作佇列 |
 | Redis | >= 5.0.0 | 訊息佇列 Broker & 結果儲存 |
-| PyYAML | >= 6.0 | SQL 定義檔解析 |
+| PyYAML | >= 6.0 | SQL 定義 YAML 備援/匯入解析 |
+| psycopg2-binary | >= 2.9.9 | PostgreSQL 驅動（SQLAlchemy 底層） |
 | Alembic | >= 1.13.0 | 資料庫遷移管理 |
 
 ### 3.2 開發依賴
@@ -175,6 +176,7 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
 |------|------|
 | Docker (Python 3.11-slim) | 容器化部署 |
 | Oracle Instant Client | cx_Oracle 連線所需之客戶端函式庫 |
+| PostgreSQL | 系統內部資料庫（使用者/角色/權限/SQL 定義） |
 | Redis 7 (Alpine) | Celery Broker + 結果後端 |
 | Flower | Celery 監控儀表板（port 5555） |
 
@@ -305,7 +307,7 @@ cx_Oracle.SessionPool(
 
 ### 4.4 SQLAlchemy Session — `app/db/session.py`
 
-僅用於管理系統內部的使用者、角色、權限 ORM 表。動態 SQL（查詢、Procedure、DML）一律使用 cx_Oracle 連線池。
+用於管理系統內部的使用者、角色、權限及 SQL 定義 ORM 表。動態 SQL（查詢、Procedure、DML）一律使用 cx_Oracle 連線池。
 
 | 元件 | 說明 |
 |------|------|
@@ -327,10 +329,31 @@ cx_Oracle.SessionPool(
 
 | 方法 | 說明 |
 |------|------|
-| `load(directory?)` | 從指定目錄載入所有 `*.yaml` / `*.yml` 檔 |
+| `load(directory?)` | 先嘗試從 PostgreSQL 載入；若 DB 為空則回退到 YAML 檔案 |
 | `get(name) -> SqlDefinition?` | 依名稱查詢定義 |
 | `list_all() -> list[SqlDefinition]` | 取得所有定義 |
-| `reload()` | 清空並重新載入（熱更新） |
+| `reload()` | 清空並重新載入（先嘗試 DB，再回退 YAML） |
+| `reload_from_db()` | 僅從 DB 重新載入（CRUD 操作後自動呼叫） |
+
+**載入優先順序：**
+
+1. **PostgreSQL**（`api_hub_sql_definitions` 表）— 主要來源
+2. **YAML 檔案**（`app/sql_definitions/*.yaml`）— 備援（DB 為空時使用）
+
+**ORM 模型 — `app/models/sql_definition.py`：**
+
+| 類別 | 表名 | 說明 |
+|------|------|------|
+| `SqlDefinitionModel` | `api_hub_sql_definitions` | SQL 定義持久化儲存 |
+
+**Pydantic Schema — `app/schemas/sql_definition.py`：**
+
+| 類別 | 說明 |
+|------|------|
+| `SqlDefinitionCreate` | 建立用（`name` 必填且唯一） |
+| `SqlDefinitionUpdate` | 更新用（所有欄位可選） |
+| `SqlDefinitionOut` | 回應用（含 `id`、`created_at`、`updated_at`） |
+| `ParamDefSchema` | 參數定義驗證（`type` 限 `string`/`number`/`date`） |
 
 ### 4.6 查詢執行服務 — `app/services/query_service.py`
 
@@ -514,7 +537,7 @@ DELETE FROM employees WHERE emp_id = :wh_emp_id
 
 | 類別 | 路徑模式 | 說明 |
 |------|----------|------|
-| 全域端點 | `/api/v1/{endpoint}` | 不依賴特定資料庫（健康檢查、認證、資料庫列表、SQL 定義、任務狀態） |
+| 全域端點 | `/api/v1/{endpoint}` | 不依賴特定資料庫（健康檢查、認證、資料庫列表、SQL 定義 CRUD、任務狀態） |
 | 資料庫範圍端點 | `/api/v1/{db}/{endpoint}` | 需要指定目標資料庫（查詢執行、寫入、程序、表結構探查） |
 
 ### 5.1 健康檢查
@@ -603,10 +626,104 @@ username=admin&password=changeme
 
 ### 5.4 查詢端點 (`/api/v1/queries`)
 
+#### 5.4.0 SQL 定義管理端點（全域，不依賴特定資料庫）
+
+| 方法 | 路徑 | 認證 | 說明 |
+|------|------|------|------|
+| `GET` | `/queries/definitions` | Bearer Token | 列出所有可用查詢定義（僅 metadata，不含 SQL） |
+| `GET` | `/queries/definitions/{name}` | 超級管理員 | 取得單一定義完整資訊（含 SQL） |
+| `POST` | `/queries/definitions` | 超級管理員 | 新增 SQL 定義 |
+| `PUT` | `/queries/definitions/{name}` | 超級管理員 | 更新 SQL 定義 |
+| `DELETE` | `/queries/definitions/{name}` | 超級管理員 | 刪除 SQL 定義 |
+| `POST` | `/queries/definitions/reload` | 超級管理員 | 從 DB（或 YAML 備援）重新載入至記憶體 |
+| `POST` | `/queries/definitions/import-yaml` | 超級管理員 | 將伺服器端 YAML 檔案匯入 DB（已存在的名稱自動跳過） |
+| `GET` | `/{db}/queries/definitions/export-yaml` | 超級管理員 | 匯出該資料庫所有 SQL 定義為 YAML 檔案下載 |
+| `POST` | `/{db}/queries/definitions/import-yaml-file` | 超級管理員 | 上傳 YAML 檔案匯入 SQL 定義（已存在的名稱自動跳過） |
+
+> **路由順序**：靜態路徑（`reload`、`import-yaml`、`export-yaml`、`import-yaml-file`）定義在 `{name}` 參數路徑之前，避免被參數路徑攔截。
+
+**新增 SQL 定義請求：**
+
+```json
+POST /api/v1/queries/definitions
+{
+  "name": "my_report",
+  "description": "Monthly sales report",
+  "sql": "SELECT region, product, SUM(amount) total_amount\nFROM sales\nWHERE sale_date BETWEEN :start_date AND :end_date\nGROUP BY region, product",
+  "permission": "query:my_report",
+  "params": {
+    "start_date": {"type": "date", "required": true, "description": "Start date"},
+    "end_date": {"type": "date", "required": true, "description": "End date"}
+  }
+}
+```
+
+**新增成功回應（HTTP 201）：**
+
+```json
+{
+  "id": 4,
+  "name": "my_report",
+  "description": "Monthly sales report",
+  "sql": "SELECT region, product, SUM(amount) total_amount\nFROM sales\n...",
+  "permission": "query:my_report",
+  "params": {
+    "start_date": {"type": "date", "required": true, "description": "Start date"},
+    "end_date": {"type": "date", "required": true, "description": "End date"}
+  },
+  "created_at": "2026-03-03T10:00:00",
+  "updated_at": "2026-03-03T10:00:00"
+}
+```
+
+**YAML 匯入回應：**
+
+```json
+{
+  "message": "YAML import completed",
+  "imported": 3,
+  "skipped": 0,
+  "errors": []
+}
+```
+
+**YAML 匯出回應：**
+
+```
+GET /api/v1/{db}/queries/definitions/export-yaml
+Content-Type: application/x-yaml
+Content-Disposition: attachment; filename="sql_definitions_default_2026-03-04.yaml"
+```
+
+```yaml
+- name: employees
+  description: List all employees
+  sql: "SELECT * FROM EMPLOYEES WHERE DEPT_ID = :dept_id"
+  permission: "query:employees"
+  params:
+    dept_id:
+      type: number
+      required: true
+      description: Department ID
+```
+
+**YAML 檔案上傳匯入回應：**
+
+```json
+POST /api/v1/{db}/queries/definitions/import-yaml-file
+Content-Type: multipart/form-data
+
+{
+  "imported": 2,
+  "skipped": 1,
+  "errors": []
+}
+```
+
+#### 查詢執行端點（資料庫範圍）
+
 | 方法 | 路徑 | 認證 | 權限 | 說明 |
 |------|------|------|------|------|
-| `GET` | `/queries/definitions` | Bearer Token | 無特殊權限 | 列出所有可用查詢定義（僅 metadata）— 全域 |
-| `POST` | `/queries/definitions/reload` | 超級管理員 | — | 從磁碟熱重載 SQL 定義 — 全域 |
 | `POST` | `/{db}/queries/execute` | Bearer Token | `{permission}:read` | 對指定資料庫執行已註冊的查詢定義 |
 
 **查詢請求參數說明：**
@@ -1057,6 +1174,36 @@ Authorization: Bearer <token>
 | `role_id` | INTEGER | PK, FK → api_hub_roles.id |
 | `permission_id` | INTEGER | PK, FK → api_hub_permissions.id |
 
+#### 6.1.6 SQL 定義表 `api_hub_sql_definitions`
+
+| 欄位 | 型態 | 約束 | 說明 |
+|------|------|------|------|
+| `id` | INTEGER | PK, AUTO | 主鍵 |
+| `name` | VARCHAR(200) | UNIQUE, NOT NULL, INDEX | 定義名稱（用於 API 的 `query_name`） |
+| `description` | TEXT | DEFAULT '' | 人類可讀說明 |
+| `sql` | TEXT | NOT NULL | SQL SELECT 語句（支援 `:param` 綁定變數） |
+| `permission` | VARCHAR(200) | NOT NULL | 權限名稱（如 `query:employees`） |
+| `params` | JSONB | DEFAULT '{}' | 參數定義（鍵值結構，每個參數含 `type`/`required`/`description`） |
+| `created_at` | DATETIME | SERVER DEFAULT SYSDATE | 建立時間 |
+| `updated_at` | DATETIME | SERVER DEFAULT SYSDATE, ONUPDATE | 更新時間 |
+
+**`params` JSONB 結構範例：**
+
+```json
+{
+  "dept": {
+    "type": "string",
+    "required": false,
+    "description": "Filter by department code"
+  },
+  "start_date": {
+    "type": "date",
+    "required": true,
+    "description": "Start date (YYYY-MM-DD)"
+  }
+}
+```
+
 ### 6.2 ER Diagram
 
 ```
@@ -1075,6 +1222,19 @@ Authorization: Bearer <token>
                       └─▶│ user_id    FK,PK  │  └─▶│ role_id   FK,PK   │
                          │ role_id    FK,PK  │     │ perm_id   FK,PK   │
                          └───────────────────┘     └────────────────────┘
+
+┌─────────────────────────────┐
+│  api_hub_sql_definitions    │
+├─────────────────────────────┤
+│ id              PK          │
+│ name            UQ, INDEX   │
+│ description                 │
+│ sql             NN          │
+│ permission      NN          │
+│ params          JSONB       │
+│ created_at                  │
+│ updated_at                  │
+└─────────────────────────────┘
 ```
 
 ### 6.3 初始化種子資料
@@ -1192,7 +1352,7 @@ Authorization: Bearer <token>
 
 | 端點類型 | 權限資源 | 動作 | 取得方式 |
 |----------|----------|------|----------|
-| 查詢 | YAML 中的 `permission` 欄位 | `read` | `SqlDefinition.permission` |
+| 查詢 | DB 中 `api_hub_sql_definitions.permission` 欄位 | `read` | `SqlDefinition.permission` |
 | 程序 | `procedure:{name}` | `execute` | 由請求中的 `name` 動態組合 |
 | 寫入 | `table:{table}` | `write` | 由請求中的 `table` 動態組合 |
 
@@ -1284,7 +1444,107 @@ Authorization: Bearer <token>
 
 ## 9. SQL 定義系統
 
-### 9.1 YAML 檔案格式
+### 9.1 儲存架構
+
+SQL 定義以 **PostgreSQL** 為主要儲存（`api_hub_sql_definitions` 表），支援透過 API 和 Admin UI 進行完整 CRUD 操作。YAML 檔案作為備援來源，在 DB 為空時自動回退使用。
+
+**載入優先順序：**
+
+```
+啟動 / 重載
+    │
+    ├─ 嘗試從 PostgreSQL 載入
+    │     │
+    │     ├─ DB 有資料 → 使用 DB 定義 ✓
+    │     │
+    │     └─ DB 為空 → 回退至 YAML 檔案
+    │                     │
+    │                     └─ 從 app/sql_definitions/*.yaml 載入 ✓
+    │
+    └─ CRUD 操作後 → 自動呼叫 reload_from_db() 刷新記憶體
+```
+
+### 9.2 定義結構
+
+每個 SQL 定義包含以下欄位：
+
+| 欄位 | 型態 | 必填 | 說明 |
+|------|------|------|------|
+| `name` | string | 是 | 唯一識別名稱（用於 API 請求的 `query_name`） |
+| `description` | string | 否 | 人類可讀說明 |
+| `sql` | string | 是 | SQL SELECT 語句（支援 `:param` 綁定變數） |
+| `permission` | string | 否 | 權限名稱（預設自動生成 `query:{name}`） |
+| `params` | JSON object | 否 | 參數定義，每個參數含 `type`/`required`/`description` |
+
+**參數 `type` 允許值：** `string`（預設）、`number`、`date`
+
+### 9.3 CRUD 操作
+
+#### 透過 Admin UI
+
+1. 進入 **SQL Definitions** 頁面
+2. 點擊 **+ New Definition** 新增、**Edit** 編輯、**Delete** 刪除
+3. 表單包含：名稱、描述、權限、SQL 編輯區（monospace）、參數 JSON 編輯器
+4. 所有操作即時生效（自動刷新記憶體 Registry）
+
+#### 透過 API
+
+完整的 RESTful CRUD — 詳見 [5.4 查詢端點](#54-查詢端點-apiv1queries)。
+
+### 9.4 YAML 匯出與匯入
+
+#### 9.4.1 伺服器端 YAML 匯入（遷移用）
+
+對於既有的 YAML 定義，提供一鍵匯入功能：
+
+```
+POST /api/v1/queries/definitions/import-yaml    (需要超級管理員權限)
+```
+
+- 掃描 `app/sql_definitions/*.yaml` 目錄中所有 YAML 檔案
+- 已存在的名稱自動跳過（不覆蓋）
+- 回傳匯入數量、跳過數量、錯誤列表
+
+也可在 Admin UI 的 SQL Definitions 頁面點擊 **Import YAML** 按鈕執行。
+
+#### 9.4.2 YAML 匯出（下載）
+
+將指定資料庫的所有 SQL 定義匯出為 YAML 檔案下載：
+
+```
+GET /api/v1/{db}/queries/definitions/export-yaml    (需要超級管理員權限)
+```
+
+- 查詢該 `db_alias` 的所有 SQL 定義，依名稱排序
+- 序列化為 YAML 陣列（包含 `name`、`description`、`sql`、`permission`、`params`）
+- 以 `Content-Disposition: attachment` 回應，檔名格式：`sql_definitions_{db}_{date}.yaml`
+- Admin UI 使用 `fetch()` + `Blob` 方式下載（透過 Authorization header 認證）
+
+#### 9.4.3 YAML 檔案上傳匯入
+
+上傳 YAML 檔案將定義匯入至指定資料庫（支援跨資料庫遷移）：
+
+```
+POST /api/v1/{db}/queries/definitions/import-yaml-file    (需要超級管理員權限)
+```
+
+- 接收 `multipart/form-data` 上傳的 `.yaml` / `.yml` 檔案
+- 使用 `yaml.safe_load` 解析，支援陣列格式及單一定義格式
+- `db_alias` 由路徑 `{db}` 決定（忽略檔案中的 `db_alias` 欄位），同一份匯出檔可匯入至任意資料庫
+- 已存在的 `(name, db_alias)` 組合自動跳過
+- 回傳 `{ imported, skipped, errors }` 摘要
+- 匯入後自動呼叫 `sql_registry.reload_from_db()` 刷新記憶體
+
+**典型遷移流程：**
+
+```
+1. 在來源資料庫點擊 Export YAML → 下載 YAML 檔案
+2. 切換至目標資料庫
+3. 點擊 Upload YAML → 選擇下載的檔案 → 確認匯入
+4. 重複名稱自動跳過，參數定義完整保留
+```
+
+### 9.5 YAML 檔案格式（備援/遷移用）
 
 檔案位置：`app/sql_definitions/*.yaml`
 
@@ -1304,9 +1564,28 @@ params:                         # 參數定義
     description: <string>       # 參數說明
 ```
 
-### 9.2 範例定義
+### 9.6 範例定義
 
-**employees.yaml — 帶可選參數的員工查詢：**
+**透過 API 新增：**
+
+```json
+POST /api/v1/queries/definitions
+{
+  "name": "employees",
+  "description": "Query active employees with optional department filter",
+  "sql": "SELECT emp_id, emp_name, department, hire_date, salary\nFROM employees\nWHERE status = 'ACTIVE'\nAND (:dept IS NULL OR department = :dept)\nORDER BY emp_id",
+  "permission": "query:employees",
+  "params": {
+    "dept": {
+      "type": "string",
+      "required": false,
+      "description": "Filter by department code"
+    }
+  }
+}
+```
+
+**等同的 YAML 定義（employees.yaml）：**
 
 ```yaml
 name: employees
@@ -1325,43 +1604,7 @@ params:
 permission: "query:employees"
 ```
 
-**departments.yaml — 無參數的簡單查詢：**
-
-```yaml
-name: departments
-description: "List all departments"
-sql: |
-  SELECT dept_id, dept_name, manager_id, location
-  FROM departments
-  ORDER BY dept_name
-params: {}
-permission: "query:departments"
-```
-
-**inventory_view.yaml — 多重可選參數的 View 查詢：**
-
-```yaml
-name: inventory_view
-description: "Query inventory view with optional product code and warehouse filters"
-sql: |
-  SELECT product_code, product_name, warehouse, quantity, last_updated
-  FROM v_inventory
-  WHERE (:product_code IS NULL OR product_code = :product_code)
-  AND (:warehouse IS NULL OR warehouse = :warehouse)
-  ORDER BY product_code
-params:
-  product_code:
-    type: string
-    required: false
-    description: "Filter by product code"
-  warehouse:
-    type: string
-    required: false
-    description: "Filter by warehouse name"
-permission: "query:inventory_view"
-```
-
-### 9.3 可選參數設計模式
+### 9.7 可選參數設計模式
 
 使用 Oracle 的 NULL 合併模式實現可選篩選：
 
@@ -1372,7 +1615,7 @@ WHERE (:param IS NULL OR column = :param)
 - 當 `param` 為 `NULL` 時，`:param IS NULL` 為 `TRUE`，條件被跳過
 - 當 `param` 有值時，作為精確比對篩選
 
-### 9.4 熱重載
+### 9.8 熱重載
 
 ```
 POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
@@ -1384,7 +1627,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 {"message": "SQL definitions reloaded", "count": 3}
 ```
 
-無需重啟服務即可新增、修改、刪除 SQL 定義。
+從 DB（或 YAML 備援）重新載入所有定義至記憶體，無需重啟服務。CRUD 操作後會自動觸發重載，通常不需手動呼叫。
 
 ---
 
@@ -1411,7 +1654,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 | **Users** | — | 使用者清單 + 新增使用者（帳號、密碼、角色指派、超級管理員設定） |
 | **Roles** | — | 角色清單 + 新增角色（名稱、描述、權限指派） |
 | **Permissions** | — | 權限清單 + 新增權限（resource、action、描述） |
-| **SQL Definitions** | — | 查看所有已註冊的 SQL 定義、參數資訊、熱重載 |
+| **SQL Definitions** | — | SQL 定義完整 CRUD：新增、編輯、刪除、檢視詳情（含 SQL）、YAML 匯出下載、YAML 檔案上傳匯入、伺服器端 YAML 匯入、熱重載 |
 | **Query Console** | — | 互動式查詢測試台（選擇 fetch mode、填入參數、即時查看結果表格） |
 | **Procedure Console** | — | 執行 Procedure / Function（支援 OUT 參數、非同步模式） |
 | **Write Console** | — | 執行 INSERT / UPDATE / DELETE（支援非同步佇列模式） |
@@ -1635,7 +1878,7 @@ CORSMiddleware(
 
 | 掛載 | 說明 |
 |------|------|
-| `./app/sql_definitions` → `/app/app/sql_definitions` | SQL 定義檔熱更新 |
+| `./app/sql_definitions` → `/app/app/sql_definitions` | SQL 定義 YAML 備援檔（匯入用） |
 | `./app/database_definitions` → `/app/app/database_definitions` | 資料庫定義檔 |
 | `redis_data` (named volume) | Redis 資料持久化 |
 
@@ -1755,15 +1998,17 @@ Oracle-api-hub/
 │   │   └── session.py                   # SQLAlchemy ORM Engine / Session
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── user.py                      # User / Role / Permission ORM 模型
+│   │   ├── user.py                      # User / Role / Permission ORM 模型
+│   │   └── sql_definition.py            # SqlDefinitionModel ORM（api_hub_sql_definitions）
 │   ├── schemas/
 │   │   ├── __init__.py
 │   │   ├── auth.py                      # 認證相關 Pydantic Schema
-│   │   └── query.py                     # 查詢 / 程序 / 寫入 / 批次交易 Pydantic Schema
+│   │   ├── query.py                     # 查詢 / 程序 / 寫入 / 批次交易 Pydantic Schema
+│   │   └── sql_definition.py            # SQL 定義 CRUD Pydantic Schema
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── auth_service.py              # 認證邏輯 + PermissionChecker
-│   │   ├── sql_registry.py              # YAML SQL 定義載入器（Singleton）
+│   │   ├── sql_registry.py              # SQL 定義 Registry（DB 為主，YAML 備援）
 │   │   ├── query_service.py             # SQL 查詢執行 + ROWNUM 分頁
 │   │   ├── procedure_service.py         # Oracle Procedure / Function 呼叫
 │   │   ├── write_service.py             # DML 操作（INSERT/UPDATE/DELETE + 批次交易）
@@ -1783,7 +2028,7 @@ Oracle-api-hub/
 │   │       ├── auth.py                  # 認證端點（登入 / 使用者 / 角色 / 權限 CRUD）
 │   │       ├── health.py                # 健康檢查端點
 │   │       ├── databases.py             # 資料庫列表端點 + get_db_alias 依賴
-│   │       ├── queries.py               # 查詢端點（定義列表 / 重載 / /{db}/執行）
+│   │       ├── queries.py               # 查詢端點（CRUD / 匯出 / 匯入 / 重載 / /{db}/執行）
 │   │       ├── procedures.py            # 程序端點（/{db}/同步 / 非同步）
 │   │       ├── writes.py                # 寫入端點（/{db}/單筆 / 批次 / 非同步 / 狀態查詢）
 │   │       └── schemas.py              # 表結構探查端點（/{db}/describe）
@@ -1795,7 +2040,7 @@ Oracle-api-hub/
 │   │       └── app.js                   # 前端邏輯（路由、API、頁面渲染）
 │   ├── database_definitions/             # 多資料庫連線定義
 │   │   └── databases.yaml.example       # 資料庫定義範例
-│   └── sql_definitions/                 # SQL 查詢定義 YAML 檔
+│   └── sql_definitions/                 # SQL 查詢定義 YAML 備援檔（匯入至 DB 用）
 │       ├── employees.yaml               # 員工查詢範例
 │       ├── departments.yaml             # 部門查詢範例
 │       └── inventory_view.yaml          # 庫存 View 查詢範例
