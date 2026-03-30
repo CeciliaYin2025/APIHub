@@ -59,3 +59,26 @@ class PermissionOut(BaseModel):
     description: str | None
 
     model_config = {"from_attributes": True}
+
+
+class UserUpdate(BaseModel):
+    full_name: str | None = None
+    is_active: bool | None = None
+    is_superuser: bool | None = None
+    role_ids: list[int] | None = None
+
+
+class RoleUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    permission_ids: list[int] | None = None
+
+
+class PermissionUpdate(BaseModel):
+    resource: str | None = None
+    action: str | None = None
+    description: str | None = None
+
+
+class PasswordReset(BaseModel):
+    new_password: str
