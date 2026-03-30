@@ -8,13 +8,17 @@ from app.core.security import create_access_token, get_password_hash
 from app.db.session import get_db
 from app.models.user import Permission, Role, User
 from app.schemas.auth import (
+    PasswordReset,
     PermissionCreate,
     PermissionOut,
+    PermissionUpdate,
     RoleCreate,
     RoleOut,
+    RoleUpdate,
     Token,
     UserCreate,
     UserOut,
+    UserUpdate,
 )
 from app.services.auth_service import authenticate_user, get_current_active_superuser, get_current_user
 
@@ -65,6 +69,61 @@ def create_user(
 @router.get("/users", response_model=list[UserOut])
 def list_users(db: Session = Depends(get_db), _admin: User = Depends(get_current_active_superuser)):
     return db.query(User).all()
+
+
+@router.put("/users/{user_id}", response_model=UserOut)
+def update_user(
+    user_id: int,
+    payload: UserUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_active_superuser),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.full_name is not None:
+        user.full_name = payload.full_name
+    if payload.is_active is not None:
+        if not payload.is_active and user.id == admin.id:
+            raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
+        user.is_active = payload.is_active
+    if payload.is_superuser is not None:
+        user.is_superuser = payload.is_superuser
+    if payload.role_ids is not None:
+        roles = db.query(Role).filter(Role.id.in_(payload.role_ids)).all()
+        user.roles = roles
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.delete("/users/{user_id}", status_code=204)
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_active_superuser),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == admin.id:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    user.is_active = False
+    db.commit()
+
+
+@router.patch("/users/{user_id}/password", status_code=204)
+def reset_user_password(
+    user_id: int,
+    payload: PasswordReset,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_active_superuser),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.hashed_password = get_password_hash(payload.new_password)
+    db.commit()
 
 
 # ── Roles (superuser only) ──────────────────────────────────────────────────
