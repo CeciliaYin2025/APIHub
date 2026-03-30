@@ -204,3 +204,39 @@ def create_permission(
 @router.get("/permissions", response_model=list[PermissionOut])
 def list_permissions(db: Session = Depends(get_db), _admin: User = Depends(get_current_active_superuser)):
     return db.query(Permission).all()
+
+
+@router.put("/permissions/{permission_id}", response_model=PermissionOut)
+def update_permission(
+    permission_id: int,
+    payload: PermissionUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_active_superuser),
+):
+    perm = db.query(Permission).filter(Permission.id == permission_id).first()
+    if not perm:
+        raise HTTPException(status_code=404, detail="Permission not found")
+    if payload.resource is not None:
+        perm.resource = payload.resource
+    if payload.action is not None:
+        perm.action = payload.action
+    if payload.description is not None:
+        perm.description = payload.description
+    db.commit()
+    db.refresh(perm)
+    return perm
+
+
+@router.delete("/permissions/{permission_id}", status_code=204)
+def delete_permission(
+    permission_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_active_superuser),
+):
+    perm = db.query(Permission).filter(Permission.id == permission_id).first()
+    if not perm:
+        raise HTTPException(status_code=404, detail="Permission not found")
+    if perm.roles:
+        raise HTTPException(status_code=409, detail="Cannot delete permission that is still assigned to roles")
+    db.delete(perm)
+    db.commit()
