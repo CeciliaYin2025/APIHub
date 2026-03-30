@@ -520,13 +520,17 @@ async function renderRoles() {
         </div>
         <div class="card-body no-pad">
           <table class="data-table"><thead><tr>
-            <th>ID</th><th>Name</th><th>Description</th><th>Permissions</th>
+            <th>ID</th><th>Name</th><th>Description</th><th>Permissions</th><th>Actions</th>
           </tr></thead>
           <tbody>${roles.map(r => `<tr>
             <td>${r.id}</td>
             <td><strong>${esc(r.name)}</strong></td>
             <td>${esc(r.description || '—')}</td>
             <td>${(r.permissions || []).map(p => `<span class="tag">${esc(p.resource)}:${esc(p.action)}</span>`).join(' ') || '—'}</td>
+            <td>
+              <button class="btn btn-xs btn-secondary" onclick="openEditRoleModal(${r.id})">Edit</button>
+              <button class="btn btn-xs btn-danger" onclick="deleteRole(${r.id}, '${esc(r.name)}')">Delete</button>
+            </td>
           </tr>`).join('')}</tbody></table>
         </div>
       </div>
@@ -569,6 +573,66 @@ window.submitRole = async function() {
     await api('POST', '/auth/roles', data);
     closeModal();
     toast('Role created', 'success');
+    renderRoles();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.openEditRoleModal = async function(roleId) {
+  const allPerms = window._cachedPerms || [];
+  let role;
+  try {
+    const roles = await api('GET', '/auth/roles');
+    role = roles.find(r => r.id === roleId);
+    if (!role) { toast('Role not found', 'error'); return; }
+  } catch (err) { toast(err.message, 'error'); return; }
+
+  const rolePermIds = (role.permissions || []).map(p => p.id);
+  const body = `
+    <form id="editRoleForm">
+      <input type="hidden" name="role_id" value="${role.id}">
+      <div class="form-group"><label>Role Name</label><input type="text" name="name" value="${esc(role.name)}" required></div>
+      <div class="form-group"><label>Description</label><textarea name="description" rows="2">${esc(role.description || '')}</textarea></div>
+      <div class="form-group">
+        <label>Permissions</label>
+        <div class="checkbox-list">
+          ${allPerms.map(p => `<div class="checkbox-item">
+            <input type="checkbox" id="eperm_${p.id}" name="perm_ids" value="${p.id}" ${rolePermIds.includes(p.id) ? 'checked' : ''}>
+            <label for="eperm_${p.id}">${esc(p.resource)}:${esc(p.action)}</label>
+          </div>`).join('')}
+        </div>
+      </div>
+    </form>
+  `;
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                   <button class="btn btn-primary" onclick="submitEditRole()">Save Changes</button>`;
+  openModal('Edit Role', body, footer);
+};
+
+window.submitEditRole = async function() {
+  const form = document.getElementById('editRoleForm');
+  const roleId = form.role_id.value;
+  const data = {
+    name: form.name.value,
+    description: form.description.value || null,
+    permission_ids: [...form.querySelectorAll('input[name="perm_ids"]:checked')].map(c => parseInt(c.value)),
+  };
+  try {
+    await api('PUT', `/auth/roles/${roleId}`, data);
+    closeModal();
+    toast('Role updated', 'success');
+    renderRoles();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.deleteRole = async function(roleId, roleName) {
+  if (!confirm(`Delete role "${roleName}"? This cannot be undone.`)) return;
+  try {
+    await api('DELETE', `/auth/roles/${roleId}`);
+    toast('Role deleted', 'success');
     renderRoles();
   } catch (err) {
     toast(err.message, 'error');
