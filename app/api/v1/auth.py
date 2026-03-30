@@ -149,6 +149,43 @@ def list_roles(db: Session = Depends(get_db), _admin: User = Depends(get_current
     return db.query(Role).all()
 
 
+@router.put("/roles/{role_id}", response_model=RoleOut)
+def update_role(
+    role_id: int,
+    payload: RoleUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_active_superuser),
+):
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if payload.name is not None:
+        role.name = payload.name
+    if payload.description is not None:
+        role.description = payload.description
+    if payload.permission_ids is not None:
+        perms = db.query(Permission).filter(Permission.id.in_(payload.permission_ids)).all()
+        role.permissions = perms
+    db.commit()
+    db.refresh(role)
+    return role
+
+
+@router.delete("/roles/{role_id}", status_code=204)
+def delete_role(
+    role_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_active_superuser),
+):
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if role.users:
+        raise HTTPException(status_code=409, detail="Cannot delete role that is still assigned to users")
+    db.delete(role)
+    db.commit()
+
+
 # ── Permissions (superuser only) ────────────────────────────────────────────
 
 @router.post("/permissions", response_model=PermissionOut, status_code=201)
