@@ -654,13 +654,17 @@ async function renderPermissions() {
         </div>
         <div class="card-body no-pad">
           <table class="data-table"><thead><tr>
-            <th>ID</th><th>Resource</th><th>Action</th><th>Description</th>
+            <th>ID</th><th>Resource</th><th>Action</th><th>Description</th><th>Actions</th>
           </tr></thead>
           <tbody>${perms.map(p => `<tr>
             <td>${p.id}</td>
             <td><span class="tag">${esc(p.resource)}</span></td>
             <td><span class="badge badge-blue">${esc(p.action)}</span></td>
             <td>${esc(p.description || '—')}</td>
+            <td>
+              <button class="btn btn-xs btn-secondary" onclick="openEditPermModal(${p.id})">Edit</button>
+              <button class="btn btn-xs btn-danger" onclick="deletePerm(${p.id}, '${esc(p.resource)}')">Delete</button>
+            </td>
           </tr>`).join('')}</tbody></table>
         </div>
       </div>
@@ -705,6 +709,67 @@ window.submitPerm = async function() {
     await api('POST', '/auth/permissions', data);
     closeModal();
     toast('Permission created', 'success');
+    renderPermissions();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.openEditPermModal = async function(permId) {
+  let perm;
+  try {
+    const perms = await api('GET', '/auth/permissions');
+    perm = perms.find(p => p.id === permId);
+    if (!perm) { toast('Permission not found', 'error'); return; }
+  } catch (err) { toast(err.message, 'error'); return; }
+
+  const body = `
+    <form id="editPermForm">
+      <input type="hidden" name="perm_id" value="${perm.id}">
+      <div class="form-group">
+        <label>Resource</label>
+        <input type="text" name="resource" value="${esc(perm.resource)}" required>
+        <div class="hint">Format: type:name (supports * wildcard)</div>
+      </div>
+      <div class="form-group">
+        <label>Action</label>
+        <select name="action">
+          <option value="read" ${perm.action === 'read' ? 'selected' : ''}>read</option>
+          <option value="execute" ${perm.action === 'execute' ? 'selected' : ''}>execute</option>
+          <option value="write" ${perm.action === 'write' ? 'selected' : ''}>write</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Description</label><textarea name="description" rows="2">${esc(perm.description || '')}</textarea></div>
+    </form>
+  `;
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                   <button class="btn btn-primary" onclick="submitEditPerm()">Save Changes</button>`;
+  openModal('Edit Permission', body, footer);
+};
+
+window.submitEditPerm = async function() {
+  const form = document.getElementById('editPermForm');
+  const permId = form.perm_id.value;
+  const data = {
+    resource: form.resource.value,
+    action: form.action.value,
+    description: form.description.value || null,
+  };
+  try {
+    await api('PUT', `/auth/permissions/${permId}`, data);
+    closeModal();
+    toast('Permission updated', 'success');
+    renderPermissions();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.deletePerm = async function(permId, resource) {
+  if (!confirm(`Delete permission "${resource}"? This cannot be undone.`)) return;
+  try {
+    await api('DELETE', `/auth/permissions/${permId}`);
+    toast('Permission deleted', 'success');
     renderPermissions();
   } catch (err) {
     toast(err.message, 'error');
