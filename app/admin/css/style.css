@@ -169,6 +169,7 @@ textarea { resize: vertical; min-height: 80px; }
 .btn-success { background: var(--success); color: #fff; }
 .btn-success:hover { background: #15803d; }
 .btn-sm { padding: 5px 10px; font-size: .82rem; }
+.btn-xs { padding: 2px 8px; font-size: 0.75rem; }
 .btn-outline { background: transparent; border: 1px solid var(--gray-300); color: var(--gray-600); }
 .btn-outline:hover { background: var(--gray-100); }
 .btn-group { display: flex; gap: 8px; }
