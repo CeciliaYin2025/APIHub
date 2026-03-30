@@ -329,7 +329,7 @@ async function renderUsers() {
         </div>
         <div class="card-body no-pad">
           <table class="data-table"><thead><tr>
-            <th>ID</th><th>Username</th><th>Full Name</th><th>Roles</th><th>Status</th><th>Superuser</th>
+            <th>ID</th><th>Username</th><th>Full Name</th><th>Roles</th><th>Status</th><th>Superuser</th><th>Actions</th>
           </tr></thead>
           <tbody>${users.map(u => `<tr>
             <td>${u.id}</td>
@@ -338,6 +338,10 @@ async function renderUsers() {
             <td>${(u.roles || []).map(r => `<span class="tag">${esc(r.name)}</span>`).join(' ') || '—'}</td>
             <td>${u.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>'}</td>
             <td>${u.is_superuser ? '<span class="badge badge-blue">Yes</span>' : '—'}</td>
+            <td>
+              <button class="btn btn-xs btn-secondary" onclick="openEditUserModal(${u.id})">Edit</button>
+              <button class="btn btn-xs btn-danger" onclick="deleteUser(${u.id}, '${esc(u.username)}')">Delete</button>
+            </td>
           </tr>`).join('')}</tbody></table>
         </div>
       </div>
@@ -398,6 +402,98 @@ window.submitUser = async function() {
     await api('POST', '/auth/users', data);
     closeModal();
     toast('User created', 'success');
+    renderUsers();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.openEditUserModal = async function(userId) {
+  const roles = window._cachedRoles || [];
+  let user;
+  try {
+    const users = await api('GET', '/auth/users');
+    user = users.find(u => u.id === userId);
+    if (!user) { toast('User not found', 'error'); return; }
+  } catch (err) { toast(err.message, 'error'); return; }
+
+  const userRoleIds = (user.roles || []).map(r => r.id);
+  const body = `
+    <form id="editUserForm">
+      <input type="hidden" name="user_id" value="${user.id}">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" value="${esc(user.username)}" disabled>
+      </div>
+      <div class="form-group">
+        <label>Full Name</label>
+        <input type="text" name="full_name" value="${esc(user.full_name || '')}">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Active</label>
+          <select name="is_active">
+            <option value="true" ${user.is_active ? 'selected' : ''}>Yes</option>
+            <option value="false" ${!user.is_active ? 'selected' : ''}>No</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Superuser</label>
+          <select name="is_superuser">
+            <option value="false" ${!user.is_superuser ? 'selected' : ''}>No</option>
+            <option value="true" ${user.is_superuser ? 'selected' : ''}>Yes</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Roles</label>
+        <div class="checkbox-list">
+          ${roles.map(r => `<div class="checkbox-item">
+            <input type="checkbox" id="erole_${r.id}" name="role_ids" value="${r.id}" ${userRoleIds.includes(r.id) ? 'checked' : ''}>
+            <label for="erole_${r.id}">${esc(r.name)}</label>
+          </div>`).join('')}
+        </div>
+      </div>
+      <hr>
+      <div class="form-group">
+        <label>Reset Password (leave blank to keep current)</label>
+        <input type="password" name="new_password" placeholder="New password">
+      </div>
+    </form>
+  `;
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                   <button class="btn btn-primary" onclick="submitEditUser()">Save Changes</button>`;
+  openModal('Edit User', body, footer);
+};
+
+window.submitEditUser = async function() {
+  const form = document.getElementById('editUserForm');
+  const userId = form.user_id.value;
+  const data = {
+    full_name: form.full_name.value || null,
+    is_active: form.is_active.value === 'true',
+    is_superuser: form.is_superuser.value === 'true',
+    role_ids: [...form.querySelectorAll('input[name="role_ids"]:checked')].map(c => parseInt(c.value)),
+  };
+  try {
+    await api('PUT', `/auth/users/${userId}`, data);
+    const newPw = form.new_password.value;
+    if (newPw) {
+      await api('PATCH', `/auth/users/${userId}/password`, { new_password: newPw });
+    }
+    closeModal();
+    toast('User updated', 'success');
+    renderUsers();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.deleteUser = async function(userId, username) {
+  if (!confirm(`Deactivate user "${username}"? The user will no longer be able to log in.`)) return;
+  try {
+    await api('DELETE', `/auth/users/${userId}`);
+    toast('User deactivated', 'success');
     renderUsers();
   } catch (err) {
     toast(err.message, 'error');
