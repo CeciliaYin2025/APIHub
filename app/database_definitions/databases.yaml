@@ -1,0 +1,22 @@
+# Oracle (from original .env settings)
+- alias: default
+  db_type: oracle
+  description: "Oracle UAT database"
+  dsn: "172.31.3.85:1531/UAT"
+  user: "apps"
+  password: "apps"
+  pool_min: 2
+  pool_max: 10
+  pool_increment: 1
+
+# PostgreSQL test database
+- alias: pg_test
+  db_type: postgresql
+  description: "PostgreSQL test database"
+  host: "localhost"
+  port: 5432
+  database: "db_api_demo"
+  user: "db_api_demo"
+  password: "db_api_demo"
+  pool_min: 2
+  pool_max: 5
