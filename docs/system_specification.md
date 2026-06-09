@@ -3,10 +3,10 @@
 | 項目 | 內容 |
 |------|------|
 | 文件名稱 | Oracle RESTful API Hub 系統規格書 |
-| 版本 | 1.4.0 |
+| 版本 | 1.5.0 |
 | 目標資料庫 | Oracle Database 11g (11.1.0.4)（支援多資料庫） |
 | 框架 | FastAPI (Python 3.10+) |
-| 文件日期 | 2026-03-04 |
+| 文件日期 | 2026-06-09 |
 
 ---
 
@@ -223,33 +223,55 @@ class Settings(BaseSettings):
 
 ### 4.3 多資料庫連線池管理
 
-系統支援同時連接多個 Oracle 資料庫，透過 `DatabaseRegistry` 單例管理所有連線池。
+系統支援同時連接多個資料庫（Oracle / PostgreSQL / MS SQL Server），透過 `DatabaseRegistry` 單例管理所有連線池。資料來源與寫入目標不分離——同一個 alias 既可被查詢（讀），也可被寫入或執行 procedure（寫）；要新增多個來源/目標，即註冊多個 alias。
 
-#### 4.3.1 資料庫定義 — `app/database_definitions/*.yaml`
+#### 4.3.1 資料庫定義 — `app/database_definitions/databases.yaml`
 
-以 YAML 檔案定義各資料庫連線參數。每個檔案包含一個或多個資料庫設定。
+以單一 YAML 清單檔定義所有資料庫連線，每個項目即一個 alias。由 `DatabaseRegistry.load()`（`app/db/multi_pool.py`）讀取。
+
+**各引擎欄位：**
+
+| 欄位 | Oracle | PostgreSQL / MSSQL | 說明 |
+|------|--------|--------------------|------|
+| `alias` | ✅ | ✅ | 識別碼，亦為 API 路徑片段；規則 `^[a-zA-Z][a-zA-Z0-9_]{0,63}$` |
+| `db_type` | `oracle`（可省略） | `postgresql` / `mssql` | 決定 adapter（`app/db/adapters/`）與 dialect（`app/db/dialects/`） |
+| `description` | ✅ | ✅ | 顯示於 `GET /api/v1/databases` 與 Admin UI DB 選單 |
+| `dsn` | ✅ `host:port/service` | — | 僅 Oracle |
+| `host` / `port` / `database` | — | ✅ | 僅 PostgreSQL / MSSQL |
+| `user` / `password` | ✅ | ✅ | 連線帳密（`password` 請留空，見下） |
+| `pool_min` / `pool_max` | ✅ | ✅ | 連線池大小 |
+| `pool_increment` | ✅ | —（僅 Oracle 使用） | 連線池增長步階 |
 
 ```yaml
-- alias: hr_db
-  description: "HR 人力資源資料庫"
-  dsn: "hr-oracle.company.com:1521/hrdb"
-  user: "hr_api_user"
-  password: "changeme"       # 可透過環境變數 DB_HR_DB_PASSWORD 覆蓋
+# Oracle（db_type 可省略）
+- alias: default
+  db_type: oracle
+  description: "Oracle UAT database"
+  dsn: "172.31.3.85:1531/UAT"
+  user: "apps"
+  password: ""          # 由 DB_DEFAULT_PASSWORD 提供
   pool_min: 2
   pool_max: 10
   pool_increment: 1
 
-- alias: finance_db
-  description: "財務資料庫"
-  dsn: "fin-oracle.company.com:1521/findb"
-  user: "fin_api_user"
-  password: "changeme"
+# PostgreSQL
+- alias: pg_test
+  db_type: postgresql
+  description: "PostgreSQL test database"
+  host: "localhost"
+  port: 5432
+  database: "db_api_demo"
+  user: "db_api_demo"
+  password: ""          # 由 DB_PG_TEST_PASSWORD 提供
   pool_min: 2
   pool_max: 5
-  pool_increment: 1
 ```
 
-**密碼安全：** 支援以環境變數 `DB_{ALIAS}_PASSWORD`（大寫）覆蓋 YAML 中的密碼，避免在檔案中儲存正式密碼。
+**密碼安全（不在檔案保存明文）：** YAML 的 `password` 一律留空 `""`，改以環境變數 `DB_{ALIAS大寫}_PASSWORD` 提供（例：alias `pg_test` → `DB_PG_TEST_PASSWORD`）。`_load_file()` 在載入時若偵測到該環境變數即覆蓋 YAML 值；每個 alias 都需對應的密碼變數，否則連線失敗。
+
+**載入時機與生效方式：** 定義僅在**啟動時**（lifespan 內 `db_registry.load()`）載入一次，連線池則於首次使用時延遲建立。資料來源**沒有熱更新端點**（與 SQL 定義不同）——修改 `databases.yaml` 後必須**重啟程序/容器**才會生效，且 Celery worker 也須一併重啟（它們透過同一份 YAML 連線）。
+
+**部署掛載（改檔免 rebuild）：** 本機 `docker-compose.yaml` 與 ISAP 閘道 `deploy/isap/docker-compose.yml` 兩套 compose 都將 `app/database_definitions` 目錄 bind-mount 進 `api` 與兩個 celery 服務，因此改 YAML 只需 `docker compose restart`、毋須重建映像。新增 alias 時，記得在對應的 `.env` 補上其 `DB_*_PASSWORD`。
 
 #### 4.3.2 多連線池管理器 — `app/db/multi_pool.py`
 
@@ -258,13 +280,17 @@ class Settings(BaseSettings):
 | 欄位 | 型態 | 說明 |
 |------|------|------|
 | `alias` | `str` | 資料庫別名（用於 URL 路徑） |
+| `db_type` | `str` | 引擎類型：`oracle`（預設）/ `postgresql` / `mssql` |
 | `description` | `str` | 人類可讀說明 |
-| `dsn` | `str` | Oracle 連線字串 |
+| `dsn` | `str` | Oracle 連線字串（`host:port/service`） |
+| `host` | `str` | 主機（PostgreSQL / MSSQL） |
+| `port` | `int` | 連接埠（PostgreSQL / MSSQL） |
+| `database` | `str` | 資料庫名稱（PostgreSQL / MSSQL） |
 | `user` | `str` | 資料庫使用者 |
-| `password` | `str` | 資料庫密碼 |
+| `password` | `str` | 資料庫密碼（建議留空，由 `DB_{ALIAS}_PASSWORD` 提供） |
 | `pool_min` | `int` | 連線池最小連線數（預設 2） |
 | `pool_max` | `int` | 連線池最大連線數（預設 10） |
-| `pool_increment` | `int` | 連線池增長步階（預設 1） |
+| `pool_increment` | `int` | 連線池增長步階（預設 1，僅 Oracle 使用） |
 
 **類別 `DatabaseRegistry`（Singleton）：**
 
