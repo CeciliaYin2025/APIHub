@@ -12,6 +12,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./app/sql_definitions:/app/app/sql_definitions
+      - ./app/database_definitions:/app/app/database_definitions
 
   # ── Celery Worker (write queue) ─────────────────────────────────────────
   celery-write-worker:
@@ -21,6 +22,8 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    volumes:
+      - ./app/database_definitions:/app/app/database_definitions
 
   # ── Celery Worker (procedure queue) ─────────────────────────────────────
   celery-proc-worker:
@@ -30,6 +33,8 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    volumes:
+      - ./app/database_definitions:/app/app/database_definitions
 
   # ── Celery Flower (monitoring dashboard) ────────────────────────────────
   flower:
