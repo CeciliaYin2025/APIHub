@@ -5,7 +5,7 @@
  */
 
 /* ── Global State ─────────────────────────────────────────────────────── */
-const API = '/api/v1';
+const API = (window.__BASE_PATH__ || '') + '/api/v1';
 let token = localStorage.getItem('hub_token') || '';
 let currentUser = null;
 let currentDb = localStorage.getItem('hub_current_db') || '';
