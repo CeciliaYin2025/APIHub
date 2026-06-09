@@ -1,0 +1,114 @@
+# ==============================================================================
+# Oracle API Hub — ISAP platform deployment stack
+# ==============================================================================
+# Self-registers against the shared ISAP infrastructure (CONTRACT.md v1.1):
+#   - creates its own DB in isap-postgres (apihub-db-init)
+#   - seeds tables + admin user (apihub-migrate)
+#   - drops its nginx route and reloads the gateway (apihub-route-register)
+#   - api + celery workers join gateway-net / db-net / redis-net
+#
+# Deploy:  cd deploy/isap && cp .env.example .env && <edit> && docker compose up -d --build
+# ==============================================================================
+
+services:
+  # ── one-shot: create the platform-store database in shared postgres ───────
+  apihub-db-init:
+    image: postgres:16-alpine
+    container_name: apihub-db-init
+    restart: "no"
+    env_file: [.env]
+    networks: [db-net]
+    entrypoint: ["sh", "/db-init/create-database.sh"]
+    volumes:
+      - ./db-init:/db-init:ro
+
+  # ── one-shot: create tables + seed default admin (idempotent) ─────────────
+  apihub-migrate:
+    build:
+      context: ../..
+    image: oracle-api-hub:latest
+    container_name: apihub-migrate
+    restart: "no"
+    env_file: [.env]
+    networks: [db-net, redis-net]
+    command: ["python", "-m", "scripts.init_db"]
+    depends_on:
+      apihub-db-init:
+        condition: service_completed_successfully
+
+  # ── one-shot: register the gateway route and reload nginx ─────────────────
+  apihub-route-register:
+    image: docker:27-cli
+    container_name: apihub-route-register
+    restart: "no"
+    volumes:
+      - ./gateway-conf/apihub.conf:/conf/apihub.conf:ro
+      - ${INFRA_GATEWAY_APPS_DIR:-/opt/isap/gateway-apps}:/dest
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["sh", "-c"]
+    command: |
+      set -e
+      cp -f /conf/apihub.conf /dest/apihub.conf
+      if docker exec isap-gateway nginx -t; then
+        docker kill -s HUP isap-gateway 2>/dev/null || true
+        echo "apihub route registered and gateway reloaded."
+      else
+        echo "nginx -t failed; removing conf to avoid breaking the gateway." >&2
+        rm -f /dest/apihub.conf
+        exit 1
+      fi
+
+  # ── long-running: FastAPI app ─────────────────────────────────────────────
+  apihub-api:
+    build:
+      context: ../..
+    image: oracle-api-hub:latest
+    container_name: apihub-api
+    restart: unless-stopped
+    env_file: [.env]
+    networks: [gateway-net, db-net, redis-net]
+    depends_on:
+      apihub-migrate:
+        condition: service_completed_successfully
+      apihub-route-register:
+        condition: service_completed_successfully
+
+  # ── long-running: Celery write-queue worker ───────────────────────────────
+  apihub-celery-write:
+    image: oracle-api-hub:latest
+    container_name: apihub-celery-write
+    restart: unless-stopped
+    env_file: [.env]
+    networks: [db-net, redis-net]
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "-Q", "write", "-l", "info", "--concurrency=4"]
+    depends_on:
+      apihub-api:
+        condition: service_started
+
+  # ── long-running: Celery procedure-queue worker ───────────────────────────
+  apihub-celery-proc:
+    image: oracle-api-hub:latest
+    container_name: apihub-celery-proc
+    restart: unless-stopped
+    env_file: [.env]
+    networks: [db-net, redis-net]
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "-Q", "procedure", "-l", "info", "--concurrency=2"]
+    depends_on:
+      apihub-api:
+        condition: service_started
+
+  # ── optional: Flower (no built-in auth — keep OFF the gateway). Uncomment
+  #    and tunnel via SSH if you need it.
+  # apihub-flower:
+  #   image: oracle-api-hub:latest
+  #   container_name: apihub-flower
+  #   restart: unless-stopped
+  #   env_file: [.env]
+  #   networks: [redis-net]
+  #   command: ["celery", "-A", "app.tasks.celery_app", "flower", "--port=5555"]
+  #   ports: ["127.0.0.1:5555:5555"]
+
+networks:
+  gateway-net: { external: true }
+  db-net:      { external: true }
+  redis-net:   { external: true }

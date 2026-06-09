@@ -1,4 +1,6 @@
-FROM python:3.11-slim
+# Pin to bookworm: Debian trixie renamed libaio1 -> libaio1t64, which breaks
+# the Oracle Instant Client dependency below. bookworm ships libaio1.
+FROM python:3.11-slim-bookworm
 
 # Oracle Instant Client dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -7,15 +9,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Oracle Instant Client 11.2 (compatible with Oracle 11g)
+# Install Oracle Instant Client (Basic Lite).
+# Pinned to 19c: it is the latest client line that still connects to Oracle
+# 11.2 (the project targets "Oracle 11g+"); 21c/23ai clients dropped 11.2.
+# A stable `instantclient` symlink points at whatever versioned directory the
+# zip extracts to, so LD_LIBRARY_PATH and ldconfig can never drift from the
+# real path (the previous hard-coded `instantclient_21_13` was wrong).
+ARG ORACLE_IC_URL=https://download.oracle.com/otn_software/linux/instantclient/1924000/instantclient-basiclite-linux.x64-19.24.0.0.0dbru.zip
 RUN mkdir -p /opt/oracle && cd /opt/oracle \
-    && wget -q https://download.oracle.com/otn_software/linux/instantclient/instantclient-basiclite-linuxx64.zip \
-    && unzip instantclient-basiclite-linuxx64.zip \
-    && rm -f instantclient-basiclite-linuxx64.zip \
-    && echo /opt/oracle/instantclient* > /etc/ld.so.conf.d/oracle.conf \
+    && wget -q "$ORACLE_IC_URL" -O instantclient.zip \
+    && unzip -q instantclient.zip \
+    && rm -f instantclient.zip \
+    && ln -s /opt/oracle/instantclient_* /opt/oracle/instantclient \
+    && echo /opt/oracle/instantclient > /etc/ld.so.conf.d/oracle.conf \
     && ldconfig
 
-ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_21_13:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient:$LD_LIBRARY_PATH
 
 WORKDIR /app
 

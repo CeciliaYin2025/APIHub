@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import auth, databases, health, procedures, queries, schemas, writes
@@ -41,6 +41,7 @@ app = FastAPI(
     title=settings.api_title,
     version=settings.api_version,
     lifespan=lifespan,
+    root_path=settings.root_path,
 )
 
 # ── Middleware ────────────────────────────────────────────────────────────────
@@ -74,5 +75,7 @@ app.mount("/admin/js", StaticFiles(directory=str(_ADMIN_DIR / "js")), name="admi
 @app.get("/admin")
 @app.get("/admin/{rest_of_path:path}")
 def admin_spa(rest_of_path: str = ""):
-    """Serve the admin SPA index.html for all /admin routes."""
-    return FileResponse(str(_ADMIN_DIR / "index.html"))
+    """Serve the admin SPA index.html, substituting the base path prefix."""
+    html = (_ADMIN_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("{{BASE_PATH}}", settings.root_path)
+    return HTMLResponse(content=html)
