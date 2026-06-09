@@ -67,6 +67,10 @@ services:
     restart: unless-stopped
     env_file: [.env]
     networks: [gateway-net, db-net, redis-net]
+    volumes:
+      # Edit data-source definitions without rebuilding the image — `docker
+      # compose restart` reloads them (definitions are read at startup only).
+      - ../../app/database_definitions:/app/app/database_definitions
     depends_on:
       apihub-migrate:
         condition: service_completed_successfully
@@ -80,6 +84,8 @@ services:
     restart: unless-stopped
     env_file: [.env]
     networks: [db-net, redis-net]
+    volumes:
+      - ../../app/database_definitions:/app/app/database_definitions
     command: ["celery", "-A", "app.tasks.celery_app", "worker", "-Q", "write", "-l", "info", "--concurrency=4"]
     depends_on:
       apihub-api:
@@ -92,6 +98,8 @@ services:
     restart: unless-stopped
     env_file: [.env]
     networks: [db-net, redis-net]
+    volumes:
+      - ../../app/database_definitions:/app/app/database_definitions
     command: ["celery", "-A", "app.tasks.celery_app", "worker", "-Q", "procedure", "-l", "info", "--concurrency=2"]
     depends_on:
       apihub-api:

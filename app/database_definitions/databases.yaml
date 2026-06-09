@@ -1,10 +1,16 @@
+# 資料庫連線定義。每個項目 = 一個 alias,alias 會成為 API 路徑的一部分。
+# 密碼不在此檔明文保存 —— 改由環境變數覆蓋:DB_{ALIAS大寫}_PASSWORD
+#   default -> DB_DEFAULT_PASSWORD
+#   pg_test -> DB_PG_TEST_PASSWORD
+# 留空的 password 一定要靠對應的環境變數提供,否則連線會失敗。
+
 # Oracle (from original .env settings)
 - alias: default
   db_type: oracle
   description: "Oracle UAT database"
   dsn: "172.31.3.85:1531/UAT"
   user: "apps"
-  password: "apps"
+  password: ""          # 由 DB_DEFAULT_PASSWORD 提供
   pool_min: 2
   pool_max: 10
   pool_increment: 1
@@ -17,6 +23,6 @@
   port: 5432
   database: "db_api_demo"
   user: "db_api_demo"
-  password: "db_api_demo"
+  password: ""          # 由 DB_PG_TEST_PASSWORD 提供
   pool_min: 2
   pool_max: 5
