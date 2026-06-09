@@ -1,6 +1,8 @@
 # Oracle API Hub
 
-A generic RESTful API platform built with **FastAPI** that exposes Oracle Database (11g+) tables, views, functions, and procedures as REST APIs. SQL definitions are managed in PostgreSQL with full CRUD via Admin UI (YAML import supported for migration). Designed as a universal data gateway for transforming Oracle data into open data format consumable by any system.
+A generic RESTful API platform built with **FastAPI** that exposes **Oracle**, **PostgreSQL**, and **Microsoft SQL Server** tables, views, functions, and procedures as REST APIs. SQL definitions are managed in PostgreSQL with full CRUD via Admin UI (YAML import supported for migration). Designed as a universal data gateway for transforming relational data into open data format consumable by any system.
+
+> The "Oracle" in the project name reflects its origin; the platform now connects to **multiple database engines** through a unified adapter layer. A single API Hub instance can serve REST endpoints backed by any mix of Oracle / PostgreSQL / MSSQL databases.
 
 ## Architecture
 
@@ -14,33 +16,89 @@ A generic RESTful API platform built with **FastAPI** that exposes Oracle Databa
                     │                                              │
                     │  ┌───────────────────────────────────────┐   │
                     │  │           API Endpoints                │   │
-                    │  │  /queries   /procedures   /writes     │   │
+                    │  │ /{db}/queries  /procedures  /writes   │   │
                     │  └────────────┬──────────────┬───────────┘   │
                     └───────────────┼──────────────┼───────────────┘
                                     │              │
-                    ┌───────────────▼──┐   ┌──────▼────────────┐
-                    │  cx_Oracle Pool   │   │  Celery + Redis   │
-                    │  (Sync Queries)   │   │  (Async Writes)   │
-                    └───────────────┬──┘   └──────┬────────────┘
-                                    │              │
-                    ┌───────────────▼──┐   ┌──────▼────────────┐
-                    │  Oracle Database  │   │  PostgreSQL        │
-                    │  (11g / 11.1.0.4) │   │  (Users, SQL Defs) │
-                    └──────────────────┘   └───────────────────┘
+                    ┌───────────────▼──────┐   ┌──▼────────────────┐
+                    │  DatabaseRegistry    │   │  Celery + Redis   │
+                    │  (multi-engine pool) │   │  (Async Writes)   │
+                    └─┬──────────┬─────────┘   └──┬────────────────┘
+                      │          │                │
+        ┌─────────────┘   ┌──────┴──────┐   ┌─────┴──────────────┐
+        ▼                 ▼             ▼   ▼                    │
+   ┌─────────┐      ┌────────────┐  ┌────────┐    ┌─────────────▼─────┐
+   │ Oracle  │      │ PostgreSQL │  │  MSSQL │    │   PostgreSQL       │
+   │ (11g+)  │      │ (data src) │  │        │    │ (Users, SQL Defs)  │
+   └─────────┘      └────────────┘  └────────┘    └────────────────────┘
+       \________________ data sources ___________/        platform store
 ```
+
+## Supported Database Engines
+
+The platform serves REST endpoints backed by three engines through a unified `PoolAdapter` layer (`app/db/adapters/`). All three drivers ship as declared dependencies — no extra install needed.
+
+| Engine | Driver | Adapter | YAML `db_type` |
+|---|---|---|---|
+| Oracle (11g+) | `oracledb` | `OraclePoolAdapter` | `oracle` |
+| PostgreSQL | `psycopg2-binary` | `PostgresPoolAdapter` | `postgresql` |
+| Microsoft SQL Server | `pymssql` | `MssqlPoolAdapter` | `mssql` |
+
+### Configuring multiple databases
+
+Drop YAML files into `app/database_definitions/` — each file is a list of database entries. A single API Hub instance can serve any mix of engines side-by-side; each is reachable via its `alias` in the URL path: `/api/v1/{alias}/queries/execute`.
+
+```yaml
+# app/database_definitions/databases.yaml
+- alias: default
+  db_type: oracle
+  description: "Oracle UAT database"
+  dsn: "172.31.3.85:1531/UAT"
+  user: "apps"
+  password: "apps"           # or omit and set DB_DEFAULT_PASSWORD env var
+  pool_min: 2
+  pool_max: 10
+
+- alias: pg_reporting
+  db_type: postgresql
+  description: "PostgreSQL reporting warehouse"
+  host: "pg.internal"
+  port: 5432
+  database: "reporting"
+  user: "ro_user"
+  password: "***"
+  pool_min: 2
+  pool_max: 10
+
+- alias: crm
+  db_type: mssql
+  description: "Legacy CRM on SQL Server"
+  host: "mssql.internal"
+  port: 1433
+  database: "CRM"
+  user: "api_user"
+  password: "***"
+  pool_min: 2
+  pool_max: 5
+```
+
+**Password override via environment variable:** any entry's `password` can be overridden by `DB_{ALIAS_UPPERCASE}_PASSWORD` (e.g. `DB_DEFAULT_PASSWORD`, `DB_CRM_PASSWORD`) — preferred for production so secrets stay out of YAML.
+
+> **Note on the platform store:** the internal PostgreSQL database that holds users, roles, permissions, and SQL definitions is separate from the data-source PostgreSQL configured above — it is configured via the `POSTGRES_*` environment variables (see [Configuration](#configuration)).
 
 ## Features
 
-### 1. SQL Query as Open Data (`/api/v1/queries`)
+### 1. SQL Query as Open Data (`/api/v1/{db}/queries`)
+- Works against any configured Oracle / PostgreSQL / MSSQL alias
 - SQL definitions stored in PostgreSQL with full CRUD API and Admin UI management
 - **YAML export/import** for cross-database migration: export definitions from one database, upload into another
 - YAML import endpoint for migrating existing server-side definitions (`POST /queries/definitions/import-yaml`)
-- Auto-pagination using Oracle 11g compatible `ROWNUM`
+- Auto-pagination (Oracle 11g compatible `ROWNUM`; standard `LIMIT/OFFSET` for PostgreSQL/MSSQL)
 - Returns structured JSON with columns, data, and pagination metadata
 - In-memory registry auto-refreshes after any CRUD operation
 
-### 2. Oracle Function & Procedure Execution (`/api/v1/procedures`)
-- Call stored procedures with IN/OUT parameters
+### 2. Function & Stored Procedure Execution (`/api/v1/{db}/procedures`)
+- Call stored procedures with IN/OUT parameters (Oracle PL/SQL, PostgreSQL functions, MSSQL T-SQL procedures)
 - Call functions and capture return values
 - Sync and async (Celery) execution modes
 
@@ -201,6 +259,14 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
   -d '{"query_name": "employees", "params": {"dept": "IT"}}'
 ```
 
+### Deploying to the ISAP platform gateway
+
+To run behind the shared ISAP nginx gateway at `/apihub/`, use the
+self-registering stack in [`deploy/isap/`](deploy/isap/README.md). It creates
+its DB in `isap-postgres`, uses `isap-redis` for Celery, and drops its own
+nginx route — no edits to the `isap-infrastructure` repo. Set `ROOT_PATH=/apihub`
+so the app and admin UI generate prefix-aware URLs.
+
 ## Adding a New Query Definition
 
 ### Via Admin UI (Recommended)
@@ -262,17 +328,20 @@ Or use the **Export YAML** / **Upload YAML** buttons on the Admin UI SQL Definit
 
 ## Configuration
 
-All settings via environment variables (see `.env.example`):
+**Data sources** (Oracle / PostgreSQL / MSSQL the API exposes): configured via YAML files in `app/database_definitions/` — see [Supported Database Engines](#supported-database-engines). Passwords can be supplied per-alias through `DB_{ALIAS}_PASSWORD` environment variables.
+
+**Platform settings** via environment variables (see `.env.example`):
 
 | Variable | Description | Default |
 |---|---|---|
-| `ORACLE_DSN` | Oracle connection string | `localhost:1521/orcl` |
-| `ORACLE_POOL_MIN` / `MAX` | Connection pool size | `2` / `10` |
-| `POSTGRES_HOST` | PostgreSQL host | `localhost` |
-| `POSTGRES_PORT` | PostgreSQL port | `5432` |
-| `POSTGRES_DB` | PostgreSQL database name | `api_hub` |
-| `POSTGRES_USER` | PostgreSQL user | `api_hub` |
-| `POSTGRES_PASSWORD` | PostgreSQL password | `changeme` |
+| `ORACLE_DSN` | Legacy single-Oracle DSN — used to auto-create a `default` alias if no YAML is present | `localhost:1521/orcl` |
+| `ORACLE_POOL_MIN` / `MAX` | Legacy single-Oracle pool size | `2` / `10` |
+| `DB_{ALIAS}_PASSWORD` | Override password for the YAML database with `alias: {alias}` (e.g. `DB_DEFAULT_PASSWORD`) | — |
+| `POSTGRES_HOST` | Platform-internal PostgreSQL host (users, SQL defs) | `localhost` |
+| `POSTGRES_PORT` | Platform PostgreSQL port | `5432` |
+| `POSTGRES_DB` | Platform PostgreSQL database name | `api_hub` |
+| `POSTGRES_USER` | Platform PostgreSQL user | `api_hub` |
+| `POSTGRES_PASSWORD` | Platform PostgreSQL password | `changeme` |
 | `SECRET_KEY` | JWT signing key | (change this!) |
 | `CELERY_BROKER_URL` | Redis URL for Celery | `redis://localhost:6379/1` |
 | `RATE_LIMIT_PER_MINUTE` | Max requests per client per minute | `60` |
@@ -286,8 +355,16 @@ app/
 │   ├── config.py            # Settings from env vars
 │   └── security.py          # JWT + password hashing
 ├── db/
-│   ├── oracle_pool.py       # cx_Oracle connection pool
+│   ├── multi_pool.py        # DatabaseRegistry — multi-engine pool manager
+│   ├── pool_factory.py      # Builds the right adapter per db_type
+│   ├── pool_adapter.py      # PoolAdapter abstract base
+│   ├── adapters/
+│   │   ├── oracle_adapter.py     # oracledb session pool
+│   │   ├── postgresql_adapter.py # psycopg2 ThreadedConnectionPool
+│   │   └── mssql_adapter.py      # pymssql queue-based pool
+│   ├── types.py             # DbType = "oracle" | "postgresql" | "mssql"
 │   └── session.py           # SQLAlchemy session (for ORM)
+├── database_definitions/    # YAML database connection configs (multi-DB)
 ├── models/
 │   ├── user.py              # User, Role, Permission ORM models
 │   └── sql_definition.py    # SQL Definition ORM model (PostgreSQL)
