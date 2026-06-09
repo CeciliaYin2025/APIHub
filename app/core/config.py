@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     api_title: str = "Oracle API Hub"
     api_version: str = "1.0.0"
     api_prefix: str = "/api/v1"
+    root_path: str = ""  # URL prefix when served behind a reverse proxy (e.g. /apihub)
     debug: bool = False
 
     # Rate limiting
