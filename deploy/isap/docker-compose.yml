@@ -91,6 +91,9 @@ services:
       # Mount an EMPTY dir over the seed YAML so the registry is DB-only in prod
       # (otherwise the baked-in samples appear as undeletable phantom defs).
       - ./sql_definitions:/app/app/sql_definitions
+      # Serve the Admin UI from the working tree so UI tweaks (HTML/CSS/JS) only
+      # need `git pull` + browser refresh — no image rebuild. Read-only.
+      - ../../app/admin:/app/app/admin:ro
     depends_on:
       apihub-migrate:
         condition: service_completed_successfully
