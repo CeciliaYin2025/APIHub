@@ -142,9 +142,10 @@ function bindGlobalEvents() {
       navigateTo(a.dataset.page);
     });
   });
-  document.getElementById('modalOverlay').addEventListener('click', e => {
-    if (e.target === e.currentTarget) closeModal();
-  });
+  // Intentionally NOT closing the modal on backdrop (outside) click: while
+  // editing a definition/user/role, an accidental click on the blank area
+  // would discard in-progress input. The modal is opened/closed only by
+  // explicit controls (the ✕ button, Cancel, or a successful save).
   document.getElementById('modalClose').addEventListener('click', closeModal);
 }
 
