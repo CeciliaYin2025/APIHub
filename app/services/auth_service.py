@@ -66,13 +66,15 @@ class PermissionChecker:
 
         for role in current_user.roles:
             for perm in role.permissions:
-                if perm.resource == self.resource and perm.action == self.action:
+                if perm.action != self.action:
+                    continue
+                if perm.resource == self.resource:
                     return current_user
-                # Wildcard: "query:*" + "read" matches any query resource
-                if perm.resource.endswith(":*"):
-                    prefix = perm.resource[:-1]  # "query:"
-                    if self.resource.startswith(prefix) and perm.action == self.action:
-                        return current_user
+                # Trailing-"*" wildcard: the part before "*" is a prefix the
+                # requested resource must start with. Covers full-category
+                # wildcards ("query:*") and partial prefixes ("query:RD_TC*").
+                if perm.resource.endswith("*") and self.resource.startswith(perm.resource[:-1]):
+                    return current_user
 
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

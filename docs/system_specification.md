@@ -1346,7 +1346,7 @@ Authorization: Bearer <token>
 
 | 資源類型 | 範例 | 可用動作 |
 |----------|------|----------|
-| 查詢 | `query:employees`、`query:*` | `read` |
+| 查詢 | `query:employees`、`query:RD_TC*`（前綴）、`query:*`（整類） | `read` |
 | 程序 | `procedure:PKG_HR.GET_SALARY`、`procedure:*` | `execute` |
 | 表 | `table:HR.EMPLOYEES`、`table:*` | `write` |
 
@@ -1357,12 +1357,16 @@ Authorization: Bearer <token>
 ```
 1. 若 user.is_superuser == True → 直接通過（繞過所有檢查）
 2. 遍歷 user.roles：
-   2a. 遍歷 role.permissions：
-       - 精確比對：perm.resource == 請求資源 AND perm.action == 請求動作
-       - 萬用字元比對：perm.resource 以 ":*" 結尾時，
-         取前綴（如 "query:"），若請求資源以此前綴開頭且動作相符 → 通過
+   2a. 遍歷 role.permissions（動作必須相符，否則略過此權限）：
+       - 精確比對：perm.resource == 請求資源 → 通過
+       - 前綴萬用字元比對：perm.resource 以 "*" 結尾時，
+         取 "*" 之前的字串為前綴，若請求資源以此前綴開頭 → 通過
 3. 若無任何權限匹配 → 回傳 HTTP 403 Forbidden
 ```
+
+> **萬用字元語意（v1.1 起）：** 結尾 `*` 一律視為「前綴比對」，`*` 之前的整段字串即為前綴。
+> 因此 `query:*`（整類）與 `query:RD_TC*`（部分前綴）走同一條規則 —— 前者前綴為 `query:`、後者為 `query:RD_TC`。
+> 舊版僅支援結尾 `:*` 的整類萬用字元；`query:RD_TC*` 這類部分前綴在舊版不會匹配（會一律 403）。
 
 **萬用字元範例：**
 
@@ -1370,6 +1374,10 @@ Authorization: Bearer <token>
 |----------|----------|----------|------|
 | `query:*` + `read` | `query:employees` | `read` | 通過 |
 | `query:*` + `read` | `query:departments` | `read` | 通過 |
+| `query:RD_TC*` + `read` | `query:RD_TC_All` | `read` | 通過（前綴 `query:RD_TC`） |
+| `query:HR*` + `read` | `query:HR_ORG` | `read` | 通過（前綴 `query:HR`） |
+| `query:HR*` + `read` | `query:RD_TC_All` | `read` | 拒絕（前綴不符） |
+| `query:RD_TC*` + `read` | `query:RD_TC_All` | `write` | 拒絕（動作不符） |
 | `query:employees` + `read` | `query:departments` | `read` | 拒絕 |
 | `procedure:*` + `execute` | `procedure:PKG.PROC1` | `execute` | 通過 |
 | `table:HR.EMP` + `write` | `table:HR.DEPT` | `write` | 拒絕 |
