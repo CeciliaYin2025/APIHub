@@ -5,6 +5,9 @@ pydantic>=2.0.0,<3.0.0
 pydantic-settings>=2.0.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+# passlib 1.7.4 reads bcrypt.__about__.__version__, removed in bcrypt 4.1+,
+# and its backend self-test crashes on bcrypt 4.1+. Pin to the last compatible line.
+bcrypt>=4.0.1,<4.1
 python-multipart>=0.0.6
 celery[redis]>=5.3.0
 redis>=5.0.0
