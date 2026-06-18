@@ -42,17 +42,18 @@ def execute_query(
         columns, data, total, and mode-specific pagination metadata.
     """
     bind_params = _prepare_binds(definition, params)
+    sql = _normalize_sql(definition.sql)
 
     if fetch_mode == "page":
-        return _fetch_page(definition.sql, bind_params, page, page_size, db_alias)
+        return _fetch_page(sql, bind_params, page, page_size, db_alias)
     elif fetch_mode == "all":
-        return _fetch_all(definition.sql, bind_params, db_alias)
+        return _fetch_all(sql, bind_params, db_alias)
     elif fetch_mode == "batch":
-        return _fetch_batch(definition.sql, bind_params, batch_size, batch_offset, db_alias)
+        return _fetch_batch(sql, bind_params, batch_size, batch_offset, db_alias)
     elif fetch_mode == "top_n":
-        return _fetch_top_n(definition.sql, bind_params, top_n, db_alias)
+        return _fetch_top_n(sql, bind_params, top_n, db_alias)
     elif fetch_mode == "one":
-        return _fetch_one(definition.sql, bind_params, db_alias)
+        return _fetch_one(sql, bind_params, db_alias)
     else:
         raise ValueError(f"Unknown fetch_mode: {fetch_mode}")
 
@@ -210,6 +211,20 @@ def _execute_and_map(
         return col_names, rows
     finally:
         cursor.close()
+
+
+def _normalize_sql(sql: str) -> str:
+    """Strip trailing whitespace and statement-terminating semicolons.
+
+    Every fetch mode wraps the definition's SQL in a subquery
+    (``... FROM (<sql>) sub_``); a trailing ``;`` would break that on every
+    engine (e.g. MSSQL: "Incorrect syntax near ';'"). Only trailing terminators
+    are removed — semicolons elsewhere in the statement are left intact.
+    """
+    normalized = sql.rstrip()
+    while normalized.endswith(";"):
+        normalized = normalized[:-1].rstrip()
+    return normalized
 
 
 def _prepare_binds(definition: SqlDefinition, params: dict[str, Any]) -> dict[str, Any]:
