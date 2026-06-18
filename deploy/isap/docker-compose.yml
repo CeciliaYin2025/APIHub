@@ -45,18 +45,35 @@ services:
       - ./gateway-conf/apihub.conf:/conf/apihub.conf:ro
       - ${INFRA_GATEWAY_APPS_DIR:-/opt/isap/gateway-apps}:/dest
       - /var/run/docker.sock:/var/run/docker.sock
-    entrypoint: ["sh", "-c"]
-    command: |
-      set -e
-      cp -f /conf/apihub.conf /dest/apihub.conf
-      if docker exec isap-gateway nginx -t; then
-        docker kill -s HUP isap-gateway 2>/dev/null || true
-        echo "apihub route registered and gateway reloaded."
-      else
-        echo "nginx -t failed; removing conf to avoid breaking the gateway." >&2
-        rm -f /dest/apihub.conf
-        exit 1
-      fi
+    # The whole script MUST live inside this entrypoint list. With
+    # `entrypoint: ["sh","-c"]` + a separate multi-line `command:`, Compose splits
+    # the command into argv words, so `sh -c` runs only the first token and
+    # silently drops the rest — the conf never gets copied. Shell variables are
+    # written as `$$` so Compose does not try to interpolate them.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        DEST=/dest/apihub.conf
+        BAK=/dest/.apihub.conf.bak
+        # Back up any currently-registered conf so a failed update can be rolled
+        # back instead of leaving the route deleted from disk.
+        [ -f "$$DEST" ] && cp -f "$$DEST" "$$BAK" || true
+        cp -f /conf/apihub.conf "$$DEST"
+        if docker exec isap-gateway nginx -t; then
+          if docker kill -s HUP isap-gateway; then
+            echo "apihub route registered and gateway reloaded."
+            rm -f "$$BAK"
+          else
+            echo "route conf valid but SIGHUP reload of isap-gateway failed." >&2
+            exit 1
+          fi
+        else
+          echo "nginx -t failed; restoring previous conf to avoid breaking the gateway." >&2
+          if [ -f "$$BAK" ]; then mv -f "$$BAK" "$$DEST"; else rm -f "$$DEST"; fi
+          exit 1
+        fi
 
   # ── long-running: FastAPI app ─────────────────────────────────────────────
   apihub-api:
