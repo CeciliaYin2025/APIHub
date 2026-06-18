@@ -88,6 +88,9 @@ services:
       # Edit data-source definitions without rebuilding the image — `docker
       # compose restart` reloads them (definitions are read at startup only).
       - ../../app/database_definitions:/app/app/database_definitions
+      # Mount an EMPTY dir over the seed YAML so the registry is DB-only in prod
+      # (otherwise the baked-in samples appear as undeletable phantom defs).
+      - ./sql_definitions:/app/app/sql_definitions
     depends_on:
       apihub-migrate:
         condition: service_completed_successfully
@@ -103,6 +106,7 @@ services:
     networks: [db-net, redis-net]
     volumes:
       - ../../app/database_definitions:/app/app/database_definitions
+      - ./sql_definitions:/app/app/sql_definitions
     command: ["celery", "-A", "app.tasks.celery_app", "worker", "-Q", "write", "-l", "info", "--concurrency=4"]
     depends_on:
       apihub-api:
@@ -117,6 +121,7 @@ services:
     networks: [db-net, redis-net]
     volumes:
       - ../../app/database_definitions:/app/app/database_definitions
+      - ./sql_definitions:/app/app/sql_definitions
     command: ["celery", "-A", "app.tasks.celery_app", "worker", "-Q", "procedure", "-l", "info", "--concurrency=2"]
     depends_on:
       apihub-api:
