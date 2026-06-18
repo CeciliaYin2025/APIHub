@@ -160,9 +160,23 @@ class DatabaseRegistry:
     # ------------------------------------------------------------------
 
     def init_all_pools(self) -> None:
-        """Create a pool adapter for every registered database."""
+        """Create a pool adapter for every registered database.
+
+        A data source that is unreachable (or misconfigured) at startup must
+        not prevent the whole application from booting — otherwise one dead
+        backend takes down the API and Admin UI for every database. Log the
+        failure and continue; the failed alias is retried lazily on first use
+        (``get_connection`` re-runs ``init_pool``).
+        """
         for alias in self._configs:
-            self.init_pool(alias)
+            try:
+                self.init_pool(alias)
+            except Exception:
+                logger.exception(
+                    "Failed to initialise pool for '%s' at startup; "
+                    "it will be retried on first use. Other databases are unaffected.",
+                    alias,
+                )
 
     def init_pool(self, alias: str) -> PoolAdapter:
         """Initialise (or return existing) pool for *alias*."""
