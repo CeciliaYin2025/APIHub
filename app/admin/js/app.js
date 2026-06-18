@@ -129,8 +129,17 @@ async function api(method, path, body) {
   }
   const res = await fetch(`${API}${path}`, opts);
   if (res.status === 401) { showLogin(); throw new Error('Unauthorized'); }
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  // Some endpoints return 204 No Content (password reset, deletes) — an empty
+  // body has no JSON to parse, so read as text and parse only when present.
+  const text = await res.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); } catch { data = text; }
+  }
+  if (!res.ok) {
+    const detail = (data && typeof data === 'object') ? data.detail : data;
+    throw new Error(detail || `HTTP ${res.status}`);
+  }
   return data;
 }
 
