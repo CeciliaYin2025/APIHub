@@ -96,6 +96,7 @@ Drop YAML files into `app/database_definitions/` — each file is a list of data
 - Auto-pagination (Oracle 11g compatible `ROWNUM`; standard `LIMIT/OFFSET` for PostgreSQL/MSSQL)
 - Returns structured JSON with columns, data, and pagination metadata
 - In-memory registry auto-refreshes after any CRUD operation
+- Trailing semicolons in a stored definition's SQL are stripped automatically before execution — every fetch mode wraps the SQL as a subquery (`… FROM (<sql>) sub_`), so a trailing `;` would otherwise break every engine (e.g. MSSQL `Incorrect syntax near ';'`)
 
 ### 2. Function & Stored Procedure Execution (`/api/v1/{db}/procedures`)
 - Call stored procedures with IN/OUT parameters (Oracle PL/SQL, PostgreSQL functions, MSSQL T-SQL procedures)
@@ -115,8 +116,8 @@ Drop YAML files into `app/database_definitions/` — each file is a list of data
 
 ### 5. Authentication & RBAC
 - JWT-based authentication (`/api/v1/auth/token`)
-- Role-Based Access Control with wildcard support
-- Permission model: `resource:action` (e.g., `query:employees` + `read`)
+- Role-Based Access Control with three matching modes: exact (`query:employees`), **prefix wildcard** (`query:HR*` matches `query:HR_ORG`, `query:HR_Emps`, …), and full-category (`query:*`)
+- Permission model: `resource:action` (e.g., `query:employees` + `read`); the action must always match exactly
 - Superuser bypass for administrative access
 
 ### 6. Rate Limiting
@@ -164,7 +165,7 @@ curl -X POST http://your-host:8000/api/v1/auth/users \
 
 ### Step 2: 設定權限 (最小權限原則)
 
-權限模型是 `resource:action`，支援萬用字元（`*`）：
+權限模型是 `resource:action`。`resource` 結尾的 `*` 視為**前綴比對**（`*` 之前的字串即為前綴），`action` 一律須完全相符：
 
 ```bash
 # 建立精細權限 — 只允許查詢特定資源
@@ -173,7 +174,13 @@ curl -X POST http://your-host:8000/api/v1/auth/permissions \
   -H "Content-Type: application/json" \
   -d '{"resource": "query:employees", "action": "read", "description": "查詢員工資料"}'
 
-# 萬用字元 — 允許讀取所有 query
+# 前綴萬用字元 — 一次涵蓋同前綴的多個 query（如 query:HR_ORG、query:HR_Emps）
+curl -X POST http://your-host:8000/api/v1/auth/permissions \
+  -H "Authorization: Bearer <admin_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"resource": "query:HR*", "action": "read", "description": "讀取所有 HR 開頭查詢"}'
+
+# 整類萬用字元 — 允許讀取所有 query
 curl -X POST http://your-host:8000/api/v1/auth/permissions \
   -H "Authorization: Bearer <admin_token>" \
   -H "Content-Type: application/json" \
@@ -184,10 +191,13 @@ curl -X POST http://your-host:8000/api/v1/auth/permissions \
 
 | resource | action | 說明 |
 |---|---|---|
-| `query:employees` | `read` | 只能查員工 |
-| `query:*` | `read` | 能查所有已定義的 query |
+| `query:employees` | `read` | 只能查員工（精確比對） |
+| `query:HR*` | `read` | 能查所有 `query:HR` 開頭的 query（前綴比對，如 `HR_ORG`、`HR_Emps`） |
+| `query:*` | `read` | 能查所有已定義的 query（整類） |
 | `procedure:get_salary` | `execute` | 只能執行薪資 SP |
 | `write:orders` | `write` | 只能寫入訂單表 |
+
+> **前綴萬用字元語意（1.6.0 起）：** 結尾 `*` 一律按「前綴」比對，因此 `query:*`（前綴 `query:`）與 `query:HR*`（前綴 `query:HR`）走同一條規則。舊版僅支援結尾 `:*` 的整類萬用字元，`query:HR*` 這類部分前綴在舊版不會匹配（一律 403）。
 
 ### Step 3: 建立角色並綁定權限
 
@@ -394,6 +404,9 @@ app/
     ├── employees.yaml
     ├── departments.yaml
     └── inventory_view.yaml
+
+examples/
+└── read_rd_tc_all.py        # Client example: auth + execute a query as a scoped reader account
 ```
 
 ## Running Tests
