@@ -19,19 +19,9 @@ class MssqlPoolAdapter(PoolAdapter):
         self._config: Any = None
 
     def create(self, config: Any) -> None:
-        import pymssql
-
         self._config = config
         for _ in range(config.pool_min):
-            conn = pymssql.connect(
-                server=config.host,
-                port=config.port,
-                database=config.database,
-                user=config.user,
-                password=config.password,
-                autocommit=False,
-            )
-            self._pool.put(conn)
+            self._pool.put(self._create_connection())
 
     def close(self, force: bool = False) -> None:
         while not self._pool.empty():
@@ -66,7 +56,7 @@ class MssqlPoolAdapter(PoolAdapter):
     def _create_connection(self) -> Any:
         import pymssql
 
-        return pymssql.connect(
+        kwargs: dict[str, Any] = dict(
             server=self._config.host,
             port=self._config.port,
             database=self._config.database,
@@ -74,3 +64,9 @@ class MssqlPoolAdapter(PoolAdapter):
             password=self._config.password,
             autocommit=False,
         )
+        # Pin the TDS protocol version when configured (e.g. "7.0" for legacy
+        # SQL Server 2005, whose login otherwise hangs under FreeTDS auto-negotiation).
+        tds_version = getattr(self._config, "tds_version", "")
+        if tds_version:
+            kwargs["tds_version"] = tds_version
+        return pymssql.connect(**kwargs)

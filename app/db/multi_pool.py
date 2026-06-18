@@ -46,6 +46,9 @@ class DatabaseConfig:
     pool_min: int = 2
     pool_max: int = 10
     pool_increment: int = 1
+    # MSSQL-specific: pin the TDS protocol version (e.g. "7.0" for SQL Server 2005,
+    # whose login handshake otherwise hangs under modern FreeTDS auto-negotiation).
+    tds_version: str = ""
 
 
 class DatabaseRegistry:
@@ -144,6 +147,7 @@ class DatabaseRegistry:
                 pool_min=entry.get("pool_min", 2),
                 pool_max=entry.get("pool_max", 10),
                 pool_increment=entry.get("pool_increment", 1),
+                tds_version=str(entry.get("tds_version", "")),
             )
             self._configs[alias] = cfg
             loaded += 1
@@ -242,6 +246,7 @@ class DatabaseRegistry:
                 "pool_min": cfg.pool_min,
                 "pool_max": cfg.pool_max,
                 "pool_increment": cfg.pool_increment,
+                "tds_version": cfg.tds_version,
                 "pool_active": alias in self._pools,
             })
         return result
