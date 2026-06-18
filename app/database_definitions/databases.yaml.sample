@@ -1,0 +1,68 @@
+# ==============================================================================
+# Oracle API Hub — 資料庫連線定義範例 (databases.yaml.sample)
+#   ※ 這是「參考範例」,不會被程式載入。實際使用請複製需要的條目到 databases.yaml。
+#
+#   每個項目 = 一個 alias;alias 會成為 API 路徑:/api/v1/{alias}/...
+#   密碼一律「不」寫在這裡,改用環境變數 DB_{ALIAS大寫}_PASSWORD 提供。
+#     例: alias: hr_oracle  ->  DB_HR_ORACLE_PASSWORD
+#   改完正式的 databases.yaml 要「重啟 api + 兩個 celery worker」才生效 (沒有 hot-reload)。
+#
+#   「source / target」不是設定欄位,而是靠:
+#     ① DB 帳號權限 (唯讀 vs 可寫)
+#     ② RBAC 權限   (alias:read vs alias:write)
+#   來區分。下面用 reader/writer 帳號示範來源與目標的分法。
+# ==============================================================================
+
+# ── Oracle:當作資料「來源」(主要做查詢) ───────────────────────────────
+- alias: hr_oracle
+  db_type: oracle                        # oracle 為預設,可省略
+  description: "HR 人力資源 Oracle (唯讀來源)"
+  dsn: "hr-oracle.company.com:1521/HRDB"  # host:port/service
+  user: "hr_api_reader"                   # 給唯讀帳號 → 達成「source」效果
+  password: ""                            # 由 DB_HR_ORACLE_PASSWORD 提供
+  pool_min: 2
+  pool_max: 10
+  pool_increment: 1                       # pool_increment 僅 Oracle 有效
+
+# ── Oracle:當作寫入「目標」(做 writes / procedures) ──────────────────
+- alias: ops_oracle
+  db_type: oracle
+  description: "營運 Oracle (可寫入目標)"
+  dsn: "ops-oracle.company.com:1521/OPSDB"
+  user: "ops_api_writer"                  # 給有寫入權的帳號 → 達成「target」效果
+  password: ""                            # 由 DB_OPS_ORACLE_PASSWORD 提供
+  pool_min: 2
+  pool_max: 10
+  pool_increment: 1
+
+# ── PostgreSQL:分析來源 ───────────────────────────────────────────────
+- alias: analytics_pg
+  db_type: postgresql
+  description: "分析用 PostgreSQL"
+  host: "pg-analytics.company.com"        # PG/MSSQL 用 host/port/database,不用 dsn
+  port: 5432
+  database: "analytics"
+  user: "api_reader"
+  password: ""                            # 由 DB_ANALYTICS_PG_PASSWORD 提供
+  pool_min: 2
+  pool_max: 10
+
+# ── MS SQL Server:資料倉儲目標 ────────────────────────────────────────
+- alias: warehouse_mssql
+  db_type: mssql
+  description: "資料倉儲 MS SQL Server"
+  host: "mssql-warehouse.company.com"
+  port: 1433
+  database: "warehouse"
+  user: "api_user"
+  password: ""                            # 由 DB_WAREHOUSE_MSSQL_PASSWORD 提供
+  pool_min: 2
+  pool_max: 10
+
+# ------------------------------------------------------------------------------
+# 對應要在 .env 補上的環境變數:
+#   DB_HR_ORACLE_PASSWORD=...
+#   DB_OPS_ORACLE_PASSWORD=...
+#   DB_ANALYTICS_PG_PASSWORD=...
+#   DB_WAREHOUSE_MSSQL_PASSWORD=...
+# ------------------------------------------------------------------------------
