@@ -17,6 +17,10 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
     user = db.query(User).filter(User.username == username).first()
     if not user or not verify_password(password, user.hashed_password):
         return None
+    if not user.is_active:
+        # Deactivated accounts must not receive a token. Return None so the
+        # login endpoint replies with the same generic 401 (no account-state leak).
+        return None
     return user
 
 
