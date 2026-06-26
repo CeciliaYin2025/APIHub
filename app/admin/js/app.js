@@ -826,6 +826,7 @@ async function renderSqlDefs() {
                 <button class="btn btn-sm btn-outline" onclick="viewSqlDef('${esc(d.name)}')">Detail</button>
                 ${isSuperuser ? `
                   <button class="btn btn-sm btn-primary" onclick="openSqlDefModal('edit','${esc(d.name)}')">Edit</button>
+                  <button class="btn btn-sm btn-info" onclick="openSqlDefModal('copy','${esc(d.name)}')">Copy</button>
                   <button class="btn btn-sm btn-danger" onclick="deleteSqlDef('${esc(d.name)}')">Delete</button>
                 ` : ''}
               </div>
@@ -915,7 +916,7 @@ window.uploadYamlFile = async function() {
 
 window.openSqlDefModal = async function(mode, name) {
   let data = { name: '', description: '', sql: '', permission: '', params: {} };
-  if (mode === 'edit' && name) {
+  if ((mode === 'edit' || mode === 'copy') && name) {
     try {
       data = await api('GET', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`);
     } catch (err) {
@@ -925,7 +926,14 @@ window.openSqlDefModal = async function(mode, name) {
   }
 
   const isEdit = mode === 'edit';
-  const title = isEdit ? `Edit: ${name}` : 'New SQL Definition';
+  const isCopy = mode === 'copy';
+  if (isCopy) {
+    // Copy: prefill source content but force a new, editable name and clear the
+    // permission so the create flow auto-generates query:<newname>.
+    data = { ...data, name: `${data.name}_copy`, permission: '' };
+  }
+
+  const title = isEdit ? `Edit: ${name}` : (isCopy ? `Copy: ${name}` : 'New SQL Definition');
   const paramsJson = Object.keys(data.params || {}).length > 0
     ? JSON.stringify(data.params, null, 2)
     : '{}';
@@ -971,7 +979,7 @@ window.submitSqlDef = async function(mode, name) {
   const sql = document.getElementById('sdSql').value;
   const paramsRaw = document.getElementById('sdParams').value.trim();
 
-  if (!nameVal && mode === 'create') { toast('Name is required', 'error'); return; }
+  if (!nameVal && mode !== 'edit') { toast('Name is required', 'error'); return; }
   if (!sql.trim()) { toast('SQL is required', 'error'); return; }
 
   let params = {};
@@ -983,7 +991,7 @@ window.submitSqlDef = async function(mode, name) {
   }
 
   try {
-    if (mode === 'create') {
+    if (mode === 'create' || mode === 'copy') {
       await api('POST', `${dbPrefix()}/queries/definitions`, { name: nameVal, description: desc, sql, permission: perm, params });
       toast(`Definition '${nameVal}' created`, 'success');
     } else {
@@ -1057,44 +1065,75 @@ window.prefillQuery = function(name) {
 function renderQueryConsole() {
   const area = document.getElementById('contentArea');
   area.innerHTML = `
+    <div class="card" id="qcInputCard">
+      <div class="card-header">
+        <h2>Query Console</h2>
+        <button class="btn btn-outline btn-sm" id="qcCollapseBtn" onclick="toggleQcCollapse()">&#9650; Collapse</button>
+      </div>
+      <div class="card-body" id="qcInputBody">
+        <div class="tabs">
+          <button class="tab-btn active" data-qctab="params" onclick="switchQcTab('params')">Query Parameter</button>
+          <button class="tab-btn" data-qctab="body" onclick="switchQcTab('body')">Request Body</button>
+          <button class="tab-btn" data-qctab="python" onclick="switchQcTab('python')">Python Example</button>
+        </div>
+
+        <div class="tab-content active" id="qcTab-params">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Query Name</label>
+              <input type="text" id="qcName" placeholder="e.g. employees">
+            </div>
+            <div class="form-group">
+              <label>Fetch Mode</label>
+              <select id="qcMode" onchange="toggleQcModeFields()">
+                <option value="page">page</option>
+                <option value="all">all</option>
+                <option value="batch">batch</option>
+                <option value="top_n">top_n</option>
+                <option value="one">one</option>
+              </select>
+            </div>
+          </div>
+          <div id="qcModeFields">
+            <div class="form-row" id="qcPageFields">
+              <div class="form-group"><label>Page</label><input type="number" id="qcPage" value="1" min="1"></div>
+              <div class="form-group"><label>Page Size</label><input type="number" id="qcPageSize" value="50" min="1" max="1000"></div>
+            </div>
+            <div class="form-row hidden" id="qcBatchFields">
+              <div class="form-group"><label>Batch Size</label><input type="number" id="qcBatchSize" value="500" min="1" max="10000"></div>
+              <div class="form-group"><label>Batch Offset</label><input type="number" id="qcBatchOffset" value="0" min="0"></div>
+            </div>
+            <div class="form-row hidden" id="qcTopNFields">
+              <div class="form-group"><label>Top N</label><input type="number" id="qcTopN" value="10" min="1" max="1000"></div>
+            </div>
+          </div>
+          <div class="form-group query-console">
+            <label>Parameters (JSON)</label>
+            <textarea id="qcParams" placeholder='{"dept": "IT"}'>{}</textarea>
+          </div>
+        </div>
+
+        <div class="tab-content" id="qcTab-body">
+          <p class="text-sm text-muted mb-2">The JSON body sent to <code>POST ${esc(API)}${esc(dbPrefix())}/queries/execute</code>:</p>
+          <pre class="sql-preview" id="qcBodyPreview"></pre>
+        </div>
+
+        <div class="tab-content" id="qcTab-python">
+          <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+            <button class="btn btn-outline btn-sm" onclick="copyQcPython()">&#128203; Copy</button>
+          </div>
+          <pre class="sql-preview" id="qcPythonPreview"></pre>
+        </div>
+
+        <div style="margin-top:16px">
+          <button class="btn btn-primary" onclick="executeQuery()">&#9654; Execute Query</button>
+        </div>
+      </div>
+    </div>
     <div class="card">
-      <div class="card-header"><h2>Query Console</h2></div>
+      <div class="card-header"><h2>Result</h2></div>
       <div class="card-body">
-        <div class="form-row">
-          <div class="form-group">
-            <label>Query Name</label>
-            <input type="text" id="qcName" placeholder="e.g. employees">
-          </div>
-          <div class="form-group">
-            <label>Fetch Mode</label>
-            <select id="qcMode" onchange="toggleQcModeFields()">
-              <option value="page">page</option>
-              <option value="all">all</option>
-              <option value="batch">batch</option>
-              <option value="top_n">top_n</option>
-              <option value="one">one</option>
-            </select>
-          </div>
-        </div>
-        <div id="qcModeFields">
-          <div class="form-row" id="qcPageFields">
-            <div class="form-group"><label>Page</label><input type="number" id="qcPage" value="1" min="1"></div>
-            <div class="form-group"><label>Page Size</label><input type="number" id="qcPageSize" value="50" min="1" max="1000"></div>
-          </div>
-          <div class="form-row hidden" id="qcBatchFields">
-            <div class="form-group"><label>Batch Size</label><input type="number" id="qcBatchSize" value="500" min="1" max="10000"></div>
-            <div class="form-group"><label>Batch Offset</label><input type="number" id="qcBatchOffset" value="0" min="0"></div>
-          </div>
-          <div class="form-row hidden" id="qcTopNFields">
-            <div class="form-group"><label>Top N</label><input type="number" id="qcTopN" value="10" min="1" max="1000"></div>
-          </div>
-        </div>
-        <div class="form-group query-console">
-          <label>Parameters (JSON)</label>
-          <textarea id="qcParams" placeholder='{"dept": "IT"}'>{}</textarea>
-        </div>
-        <button class="btn btn-primary" onclick="executeQuery()">&#9654; Execute Query</button>
-        <div class="result-area" id="qcResult"></div>
+        <div class="result-area" id="qcResult"><p class="text-muted">No query executed yet.</p></div>
       </div>
     </div>
   `;
@@ -1107,12 +1146,13 @@ window.toggleQcModeFields = function() {
   document.getElementById('qcTopNFields').classList.toggle('hidden', mode !== 'top_n');
 };
 
-window.executeQuery = async function() {
+// Build the request body from the current form state. Returns { body, paramsError }.
+function qcBuildBody() {
   const name = document.getElementById('qcName').value.trim();
-  if (!name) return toast('Please enter a query name', 'error');
-
   let params = {};
-  try { params = JSON.parse(document.getElementById('qcParams').value || '{}'); } catch { return toast('Invalid JSON parameters', 'error'); }
+  let paramsError = null;
+  try { params = JSON.parse(document.getElementById('qcParams').value || '{}'); }
+  catch (e) { paramsError = e.message; }
 
   const mode = document.getElementById('qcMode').value;
   const body = { query_name: name, params, fetch_mode: mode };
@@ -1126,6 +1166,105 @@ window.executeQuery = async function() {
   } else if (mode === 'top_n') {
     body.top_n = parseInt(document.getElementById('qcTopN').value);
   }
+  return { body, paramsError };
+}
+
+// Serialize a JS value as a Python literal (dict/list/str/bool/None) with 4-space indent.
+function toPyLiteral(v, indent) {
+  indent = indent || 0;
+  const pad = '    '.repeat(indent);
+  const pad1 = '    '.repeat(indent + 1);
+  if (v === null || v === undefined) return 'None';
+  if (typeof v === 'boolean') return v ? 'True' : 'False';
+  if (typeof v === 'number') return Number.isNaN(v) ? 'None' : String(v);
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (Array.isArray(v)) {
+    if (v.length === 0) return '[]';
+    return '[\n' + v.map(x => pad1 + toPyLiteral(x, indent + 1)).join(',\n') + '\n' + pad + ']';
+  }
+  if (typeof v === 'object') {
+    const keys = Object.keys(v);
+    if (keys.length === 0) return '{}';
+    return '{\n' + keys.map(k => pad1 + JSON.stringify(k) + ': ' + toPyLiteral(v[k], indent + 1)).join(',\n') + '\n' + pad + '}';
+  }
+  return 'None';
+}
+
+function qcPythonCode(body) {
+  const url = `${window.location.origin}${API}${dbPrefix()}/queries/execute`;
+  return `import requests
+
+url = "${url}"
+headers = {
+    "Authorization": "Bearer YOUR_ACCESS_TOKEN",
+    "Content-Type": "application/json",
+}
+payload = ${toPyLiteral(body, 0)}
+
+response = requests.post(url, json=payload, headers=headers)
+response.raise_for_status()
+result = response.json()
+print(result)`;
+}
+
+// Refresh the Request Body and Python Example previews from the live form.
+function refreshQcPreviews() {
+  const { body, paramsError } = qcBuildBody();
+  const bodyPre = document.getElementById('qcBodyPreview');
+  const pyPre = document.getElementById('qcPythonPreview');
+  if (!bodyPre || !pyPre) return;
+
+  if (paramsError) {
+    const msg = `// Invalid Parameters JSON: ${esc(paramsError)}`;
+    bodyPre.innerHTML = `<span style="color:var(--red,#dc2626)">${msg}</span>`;
+    pyPre.innerHTML = `<span style="color:var(--red,#dc2626)"># Invalid Parameters JSON: ${esc(paramsError)}</span>`;
+    window._qcPythonCode = '';
+    return;
+  }
+  bodyPre.innerHTML = syntaxHighlight(JSON.stringify(body, null, 2));
+  const code = qcPythonCode(body);
+  window._qcPythonCode = code;
+  pyPre.textContent = code;
+}
+
+window.switchQcTab = function(tab) {
+  document.querySelectorAll('#qcInputBody .tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.qctab === tab));
+  document.querySelectorAll('#qcInputBody .tab-content').forEach(c =>
+    c.classList.toggle('active', c.id === `qcTab-${tab}`));
+  if (tab === 'body' || tab === 'python') refreshQcPreviews();
+};
+
+function collapseQcInput(collapsed) {
+  const bodyEl = document.getElementById('qcInputBody');
+  const btn = document.getElementById('qcCollapseBtn');
+  if (!bodyEl || !btn) return;
+  bodyEl.classList.toggle('hidden', collapsed);
+  btn.innerHTML = collapsed ? '&#9660; Expand' : '&#9650; Collapse';
+}
+
+window.toggleQcCollapse = function() {
+  const collapsed = document.getElementById('qcInputBody').classList.contains('hidden');
+  collapseQcInput(!collapsed);
+};
+
+window.copyQcPython = async function() {
+  const code = window._qcPythonCode || '';
+  if (!code) return toast('Nothing to copy', 'error');
+  try {
+    await navigator.clipboard.writeText(code);
+    toast('Python example copied', 'success');
+  } catch {
+    toast('Copy failed — select and copy manually', 'error');
+  }
+};
+
+window.executeQuery = async function() {
+  const { body, paramsError } = qcBuildBody();
+  if (!body.query_name) return toast('Please enter a query name', 'error');
+  if (paramsError) return toast('Invalid JSON parameters', 'error');
+
+  refreshQcPreviews();
 
   const resultArea = document.getElementById('qcResult');
   resultArea.innerHTML = '<div class="spinner"></div>';
@@ -1151,6 +1290,7 @@ window.executeQuery = async function() {
         <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
       </details>
     `;
+    collapseQcInput(true);
   } catch (err) {
     resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
   }
