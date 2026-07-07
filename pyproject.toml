@@ -45,6 +45,7 @@ line-length = 120
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["tests/e2e", "node_modules", ".venv"]
 
 [tool.uv.extra-build-dependencies]
 cx-oracle = ["setuptools"]
