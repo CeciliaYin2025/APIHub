@@ -10,6 +10,7 @@ let token = localStorage.getItem('hub_token') || '';
 let currentUser = null;
 let currentDb = localStorage.getItem('hub_current_db') || '';
 let databases = [];
+let qcDefs = [];  // definitions for the Query Console picker (scoped to currentDb)
 
 /* ── Bootstrap ────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
@@ -1062,6 +1063,31 @@ window.prefillQuery = function(name) {
 };
 
 /* ── Query Console ────────────────────────────────────────────────────── */
+
+// Build an example parameter object from a definition's params map.
+// Values are derived from each param's declared type so the operator gets a
+// ready-to-edit JSON body. Key order is preserved.
+function qcExampleParams(params) {
+  const out = {};
+  for (const [name, def] of Object.entries(params || {})) {
+    const type = def && def.type;
+    if (type === 'number') out[name] = 0;
+    else if (type === 'date') out[name] = '2024-01-01';
+    else out[name] = 'example';  // string + unknown/missing
+  }
+  return out;
+}
+
+// Load the current database's SQL definitions for the picker.
+async function qcLoadDefinitions() {
+  try {
+    qcDefs = await api('GET', `${dbPrefix()}/queries/definitions`);
+  } catch (e) {
+    qcDefs = [];
+    toast('Failed to load queries: ' + e.message, 'error');
+  }
+}
+
 function renderQueryConsole() {
   const area = document.getElementById('contentArea');
   area.innerHTML = `
