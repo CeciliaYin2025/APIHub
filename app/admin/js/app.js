@@ -1054,12 +1054,16 @@ window.viewSqlDef = async function(name) {
   openModal(`SQL Definition: ${d.name}`, body, '');
 };
 
-window.prefillQuery = function(name) {
+window.prefillQuery = async function(name) {
   navigateTo('query-console');
-  setTimeout(() => {
-    const nameInput = document.getElementById('qcName');
-    if (nameInput) nameInput.value = name;
-  }, 100);
+  // renderQueryConsole kicks off an async load; wait for it, then select.
+  await qcLoadDefinitions();
+  qcPopulatePicker();
+  const sel = document.getElementById('qcName');
+  if (sel) {
+    sel.value = name;
+    qcOnSelectQuery();
+  }
 };
 
 /* ── Query Console ────────────────────────────────────────────────────── */
@@ -1107,7 +1111,9 @@ function renderQueryConsole() {
           <div class="form-row">
             <div class="form-group">
               <label>Query Name</label>
-              <input type="text" id="qcName" placeholder="e.g. employees">
+              <select id="qcName" onchange="qcOnSelectQuery()">
+                <option value="">— select a query —</option>
+              </select>
             </div>
             <div class="form-group">
               <label>Fetch Mode</label>
@@ -1163,7 +1169,30 @@ function renderQueryConsole() {
       </div>
     </div>
   `;
+  qcLoadDefinitions().then(qcPopulatePicker);
 }
+
+// Fill the Query Name picker from qcDefs, keeping a leading placeholder.
+function qcPopulatePicker() {
+  const sel = document.getElementById('qcName');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— select a query —</option>' +
+    qcDefs.map(d => `<option value="${esc(d.name)}">${esc(d.name)}</option>`).join('');
+  // Restore selection if the name still exists in the new list.
+  if (current && qcDefs.some(d => d.name === current)) sel.value = current;
+}
+
+// When a query is picked, fill Parameters with type-based examples.
+window.qcOnSelectQuery = function() {
+  const sel = document.getElementById('qcName');
+  const paramsEl = document.getElementById('qcParams');
+  if (!sel || !paramsEl) return;
+  const def = qcDefs.find(d => d.name === sel.value);
+  const example = def ? qcExampleParams(def.params) : {};
+  paramsEl.value = JSON.stringify(example, null, 2);
+  refreshQcPreviews();
+};
 
 window.toggleQcModeFields = function() {
   const mode = document.getElementById('qcMode').value;
