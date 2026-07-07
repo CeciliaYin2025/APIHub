@@ -111,6 +111,18 @@ async function loadDatabases() {
   sel.addEventListener('change', () => {
     currentDb = sel.value;
     localStorage.setItem('hub_current_db', currentDb);
+    // If the Query Console is open, re-scope its picker to the new db and
+    // clear the stale selection + parameters.
+    if (document.querySelector('.sidebar-nav a[data-page="query-console"].active')) {
+      qcLoadDefinitions().then(() => {
+        qcPopulatePicker();
+        const nameEl = document.getElementById('qcName');
+        const paramsEl = document.getElementById('qcParams');
+        if (nameEl) nameEl.value = '';
+        if (paramsEl) paramsEl.value = '{}';
+        refreshQcPreviews();
+      });
+    }
   });
 }
 
