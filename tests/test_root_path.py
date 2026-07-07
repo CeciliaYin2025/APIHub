@@ -43,3 +43,18 @@ def test_admin_index_empty_base_path_default(monkeypatch):
     assert "{{BASE_PATH}}" not in html  # placeholder substituted, not left raw
     assert '"/admin/js/app.js"' in html
     assert 'window.__BASE_PATH__ = ""' in html
+
+
+def test_oauth2_token_url_is_relative(monkeypatch):
+    """Swagger 'Authorize' must resolve tokenUrl against root_path.
+
+    An absolute tokenUrl ('/api/v1/auth/token') ignores root_path, so behind a
+    proxy at /apihub the Authorize button POSTs to the wrong (un-prefixed) URL
+    and fails. A relative tokenUrl resolves against the /apihub/docs page.
+    """
+    client = _client(monkeypatch, "/apihub")
+    schema = client.app.openapi()
+    flows = schema["components"]["securitySchemes"]["OAuth2PasswordBearer"]["flows"]
+    token_url = flows["password"]["tokenUrl"]
+    assert not token_url.startswith("/"), f"tokenUrl must be relative, got {token_url!r}"
+    assert token_url == "api/v1/auth/token"

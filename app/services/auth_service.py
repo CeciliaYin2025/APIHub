@@ -10,7 +10,11 @@ from app.core.security import verify_password
 from app.db.session import get_db
 from app.models.user import User
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_prefix}/auth/token")
+# Relative tokenUrl (no leading slash) so Swagger's "Authorize" resolves it
+# against the docs page, which includes root_path (e.g. /apihub/docs behind the
+# proxy -> /apihub/api/v1/auth/token). An absolute "/api/v1/auth/token" would
+# ignore root_path and POST to the un-prefixed URL, which the gateway can't route.
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_prefix.lstrip('/')}/auth/token")
 
 
 def authenticate_user(db: Session, username: str, password: str) -> User | None:
