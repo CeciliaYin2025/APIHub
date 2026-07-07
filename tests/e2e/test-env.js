@@ -22,6 +22,9 @@ const APP_ENV = {
   POSTGRES_PASSWORD: 'changeme',
   POSTGRES_DB: 'api_hub',
   SECRET_KEY: 'e2e-secret-key',
+  // All specs hit the app from 127.0.0.1; the default 60/min rate limit would
+  // return 429 mid-suite. Raise it far above the suite's request volume.
+  RATE_LIMIT_PER_MINUTE: '100000',
 };
 
 module.exports = {

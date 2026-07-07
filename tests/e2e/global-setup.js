@@ -56,8 +56,11 @@ module.exports = async () => {
     return res.ok;
   });
 
-  // 6. Seed an e2e_types definition (dummy SQL, never executed) covering all param types.
-  console.log('[e2e] seeding e2e_types definition...');
+  // 6. Seed the SQL definitions the specs assert against (dummy SQL, never
+  //    executed). NOTE: seeding any definition into the DB flips the registry
+  //    from YAML-fallback to DB-only, so the fixture must seed EVERY definition
+  //    the tests reference — it cannot rely on the app/sql_definitions samples.
+  console.log('[e2e] seeding SQL definitions...');
   const form = new URLSearchParams({ username: 'admin', password: 'changeme' });
   const tokRes = await fetch(`${BASE_URL}/api/v1/auth/token`, {
     method: 'POST',
@@ -65,23 +68,28 @@ module.exports = async () => {
     body: form,
   });
   const { access_token } = await tokRes.json();
-  const defRes = await fetch(`${BASE_URL}/api/v1/default/queries/definitions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: 'e2e_types',
-      db_alias: 'default',
-      description: 'E2E fixture: all param types',
-      sql: 'SELECT 1',
-      permission: '',
-      params: {
-        n: { type: 'number', required: false, description: '' },
-        d: { type: 'date', required: false, description: '' },
-        s: { type: 'string', required: false, description: '' },
-      },
-    }),
-  });
-  if (!defRes.ok) throw new Error(`seed e2e_types failed: ${defRes.status} ${await defRes.text()}`);
+
+  const p = (type) => ({ type, required: false, description: '' });
+  const definitions = [
+    { name: 'employees', params: { dept: p('string') } },
+    { name: 'inventory_view', params: { product_code: p('string'), warehouse: p('string') } },
+    { name: 'e2e_types', params: { n: p('number'), d: p('date'), s: p('string') } },
+  ];
+  for (const d of definitions) {
+    const res = await fetch(`${BASE_URL}/api/v1/default/queries/definitions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: d.name,
+        db_alias: 'default',
+        description: `E2E fixture: ${d.name}`,
+        sql: 'SELECT 1',
+        permission: '',
+        params: d.params,
+      }),
+    });
+    if (!res.ok) throw new Error(`seed ${d.name} failed: ${res.status} ${await res.text()}`);
+  }
 
   fs.writeFileSync(STATE_FILE, JSON.stringify({ uvicornPid: app.pid, container: CONTAINER }));
   console.log(`[e2e] ready at ${BASE_URL} (uvicorn pid ${app.pid})`);
