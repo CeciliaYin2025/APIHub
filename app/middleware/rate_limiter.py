@@ -25,7 +25,7 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         principal = getattr(request.state, "principal", None)
         if principal is not None and principal.type == "api_key":
             key = f"api_key:{principal.key_id}"
-            limit = principal.rate_limit or self.max_requests
+            limit = principal.rate_limit if principal.rate_limit is not None else self.max_requests
         else:
             client_ip = request.client.host if request.client else "unknown"
             key = f"ip:{client_ip}"
