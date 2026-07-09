@@ -9,12 +9,36 @@ Supports five fetch modes:
 """
 
 import logging
+import re
 from typing import Any
 
 from app.db.oracle_pool import get_connection, get_dialect_for
 from app.services.sql_registry import SqlDefinition
 
 logger = logging.getLogger(__name__)
+
+_ORDER_COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def _build_order_by(definition) -> str | None:
+    """Build a safe ORDER BY clause body from a definition's order_by list.
+
+    Re-validates each column against the identifier whitelist and direction
+    against ASC/DESC (defense in depth vs YAML/DB rows that bypass Pydantic),
+    then joins into "COL DIR, COL2 DIR2". Returns None for an empty list.
+    Raises ValueError on any invalid column/direction.
+    """
+    items = getattr(definition, "order_by", None) or []
+    parts: list[str] = []
+    for item in items:
+        column = item.get("column")
+        direction = (item.get("direction") or "ASC").upper()
+        if not column or not _ORDER_COLUMN_RE.match(column):
+            raise ValueError(f"Invalid order_by column: {column!r}")
+        if direction not in ("ASC", "DESC"):
+            raise ValueError(f"Invalid order_by direction: {direction!r}")
+        parts.append(f"{column} {direction}")
+    return ", ".join(parts) if parts else None
 
 
 # ── public API ──────────────────────────────────────────────────────────────
@@ -62,7 +86,10 @@ def execute_query(
 
 
 def _fetch_page(
-    sql: str, binds: dict[str, Any], page: int, page_size: int,
+    sql: str,
+    binds: dict[str, Any],
+    page: int,
+    page_size: int,
     db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Paginated query using engine-specific pagination."""
@@ -87,7 +114,9 @@ def _fetch_page(
 
 
 def _fetch_all(
-    sql: str, binds: dict[str, Any], db_alias: str | None = None,
+    sql: str,
+    binds: dict[str, Any],
+    db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Return every row without pagination."""
     dialect = get_dialect_for(db_alias)
@@ -105,7 +134,10 @@ def _fetch_all(
 
 
 def _fetch_batch(
-    sql: str, binds: dict[str, Any], batch_size: int, batch_offset: int,
+    sql: str,
+    binds: dict[str, Any],
+    batch_size: int,
+    batch_offset: int,
     db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Return a fixed-size batch starting at batch_offset.
@@ -135,7 +167,10 @@ def _fetch_batch(
 
 
 def _fetch_top_n(
-    sql: str, binds: dict[str, Any], top_n: int, db_alias: str | None = None,
+    sql: str,
+    binds: dict[str, Any],
+    top_n: int,
+    db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Return the first N rows only (no full count query for performance)."""
     dialect = get_dialect_for(db_alias)
@@ -153,7 +188,9 @@ def _fetch_top_n(
 
 
 def _fetch_one(
-    sql: str, binds: dict[str, Any], db_alias: str | None = None,
+    sql: str,
+    binds: dict[str, Any],
+    db_alias: str | None = None,
 ) -> dict[str, Any]:
     """Return exactly one row. Raises ValueError if no rows found."""
     dialect = get_dialect_for(db_alias)
@@ -194,10 +231,7 @@ def _execute_and_map(
     cursor = conn.cursor()
     try:
         cursor.execute(converted_sql, converted_binds)
-        col_names = [
-            desc[0] for desc in cursor.description
-            if pag_col is None or desc[0] != pag_col
-        ]
+        col_names = [desc[0] for desc in cursor.description if pag_col is None or desc[0] != pag_col]
         rows = []
         for row in cursor:
             row_dict = {}
