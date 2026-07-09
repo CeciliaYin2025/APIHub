@@ -36,6 +36,7 @@ class SqlDefinition:
     permission: str  # e.g. "query:employees"
     db_alias: str = "default"
     params: dict[str, ParamDef] = field(default_factory=dict)
+    order_by: list[dict] = field(default_factory=list)
 
 
 def _key(name: str, db_alias: str) -> str:
@@ -122,6 +123,7 @@ class SqlRegistry:
                         permission=row.permission or f"query:{row.name}",
                         db_alias=row.db_alias or "default",
                         params=params,
+                        order_by=row.order_by or [],
                     )
                     self._definitions[_key(defn.name, defn.db_alias)] = defn
 
@@ -173,6 +175,7 @@ class SqlRegistry:
             permission=raw.get("permission", f"query:{raw['name']}"),
             db_alias=db_alias,
             params=params,
+            order_by=raw.get("order_by") or [],
         )
         self._definitions[_key(defn.name, defn.db_alias)] = defn
 
