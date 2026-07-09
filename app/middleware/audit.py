@@ -10,6 +10,7 @@ import time
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.audit_log import AuditLog
 
@@ -21,7 +22,10 @@ _SKIP_SUFFIXES = ("/health", "/auth/token")
 
 
 def _should_skip(path: str) -> bool:
-    if "/admin" in path:
+    # Audit only real API calls; exclude the Admin SPA/static, root, health,
+    # and token issuance. Anchored on the API prefix so business routes that
+    # merely contain "admin" in a segment are still audited.
+    if settings.api_prefix not in path:
         return True
     return any(path.endswith(s) for s in _SKIP_SUFFIXES)
 
