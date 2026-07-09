@@ -14,6 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.audit_log import AuditLog
+from app.services.auth_service import get_client_ip
 
 logger = logging.getLogger("app.audit")
 
@@ -45,7 +46,7 @@ def build_audit_row(request: Request, response: Response, duration_ms: int) -> d
         "principal": p_name,
         "api_key_id": key_id,
         "api_key_name": key_name,
-        "client_ip": request.client.host if request.client else "unknown",
+        "client_ip": get_client_ip(request),
         "method": request.method,
         "path": request.url.path,
         "db_alias": getattr(request.state, "audit_db_alias", None),

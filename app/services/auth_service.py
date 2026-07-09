@@ -71,6 +71,64 @@ def _ip_allowed(client_ip: str, allowlist: list[str]) -> bool:
     return False
 
 
+def _parse_trusted_proxies(raw: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Parse a comma-separated CIDR/IP list into networks, skipping blanks/invalid entries."""
+    networks = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            continue
+    return networks
+
+
+def _ip_in_networks(ip: str, networks: list) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in networks)
+
+
+def get_client_ip(request) -> str:
+    """Resolve the real client IP, trusting X-Forwarded-For only when the
+    direct peer is a configured trusted reverse proxy (anti-spoofing).
+
+    Behind an untrusted/unconfigured peer, X-Forwarded-For is attacker-
+    controlled and must be ignored — so with no trusted_proxies configured
+    (the default), this always returns the direct peer, unchanged from
+    pre-existing behavior.
+    """
+    peer = request.client.host if request.client else "unknown"
+
+    trusted_networks = _parse_trusted_proxies(settings.trusted_proxies)
+    if not trusted_networks:
+        return peer
+
+    if not _ip_in_networks(peer, trusted_networks):
+        # Direct peer isn't a trusted proxy: its X-Forwarded-For is untrusted/spoofable.
+        return peer
+
+    xff = request.headers.get("X-Forwarded-For", "")
+    if not xff:
+        return peer
+
+    hops = [h.strip() for h in xff.split(",") if h.strip()]
+    # Walk right-to-left: skip hops that are themselves trusted proxies, the
+    # first non-trusted, parseable hop is the real client behind the chain.
+    for hop in reversed(hops):
+        try:
+            addr = ipaddress.ip_address(hop)
+        except ValueError:
+            continue
+        if not any(addr in net for net in trusted_networks):
+            return hop
+    return peer
+
+
 def resolve_api_key(db, raw_key: str, client_ip: str) -> Principal:
     """Validate an API key and return a Principal, or raise ApiKeyError."""
     row = db.query(ApiKey).filter(ApiKey.key_hash == hash_api_key(raw_key)).first()
@@ -106,7 +164,7 @@ def resolve_principal(db, request) -> Principal | None:
     Returns None for no/invalid JWT credentials. Raises ApiKeyError for a
     present-but-invalid API key.
     """
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     api_key = request.headers.get("X-API-Key")
     if api_key:
         return resolve_api_key(db, api_key, client_ip)
