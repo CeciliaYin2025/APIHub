@@ -1,6 +1,7 @@
 """ORM models for users, roles, and API endpoint permissions."""
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
@@ -31,6 +32,7 @@ class User(Base):
     full_name = Column(String(200))
     is_active = Column(Boolean, default=True, nullable=False)
     is_superuser = Column(Boolean, default=False, nullable=False)
+    is_service_account = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -63,3 +65,23 @@ class Permission(Base):
         # unique constraint on (resource, action)
         {"info": {"unique_constraints": [("resource", "action")]}},
     )
+
+
+class ApiKey(Base):
+    __tablename__ = "api_hub_api_keys"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("api_hub_users.id"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    key_prefix = Column(String(16), nullable=False)
+    key_hash = Column(String(64), nullable=False, unique=True, index=True)
+    enabled = Column(Boolean, default=True, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    ip_allowlist = Column(JSONB, nullable=True)  # list[str] of CIDRs; null/empty = unrestricted
+    rate_limit_per_minute = Column(Integer, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    created_by = Column(String(100), nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", lazy="joined")

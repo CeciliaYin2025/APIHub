@@ -12,13 +12,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.security import get_password_hash
 from app.db.session import Base, SessionLocal, engine
+from app.models.audit_log import AuditLog  # noqa: F401 — registers model
 from app.models.sql_definition import SqlDefinitionModel  # noqa: F401 — registers model
-from app.models.user import Permission, Role, User  # noqa: F401 — registers models
+from app.models.user import ApiKey, Permission, Role, User  # noqa: F401 — registers models
 
 
 def main():
     print("Creating tables...")
     Base.metadata.create_all(bind=engine)
+
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE api_hub_users ADD COLUMN IF NOT EXISTS is_service_account boolean DEFAULT false NOT NULL")
+        )
+    print("Ensured api_hub_users.is_service_account column.")
 
     db = SessionLocal()
     try:
