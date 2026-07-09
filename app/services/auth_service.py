@@ -122,6 +122,9 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
         # Deactivated accounts must not receive a token. Return None so the
         # login endpoint replies with the same generic 401 (no account-state leak).
         return None
+    if user.is_service_account:
+        # Service accounts authenticate only via API key, never password flow.
+        return None
     return user
 
 
