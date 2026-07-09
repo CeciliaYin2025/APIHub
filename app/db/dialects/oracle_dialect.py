@@ -15,11 +15,12 @@ class OracleDialect(Dialect):
 
     # ── Pagination ──────────────────────────────────────────────────────
 
-    def wrap_paginated(self, sql: str) -> str:
+    def wrap_paginated(self, sql: str, order_by: str | None = None) -> str:
+        inner = f"SELECT * FROM ({sql}) ORDER BY {order_by}" if order_by else sql
         return f"""
             SELECT * FROM (
                 SELECT inner_.*, ROWNUM rnum_ FROM (
-                    {sql}
+                    {inner}
                 ) inner_
                 WHERE ROWNUM <= :pag_max_row
             )
@@ -29,14 +30,16 @@ class OracleDialect(Dialect):
     def pagination_binds(self, offset: int, page_size: int) -> dict[str, Any]:
         return {"pag_max_row": offset + page_size, "pag_min_row": offset}
 
-    def wrap_top_n(self, sql: str) -> str:
-        return f"SELECT * FROM ({sql}) WHERE ROWNUM <= :pag_top_n"
+    def wrap_top_n(self, sql: str, order_by: str | None = None) -> str:
+        inner = f"SELECT * FROM ({sql}) ORDER BY {order_by}" if order_by else sql
+        return f"SELECT * FROM ({inner}) WHERE ROWNUM <= :pag_top_n"
 
     def top_n_binds(self, n: int) -> dict[str, Any]:
         return {"pag_top_n": n}
 
-    def wrap_one(self, sql: str) -> str:
-        return f"SELECT * FROM ({sql}) WHERE ROWNUM <= 1"
+    def wrap_one(self, sql: str, order_by: str | None = None) -> str:
+        inner = f"SELECT * FROM ({sql}) ORDER BY {order_by}" if order_by else sql
+        return f"SELECT * FROM ({inner}) WHERE ROWNUM <= 1"
 
     @property
     def pagination_column(self) -> str | None:
@@ -120,9 +123,7 @@ class OracleDialect(Dialect):
 
     # ── Procedure / function calls ──────────────────────────────────────
 
-    def call_procedure(
-        self, cursor: Any, name: str, params: dict[str, Any], out_params: list[str]
-    ) -> dict[str, Any]:
+    def call_procedure(self, cursor: Any, name: str, params: dict[str, Any], out_params: list[str]) -> dict[str, Any]:
         import oracledb
 
         kw_args: dict[str, Any] = dict(params)

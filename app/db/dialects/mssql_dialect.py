@@ -22,10 +22,11 @@ class MssqlDialect(Dialect):
 
     # ── Pagination ──────────────────────────────────────────────────────
 
-    def wrap_paginated(self, sql: str) -> str:
+    def wrap_paginated(self, sql: str, order_by: str | None = None) -> str:
+        order_clause = order_by if order_by else "(SELECT NULL)"
         return f"""
             SELECT * FROM (
-                SELECT sub_.*, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rnum_
+                SELECT sub_.*, ROW_NUMBER() OVER (ORDER BY {order_clause}) AS rnum_
                 FROM ({sql}) sub_
             ) pag_
             WHERE rnum_ > :pag_offset AND rnum_ <= :pag_max_row
@@ -34,14 +35,16 @@ class MssqlDialect(Dialect):
     def pagination_binds(self, offset: int, page_size: int) -> dict[str, Any]:
         return {"pag_offset": offset, "pag_max_row": offset + page_size}
 
-    def wrap_top_n(self, sql: str) -> str:
-        return f"SELECT TOP (:pag_top_n) * FROM ({sql}) sub_"
+    def wrap_top_n(self, sql: str, order_by: str | None = None) -> str:
+        order = f" ORDER BY {order_by}" if order_by else ""
+        return f"SELECT TOP (:pag_top_n) * FROM ({sql}) sub_{order}"
 
     def top_n_binds(self, n: int) -> dict[str, Any]:
         return {"pag_top_n": n}
 
-    def wrap_one(self, sql: str) -> str:
-        return f"SELECT TOP 1 * FROM ({sql}) sub_"
+    def wrap_one(self, sql: str, order_by: str | None = None) -> str:
+        order = f" ORDER BY {order_by}" if order_by else ""
+        return f"SELECT TOP 1 * FROM ({sql}) sub_{order}"
 
     @property
     def pagination_column(self) -> str | None:
@@ -126,9 +129,7 @@ class MssqlDialect(Dialect):
 
     # ── Procedure / function calls ──────────────────────────────────────
 
-    def call_procedure(
-        self, cursor: Any, name: str, params: dict[str, Any], out_params: list[str]
-    ) -> dict[str, Any]:
+    def call_procedure(self, cursor: Any, name: str, params: dict[str, Any], out_params: list[str]) -> dict[str, Any]:
         if params:
             param_parts = [f"@{k}=%({k})s" for k in params]
             sql = f"EXEC {name} {', '.join(param_parts)}"
