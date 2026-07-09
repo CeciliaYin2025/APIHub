@@ -43,6 +43,7 @@ def _row_to_out(row: SqlDefinitionModel) -> dict:
         "sql": row.sql,
         "permission": row.permission,
         "params": row.params or {},
+        "order_by": row.order_by or [],
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
@@ -140,6 +141,7 @@ def import_yaml_definitions(
                 sql=raw["sql"].strip(),
                 permission=raw.get("permission", f"query:{name}"),
                 params=params,
+                order_by=raw.get("order_by") or [],
             )
             pgdb.add(row)
             imported += 1
@@ -177,6 +179,7 @@ def export_definitions_yaml(
             "sql": row.sql,
             "permission": row.permission,
             "params": row.params or {},
+            "order_by": row.order_by or [],
         }
         defs_list.append(entry)
 
@@ -237,6 +240,7 @@ async def import_yaml_file(
                 sql=raw["sql"].strip(),
                 permission=raw.get("permission", f"query:{name}"),
                 params=params,
+                order_by=raw.get("order_by") or [],
             )
             pgdb.add(row)
             imported += 1
@@ -268,6 +272,7 @@ def create_definition(
 
     permission = body.permission or f"query:{body.name}"
     params = {k: v.model_dump() for k, v in body.params.items()} if body.params else {}
+    order_by = [o.model_dump() for o in body.order_by] if body.order_by else []
 
     row = SqlDefinitionModel(
         name=body.name,
@@ -276,6 +281,7 @@ def create_definition(
         sql=body.sql.strip(),
         permission=permission,
         params=params,
+        order_by=order_by,
     )
     pgdb.add(row)
     pgdb.commit()
@@ -331,6 +337,8 @@ def update_definition(
         row.permission = body.permission
     if body.params is not None:
         row.params = {k: v.model_dump() for k, v in body.params.items()}
+    if body.order_by is not None:
+        row.order_by = [o.model_dump() for o in body.order_by]
 
     pgdb.commit()
     pgdb.refresh(row)
