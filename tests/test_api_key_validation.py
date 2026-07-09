@@ -59,10 +59,15 @@ def _key(**over):
 
 
 def test_valid_key_returns_principal():
-    p = resolve_api_key(_FakeDB(_key()), RAW, "10.0.0.1")
+    k = _key()
+    db = _FakeDB(k)
+    p = resolve_api_key(db, RAW, "10.0.0.1")
     assert p.type == "api_key"
     assert p.user.username == "svc"
     assert p.key_id == 1
+    # Verify side-effect: last_used_at was updated and commit() was called
+    assert db.committed is True
+    assert k.last_used_at is not None
 
 
 def test_unknown_key_raises_401():
