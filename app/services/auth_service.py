@@ -4,21 +4,21 @@ import ipaddress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import API_KEY_PREFIX, hash_api_key, verify_password
-from app.db.session import get_db
 from app.models.user import ApiKey, User
 
 # Relative tokenUrl (no leading slash) so Swagger's "Authorize" resolves it
 # against the docs page, which includes root_path (e.g. /apihub/docs behind the
 # proxy -> /apihub/api/v1/auth/token). An absolute "/api/v1/auth/token" would
 # ignore root_path and POST to the un-prefixed URL, which the gateway can't route.
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_prefix.lstrip('/')}/auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_prefix.lstrip('/')}/auth/token", auto_error=False)
+api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 @dataclass
@@ -129,26 +129,24 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
+    request: Request,
+    _jwt: str | None = Depends(oauth2_scheme),
+    _key: str | None = Depends(api_key_scheme),
 ) -> User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-        username: str | None = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+    """Return the caller resolved by AuthContextMiddleware.
 
-    user = db.query(User).filter(User.username == username).first()
-    if user is None or not user.is_active:
-        raise credentials_exception
-    return user
+    The two Depends params are declared only so Swagger shows both auth
+    schemes and forwards the credentials; the actual resolution happens in
+    AuthContextMiddleware, which sets request.state.principal.
+    """
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal.user
 
 
 def get_current_active_superuser(current_user: User = Depends(get_current_user)) -> User:
