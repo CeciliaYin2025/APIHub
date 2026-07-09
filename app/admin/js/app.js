@@ -178,7 +178,8 @@ function navigateTo(page) {
 
   const titles = {
     dashboard: 'Dashboard', users: 'User Management', roles: 'Role Management',
-    permissions: 'Permission Management', 'sql-definitions': 'SQL Definitions',
+    permissions: 'Permission Management', 'api-keys': 'API Keys',
+    'sql-definitions': 'SQL Definitions',
     'query-console': 'Query Console', 'procedure-console': 'Procedure Console',
     'write-console': 'Write Console', 'data-maintenance': 'Data Maintenance',
     tasks: 'Async Tasks',
@@ -186,7 +187,8 @@ function navigateTo(page) {
   document.getElementById('pageTitle').textContent = titles[page] || page;
   const renderers = {
     dashboard: renderDashboard, users: renderUsers, roles: renderRoles,
-    permissions: renderPermissions, 'sql-definitions': renderSqlDefs,
+    permissions: renderPermissions, 'api-keys': renderApiKeys,
+    'sql-definitions': renderSqlDefs,
     'query-console': renderQueryConsole, 'procedure-console': renderProcConsole,
     'write-console': renderWriteConsole, 'data-maintenance': renderDataMaintenance,
     tasks: renderTasks,
@@ -374,6 +376,17 @@ async function renderUsers() {
   }
 }
 
+// Shared handler for the "Service account" checkbox on the user create/edit
+// forms: a service account cannot be superuser (enforced server-side too), so
+// checking it disables + clears the Superuser select.
+window.toggleSuperuserForServiceAccount = function(checkbox) {
+  const form = checkbox.form;
+  const suField = form.is_superuser;
+  if (!suField) return;
+  suField.disabled = checkbox.checked;
+  if (checkbox.checked) suField.value = 'false';
+};
+
 window.openUserModal = function() {
   const roles = window._cachedRoles || [];
   const body = `
@@ -395,6 +408,12 @@ window.openUserModal = function() {
       <div class="form-group">
         <label>Superuser</label>
         <select name="is_superuser"><option value="false">No</option><option value="true">Yes</option></select>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-item">
+          <input type="checkbox" id="uNewServiceAccount" name="is_service_account" onchange="toggleSuperuserForServiceAccount(this)">
+          <label for="uNewServiceAccount">Service account (API-key only; cannot be superuser)</label>
+        </div>
       </div>
       <div class="form-group">
         <label>Roles</label>
@@ -419,6 +438,7 @@ window.submitUser = async function() {
     password: form.password.value,
     full_name: form.full_name.value || null,
     is_superuser: form.is_superuser.value === 'true',
+    is_service_account: form.is_service_account.checked,
     role_ids: [...form.querySelectorAll('input[name="role_ids"]:checked')].map(c => parseInt(c.value)),
   };
   try {
@@ -462,10 +482,16 @@ window.openEditUserModal = async function(userId) {
         </div>
         <div class="form-group">
           <label>Superuser</label>
-          <select name="is_superuser">
+          <select name="is_superuser" ${user.is_service_account ? 'disabled' : ''}>
             <option value="false" ${!user.is_superuser ? 'selected' : ''}>No</option>
             <option value="true" ${user.is_superuser ? 'selected' : ''}>Yes</option>
           </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-item">
+          <input type="checkbox" id="uEditServiceAccount" name="is_service_account" ${user.is_service_account ? 'checked' : ''} onchange="toggleSuperuserForServiceAccount(this)">
+          <label for="uEditServiceAccount">Service account (API-key only; cannot be superuser)</label>
         </div>
       </div>
       <div class="form-group">
@@ -496,6 +522,7 @@ window.submitEditUser = async function() {
     full_name: form.full_name.value || null,
     is_active: form.is_active.value === 'true',
     is_superuser: form.is_superuser.value === 'true',
+    is_service_account: form.is_service_account.checked,
     role_ids: [...form.querySelectorAll('input[name="role_ids"]:checked')].map(c => parseInt(c.value)),
   };
   try {
@@ -794,6 +821,134 @@ window.deletePerm = async function(permId, resource) {
     await api('DELETE', `/auth/permissions/${permId}`);
     toast('Permission deleted', 'success');
     renderPermissions();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+/* ── API Keys ──────────────────────────────────────────────────────────── */
+async function renderApiKeys() {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <h2>API Keys</h2>
+        <button class="btn btn-primary btn-sm" onclick="openApiKeyModal()">+ New API Key</button>
+      </div>
+      <div class="card-body no-pad" id="apiKeyList"><p class="text-muted" style="padding:16px">Loading…</p></div>
+    </div>
+    <div id="apiKeyResult"></div>
+  `;
+  await loadApiKeys();
+}
+
+async function loadApiKeys() {
+  const el = document.getElementById('apiKeyList');
+  try {
+    const keys = await api('GET', '/auth/api-keys');
+    if (!keys.length) {
+      el.innerHTML = '<p class="text-muted" style="padding:16px">No API keys yet.</p>';
+      return;
+    }
+    el.innerHTML = `
+      <table class="data-table"><thead><tr>
+        <th>Name</th><th>Service Account</th><th>Prefix</th><th>Last Used</th><th>Expires</th><th>Status</th><th>Actions</th>
+      </tr></thead>
+      <tbody>${keys.map(k => `<tr>
+        <td><strong>${esc(k.name)}</strong></td>
+        <td>${esc(k.service_account)}</td>
+        <td><code>${esc(k.key_prefix)}…</code></td>
+        <td>${k.last_used_at ? esc(k.last_used_at) : '—'}</td>
+        <td>${k.expires_at ? esc(k.expires_at) : '—'}</td>
+        <td>${k.revoked_at ? '<span class="badge badge-red">Revoked</span>' : (k.enabled ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Disabled</span>')}</td>
+        <td>${(k.enabled && !k.revoked_at) ? `<button class="btn btn-xs btn-danger" onclick="revokeApiKey(${k.id}, '${esc(k.name)}')">Revoke</button>` : '—'}</td>
+      </tr>`).join('')}</tbody></table>
+    `;
+  } catch (err) {
+    el.innerHTML = `<p style="padding:16px;color:var(--danger)">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+window.openApiKeyModal = async function() {
+  let accounts = [];
+  try {
+    const users = await api('GET', '/auth/users');
+    accounts = users.filter(u => u.is_service_account);
+  } catch (err) {
+    toast('Failed to load service accounts: ' + err.message, 'error');
+  }
+  const opts = accounts.length
+    ? accounts.map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join('')
+    : '<option value="">(no service accounts — create one under Users first)</option>';
+
+  const body = `
+    <form id="apiKeyForm">
+      <div class="form-group">
+        <label>Service Account</label>
+        <select name="service_account_username" ${accounts.length ? 'required' : 'disabled'}>${opts}</select>
+      </div>
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" name="name" placeholder="e.g. hr-portal-prod" required>
+      </div>
+      <div class="form-group">
+        <label>Expires At (optional)</label>
+        <input type="date" name="expires_at">
+      </div>
+      <div class="form-group">
+        <label>IP Allowlist (comma-separated CIDR, optional)</label>
+        <input type="text" name="ip_allowlist" placeholder="10.1.0.0/16, 192.168.1.0/24">
+      </div>
+      <div class="form-group">
+        <label>Rate Limit / Minute (optional)</label>
+        <input type="number" name="rate_limit_per_minute" min="1">
+      </div>
+    </form>
+  `;
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                   <button class="btn btn-primary" onclick="submitApiKey()">Create Key</button>`;
+  openModal('New API Key', body, footer);
+};
+
+window.submitApiKey = async function() {
+  const form = document.getElementById('apiKeyForm');
+  const ipsRaw = form.ip_allowlist.value.trim();
+  const data = {
+    service_account_username: form.service_account_username.value,
+    name: form.name.value.trim(),
+    expires_at: form.expires_at.value || null,
+    ip_allowlist: ipsRaw ? ipsRaw.split(',').map(s => s.trim()).filter(Boolean) : null,
+    rate_limit_per_minute: form.rate_limit_per_minute.value ? Number(form.rate_limit_per_minute.value) : null,
+  };
+  if (!data.service_account_username || !data.name) {
+    toast('Service account and name are required', 'error');
+    return;
+  }
+  try {
+    const created = await api('POST', '/auth/api-keys', data);
+    closeModal();
+    toast('API key created', 'success');
+    document.getElementById('apiKeyResult').innerHTML = `
+      <div class="card">
+        <div class="card-header"><h2>API Key Created</h2></div>
+        <div class="card-body">
+          <p style="color:var(--danger)"><strong>Copy this key now — it will not be shown again:</strong></p>
+          <pre class="monospace" style="user-select:all;white-space:pre-wrap">${esc(created.api_key)}</pre>
+        </div>
+      </div>
+    `;
+    await loadApiKeys();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.revokeApiKey = async function(id, name) {
+  if (!confirm(`Revoke API key "${name}"? Requests using it will start failing immediately.`)) return;
+  try {
+    await api('DELETE', `/auth/api-keys/${id}`);
+    toast('API key revoked', 'success');
+    await loadApiKeys();
   } catch (err) {
     toast(err.message, 'error');
   }
