@@ -7,7 +7,7 @@ SQL definitions are scoped by database alias. CRUD endpoints are under
 from datetime import date
 
 import yaml
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -165,7 +165,9 @@ def export_definitions_yaml(
 ):
     """Export all SQL definitions for this database as a downloadable YAML file. Superuser only."""
     _require_superuser(current_user)
-    rows = pgdb.query(SqlDefinitionModel).filter(SqlDefinitionModel.db_alias == db).order_by(SqlDefinitionModel.name).all()
+    rows = (
+        pgdb.query(SqlDefinitionModel).filter(SqlDefinitionModel.db_alias == db).order_by(SqlDefinitionModel.name).all()
+    )
 
     defs_list = []
     for row in rows:
@@ -365,7 +367,8 @@ def delete_definition(
 
 @router.post("/{db}/queries/execute", response_model=QueryResponse)
 def execute(
-    request: QueryRequest,
+    request: Request,
+    payload: QueryRequest,
     db: str = Depends(get_db_alias),
     current_user: User = Depends(get_current_user),
 ):
@@ -378,9 +381,12 @@ def execute(
     - **top_n**: first N rows. Use ``top_n``.
     - **one**: exactly one row (404 if none).
     """
-    definition = sql_registry.get(request.query_name, db_alias=db)
+    request.state.audit_action = payload.query_name
+    definition = sql_registry.get(payload.query_name, db_alias=db)
     if not definition:
-        raise HTTPException(status_code=404, detail=f"Query definition '{request.query_name}' not found for database '{db}'")
+        raise HTTPException(
+            status_code=404, detail=f"Query definition '{payload.query_name}' not found for database '{db}'"
+        )
 
     # Check permission
     checker = PermissionChecker(definition.permission, "read")
@@ -389,13 +395,13 @@ def execute(
     try:
         result = execute_query(
             definition,
-            request.params,
-            request.fetch_mode,
-            page=request.page,
-            page_size=request.page_size,
-            batch_size=request.batch_size,
-            batch_offset=request.batch_offset,
-            top_n=request.top_n,
+            payload.params,
+            payload.fetch_mode,
+            page=payload.page,
+            page_size=payload.page_size,
+            batch_size=payload.batch_size,
+            batch_offset=payload.batch_offset,
+            top_n=payload.top_n,
             db_alias=db,
         )
     except ValueError as e:
@@ -404,8 +410,8 @@ def execute(
         raise HTTPException(status_code=500, detail=f"Query execution error: {e}")
 
     return QueryResponse(
-        query_name=request.query_name,
-        fetch_mode=request.fetch_mode,
+        query_name=payload.query_name,
+        fetch_mode=payload.fetch_mode,
         total=result["total"],
         page=result.get("page"),
         page_size=result.get("page_size"),
