@@ -34,3 +34,18 @@ def test_invalid_column_raises(bad):
 def test_invalid_direction_raises():
     with pytest.raises(ValueError):
         _build_order_by(_Def([{"column": "a", "direction": "SIDEWAYS"}]))
+
+
+def test_non_string_column_raises():
+    with pytest.raises(ValueError):
+        _build_order_by(_Def([{"column": 123, "direction": "ASC"}]))
+
+
+def test_non_string_direction_raises():
+    with pytest.raises(ValueError):
+        _build_order_by(_Def([{"column": "a", "direction": 5}]))
+
+
+def test_trailing_newline_column_rejected():
+    with pytest.raises(ValueError):
+        _build_order_by(_Def([{"column": "a\n", "direction": "ASC"}]))

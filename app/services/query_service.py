@@ -17,7 +17,7 @@ from app.services.sql_registry import SqlDefinition
 
 logger = logging.getLogger(__name__)
 
-_ORDER_COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+_ORDER_COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 
 
 def _build_order_by(definition) -> str | None:
@@ -32,9 +32,17 @@ def _build_order_by(definition) -> str | None:
     parts: list[str] = []
     for item in items:
         column = item.get("column")
-        direction = (item.get("direction") or "ASC").upper()
-        if not column or not _ORDER_COLUMN_RE.match(column):
+        direction_raw = item.get("direction")
+
+        # Validate column is a string and matches the regex
+        if not isinstance(column, str) or not _ORDER_COLUMN_RE.match(column):
             raise ValueError(f"Invalid order_by column: {column!r}")
+
+        # Validate direction is a string or None, then default to "ASC"
+        if direction_raw is not None and not isinstance(direction_raw, str):
+            raise ValueError(f"Invalid order_by direction: {direction_raw!r}")
+        direction = (direction_raw or "ASC").upper()
+
         if direction not in ("ASC", "DESC"):
             raise ValueError(f"Invalid order_by direction: {direction!r}")
         parts.append(f"{column} {direction}")
