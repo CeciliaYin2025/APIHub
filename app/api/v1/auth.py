@@ -98,13 +98,14 @@ def update_user(
         if not payload.is_active and user.id == admin.id:
             raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
         user.is_active = payload.is_active
+    # Enforce service-account / superuser mutual exclusion on the resulting state.
+    new_is_service = payload.is_service_account if payload.is_service_account is not None else user.is_service_account
+    new_is_superuser = payload.is_superuser if payload.is_superuser is not None else user.is_superuser
+    if new_is_service and new_is_superuser:
+        raise HTTPException(status_code=400, detail="A service account cannot be a superuser")
+    if payload.is_service_account is not None:
+        user.is_service_account = payload.is_service_account
     if payload.is_superuser is not None:
-        if payload.is_service_account is not None:
-            user.is_service_account = payload.is_service_account
-        if user.is_service_account and (payload.is_superuser or user.is_superuser):
-            # setting superuser on a service account (or vice versa) is forbidden
-            if payload.is_superuser:
-                raise HTTPException(status_code=400, detail="A service account cannot be a superuser")
         user.is_superuser = payload.is_superuser
     if payload.role_ids is not None:
         roles = db.query(Role).filter(Role.id.in_(payload.role_ids)).all()

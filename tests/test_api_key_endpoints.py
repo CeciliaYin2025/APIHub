@@ -7,10 +7,11 @@ from app.api.v1.auth import (
     create_api_key_endpoint,
     create_user,
     revoke_api_key_endpoint,
+    update_user,
 )
 from app.models.user import ApiKey, User
 from app.schemas.api_key import ApiKeyCreate
-from app.schemas.auth import UserCreate
+from app.schemas.auth import UserCreate, UserUpdate
 
 
 class _FakeQuery:
@@ -83,4 +84,21 @@ def test_create_user_service_account_cannot_be_superuser():
     payload = UserCreate(username="svc", password="x", is_service_account=True, is_superuser=True)
     with pytest.raises(HTTPException) as e:
         create_user(payload, db=db, _admin=_admin())
+    assert e.value.status_code == 400
+
+
+def test_update_user_can_set_service_account_alone():
+    user = User(id=2, username="alice", is_active=True, is_service_account=False, is_superuser=False)
+    db = _FakeDB(user=user)
+    payload = UserUpdate(is_service_account=True)
+    result = update_user(2, payload, db=db, admin=_admin())
+    assert result.is_service_account is True
+
+
+def test_update_user_service_account_cannot_become_superuser():
+    user = User(id=1, username="svc", is_active=True, is_service_account=True, is_superuser=False)
+    db = _FakeDB(user=user)
+    payload = UserUpdate(is_superuser=True)
+    with pytest.raises(HTTPException) as e:
+        update_user(1, payload, db=db, admin=_admin())
     assert e.value.status_code == 400
