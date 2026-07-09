@@ -8,9 +8,7 @@ from app.db.session import Base
 
 class SqlDefinitionModel(Base):
     __tablename__ = "api_hub_sql_definitions"
-    __table_args__ = (
-        UniqueConstraint("name", "db_alias", name="uq_sql_def_name_db_alias"),
-    )
+    __table_args__ = (UniqueConstraint("name", "db_alias", name="uq_sql_def_name_db_alias"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), nullable=False, index=True)
@@ -19,5 +17,6 @@ class SqlDefinitionModel(Base):
     sql = Column(Text, nullable=False)
     permission = Column(String(200), nullable=False)
     params = Column(JSONB, default=dict)
+    order_by = Column(JSONB, default=list)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
