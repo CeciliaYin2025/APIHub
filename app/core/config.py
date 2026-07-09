@@ -40,11 +40,11 @@ class Settings(BaseSettings):
     # Rate limiting
     rate_limit_per_minute: int = 60
 
-    # Comma-separated CIDRs/IPs of trusted reverse proxies (e.g. the ISAP
-    # gateway). When the direct peer matches one of these, X-Forwarded-For is
-    # consulted to recover the real client IP for the API-key IP allowlist and
-    # audit logging. Empty (default) = trust none, use the direct peer as-is
-    # (today's behavior, safe by default since XFF is otherwise spoofable).
+    # Comma-separated CIDRs/IPs of trusted reverse proxies (e.g. the ISAP gateway).
+    # When the direct peer matches one of these, X-Forwarded-For is consulted to recover
+    # the real client IP for the API-key IP allowlist and audit logging. SCOPE TO THE
+    # EXACT REVERSE-PROXY IP(S) / SMALLEST CIDR — too broad a range lets any host in that
+    # range spoof X-Forwarded-For. Empty (default) = trust none, use the direct peer as-is.
     trusted_proxies: str = ""
 
     # API key last_used_at bookkeeping: skip the write (and its commit) when

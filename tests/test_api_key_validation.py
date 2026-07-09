@@ -12,6 +12,13 @@ from app.services.auth_service import ApiKeyError, resolve_api_key
 RAW = "ahk_testkey123"
 
 
+@pytest.fixture(autouse=True)
+def _clear_last_used_cache():
+    auth_service._last_used_cache.clear()
+    yield
+    auth_service._last_used_cache.clear()
+
+
 class _FakeQuery:
     def __init__(self, row):
         self._row = row
@@ -60,7 +67,6 @@ def _key(**over):
 
 
 def test_valid_key_returns_principal():
-    auth_service._last_used_cache.clear()
     k = _key()
     db = _FakeDB(k)
     p = resolve_api_key(db, RAW, "10.0.0.1")
@@ -73,7 +79,6 @@ def test_valid_key_returns_principal():
 
 
 def test_last_used_at_throttled_within_window():
-    auth_service._last_used_cache.clear()
     key_id = 42
 
     k1 = _key(id=key_id)
