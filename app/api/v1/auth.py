@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.security import create_access_token, get_password_hash
 from app.db.session import get_db
 from app.models.user import Permission, Role, User
+from app.schemas.api_key import ApiKeyCreate, ApiKeyCreated, ApiKeyOut
 from app.schemas.auth import (
     PasswordReset,
     PermissionCreate,
@@ -20,12 +21,18 @@ from app.schemas.auth import (
     UserOut,
     UserUpdate,
 )
+from app.services.api_key_service import (
+    create_api_key,
+    list_api_keys,
+    revoke_api_key,
+)
 from app.services.auth_service import authenticate_user, get_current_active_superuser, get_current_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 # ── Token ────────────────────────────────────────────────────────────────────
+
 
 @router.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -43,6 +50,7 @@ def read_current_user(current_user: User = Depends(get_current_user)):
 
 # ── Users (superuser only) ──────────────────────────────────────────────────
 
+
 @router.post("/users", response_model=UserOut, status_code=201)
 def create_user(
     payload: UserCreate,
@@ -51,11 +59,14 @@ def create_user(
 ):
     if db.query(User).filter(User.username == payload.username).first():
         raise HTTPException(status_code=400, detail="Username already exists")
+    if payload.is_service_account and payload.is_superuser:
+        raise HTTPException(status_code=400, detail="A service account cannot be a superuser")
     user = User(
         username=payload.username,
         hashed_password=get_password_hash(payload.password),
         full_name=payload.full_name,
         is_superuser=payload.is_superuser,
+        is_service_account=payload.is_service_account,
     )
     if payload.role_ids:
         roles = db.query(Role).filter(Role.id.in_(payload.role_ids)).all()
@@ -88,6 +99,12 @@ def update_user(
             raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
         user.is_active = payload.is_active
     if payload.is_superuser is not None:
+        if payload.is_service_account is not None:
+            user.is_service_account = payload.is_service_account
+        if user.is_service_account and (payload.is_superuser or user.is_superuser):
+            # setting superuser on a service account (or vice versa) is forbidden
+            if payload.is_superuser:
+                raise HTTPException(status_code=400, detail="A service account cannot be a superuser")
         user.is_superuser = payload.is_superuser
     if payload.role_ids is not None:
         roles = db.query(Role).filter(Role.id.in_(payload.role_ids)).all()
@@ -127,6 +144,7 @@ def reset_user_password(
 
 
 # ── Roles (superuser only) ──────────────────────────────────────────────────
+
 
 @router.post("/roles", response_model=RoleOut, status_code=201)
 def create_role(
@@ -188,6 +206,7 @@ def delete_role(
 
 # ── Permissions (superuser only) ────────────────────────────────────────────
 
+
 @router.post("/permissions", response_model=PermissionOut, status_code=201)
 def create_permission(
     payload: PermissionCreate,
@@ -240,3 +259,61 @@ def delete_permission(
         raise HTTPException(status_code=409, detail="Cannot delete permission that is still assigned to roles")
     db.delete(perm)
     db.commit()
+
+
+# ── API Keys (superuser only) ───────────────────────────────────────────────
+
+
+def _key_to_out(row) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "service_account": row.user.username if row.user else "",
+        "key_prefix": row.key_prefix,
+        "enabled": row.enabled,
+        "expires_at": row.expires_at,
+        "last_used_at": row.last_used_at,
+        "revoked_at": row.revoked_at,
+    }
+
+
+@router.post("/api-keys", response_model=ApiKeyCreated, status_code=201)
+def create_api_key_endpoint(
+    payload: ApiKeyCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_active_superuser),
+):
+    try:
+        row, plaintext = create_api_key(
+            db,
+            service_account_username=payload.service_account_username,
+            name=payload.name,
+            expires_at=payload.expires_at,
+            ip_allowlist=payload.ip_allowlist,
+            rate_limit_per_minute=payload.rate_limit_per_minute,
+            created_by=admin.username,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {**_key_to_out(row), "api_key": plaintext}
+
+
+@router.get("/api-keys", response_model=list[ApiKeyOut])
+def list_api_keys_endpoint(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_active_superuser),
+):
+    return [_key_to_out(r) for r in list_api_keys(db)]
+
+
+@router.delete("/api-keys/{key_id}", status_code=200)
+def revoke_api_key_endpoint(
+    key_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_active_superuser),
+):
+    try:
+        revoke_api_key(db, key_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"message": f"API key {key_id} revoked"}
