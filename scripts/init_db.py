@@ -29,6 +29,12 @@ def main():
         )
     print("Ensured api_hub_users.is_service_account column.")
 
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE api_hub_sql_definitions ADD COLUMN IF NOT EXISTS order_by jsonb DEFAULT '[]'::jsonb")
+        )
+    print("Ensured api_hub_sql_definitions.order_by column.")
+
     db = SessionLocal()
     try:
         # Check if admin already exists

@@ -1130,6 +1130,12 @@ window.openSqlDefModal = async function(mode, name) {
       <textarea id="sdParams" class="monospace" rows="5" placeholder='{"param": {"type":"string","required":false,"description":"..."}}'>${esc(paramsJson)}</textarea>
       <div class="hint">JSON object: { "param_name": { "type": "string|number|date", "required": false, "description": "..." } }</div>
     </div>
+    <div class="form-group">
+      <label>Order By</label>
+      <div id="sdOrderByRows"></div>
+      <button type="button" class="btn btn-xs btn-outline" onclick="addOrderByRow()">+ Add order column</button>
+      <div class="hint">Sorts on output column names. Applied by the Hub in the wrapper (works on MSSQL). Empty = no ordering.</div>
+    </div>
   `;
 
   const footer = `
@@ -1138,7 +1144,31 @@ window.openSqlDefModal = async function(mode, name) {
   `;
 
   openModal(title, body, footer);
+  (data.order_by || []).forEach(o => addOrderByRow(o.column, o.direction));
 };
+
+// Order By row helpers for the SQL Definition create/edit form.
+window.addOrderByRow = function(column = '', direction = 'ASC') {
+  const rows = document.getElementById('sdOrderByRows');
+  if (!rows) return;
+  const div = document.createElement('div');
+  div.className = 'order-by-row';
+  div.innerHTML = `
+    <input type="text" class="ob-col" placeholder="COLUMN_NAME" value="${esc(column)}">
+    <select class="ob-dir">
+      <option ${direction === 'ASC' ? 'selected' : ''}>ASC</option>
+      <option ${direction === 'DESC' ? 'selected' : ''}>DESC</option>
+    </select>
+    <button type="button" class="btn btn-xs btn-danger" onclick="this.parentElement.remove()">&#10005;</button>
+  `;
+  rows.appendChild(div);
+};
+
+function collectOrderBy() {
+  return Array.from(document.querySelectorAll('#sdOrderByRows .order-by-row'))
+    .map(r => ({ column: r.querySelector('.ob-col').value.trim(), direction: r.querySelector('.ob-dir').value }))
+    .filter(o => o.column);
+}
 
 window.submitSqlDef = async function(mode, name) {
   const nameVal = document.getElementById('sdName').value.trim();
@@ -1158,12 +1188,14 @@ window.submitSqlDef = async function(mode, name) {
     return;
   }
 
+  const orderBy = collectOrderBy();
+
   try {
     if (mode === 'create' || mode === 'copy') {
-      await api('POST', `${dbPrefix()}/queries/definitions`, { name: nameVal, description: desc, sql, permission: perm, params });
+      await api('POST', `${dbPrefix()}/queries/definitions`, { name: nameVal, description: desc, sql, permission: perm, params, order_by: orderBy });
       toast(`Definition '${nameVal}' created`, 'success');
     } else {
-      const body = { description: desc, sql, permission: perm, params };
+      const body = { description: desc, sql, permission: perm, params, order_by: orderBy };
       await api('PUT', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`, body);
       toast(`Definition '${name}' updated`, 'success');
     }

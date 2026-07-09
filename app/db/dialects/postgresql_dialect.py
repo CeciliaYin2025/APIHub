@@ -22,20 +22,23 @@ class PostgresqlDialect(Dialect):
 
     # ── Pagination ──────────────────────────────────────────────────────
 
-    def wrap_paginated(self, sql: str) -> str:
-        return f"SELECT * FROM ({sql}) sub_ LIMIT :pag_limit OFFSET :pag_offset"
+    def wrap_paginated(self, sql: str, order_by: str | None = None) -> str:
+        order = f" ORDER BY {order_by}" if order_by else ""
+        return f"SELECT * FROM ({sql}) sub_{order} LIMIT :pag_limit OFFSET :pag_offset"
 
     def pagination_binds(self, offset: int, page_size: int) -> dict[str, Any]:
         return {"pag_limit": page_size, "pag_offset": offset}
 
-    def wrap_top_n(self, sql: str) -> str:
-        return f"SELECT * FROM ({sql}) sub_ LIMIT :pag_top_n"
+    def wrap_top_n(self, sql: str, order_by: str | None = None) -> str:
+        order = f" ORDER BY {order_by}" if order_by else ""
+        return f"SELECT * FROM ({sql}) sub_{order} LIMIT :pag_top_n"
 
     def top_n_binds(self, n: int) -> dict[str, Any]:
         return {"pag_top_n": n}
 
-    def wrap_one(self, sql: str) -> str:
-        return f"SELECT * FROM ({sql}) sub_ LIMIT 1"
+    def wrap_one(self, sql: str, order_by: str | None = None) -> str:
+        order = f" ORDER BY {order_by}" if order_by else ""
+        return f"SELECT * FROM ({sql}) sub_{order} LIMIT 1"
 
     @property
     def pagination_column(self) -> str | None:
@@ -121,9 +124,7 @@ class PostgresqlDialect(Dialect):
 
     # ── Procedure / function calls ──────────────────────────────────────
 
-    def call_procedure(
-        self, cursor: Any, name: str, params: dict[str, Any], out_params: list[str]
-    ) -> dict[str, Any]:
+    def call_procedure(self, cursor: Any, name: str, params: dict[str, Any], out_params: list[str]) -> dict[str, Any]:
         if params:
             placeholders = ", ".join(f"%({k})s" for k in params)
             sql = f"CALL {name}({placeholders})"

@@ -13,23 +13,23 @@ class Dialect(abc.ABC):
     # ── Pagination ──────────────────────────────────────────────────────
 
     @abc.abstractmethod
-    def wrap_paginated(self, sql: str) -> str:
-        """Wrap *sql* with engine-specific pagination (uses bind params from ``pagination_binds``)."""
+    def wrap_paginated(self, sql: str, order_by: str | None = None) -> str:
+        """Wrap *sql* with engine-specific pagination (binds from ``pagination_binds``)."""
 
     @abc.abstractmethod
     def pagination_binds(self, offset: int, page_size: int) -> dict[str, Any]:
         """Return bind params dict for the paginated wrapper."""
 
     @abc.abstractmethod
-    def wrap_top_n(self, sql: str) -> str:
-        """Wrap *sql* to return at most N rows (uses bind from ``top_n_binds``)."""
+    def wrap_top_n(self, sql: str, order_by: str | None = None) -> str:
+        """Wrap *sql* to return at most N rows (bind from ``top_n_binds``)."""
 
     @abc.abstractmethod
     def top_n_binds(self, n: int) -> dict[str, Any]:
         """Return bind params for the top-N wrapper."""
 
     @abc.abstractmethod
-    def wrap_one(self, sql: str) -> str:
+    def wrap_one(self, sql: str, order_by: str | None = None) -> str:
         """Wrap *sql* to return at most 1 row."""
 
     @property
@@ -42,6 +42,12 @@ class Dialect(abc.ABC):
     def wrap_count(self, sql: str) -> str:
         """Wrap *sql* in a COUNT(*) query."""
         return f"SELECT COUNT(*) FROM ({sql}) cnt_"
+
+    def wrap_all(self, sql: str, order_by: str | None = None) -> str:
+        """Return every row, optionally ordered. Outermost ORDER BY is legal on all engines."""
+        if order_by is None:
+            return sql
+        return f"SELECT * FROM ({sql}) sub_ ORDER BY {order_by}"
 
     # ── Bind parameter conversion ───────────────────────────────────────
 
@@ -73,9 +79,7 @@ class Dialect(abc.ABC):
     # ── Procedure / function calls ──────────────────────────────────────
 
     @abc.abstractmethod
-    def call_procedure(
-        self, cursor: Any, name: str, params: dict[str, Any], out_params: list[str]
-    ) -> dict[str, Any]:
+    def call_procedure(self, cursor: Any, name: str, params: dict[str, Any], out_params: list[str]) -> dict[str, Any]:
         """Execute a stored procedure, return dict of OUT param values."""
 
     @abc.abstractmethod

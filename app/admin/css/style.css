@@ -264,6 +264,11 @@ textarea.monospace,
 .gap-4 { gap: 16px; }
 .hidden { display: none !important; }
 
+/* ── SQL Definition: Order By editor ──────────────────────────────────── */
+.order-by-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.order-by-row .ob-col { flex: 1; width: auto; }
+.order-by-row .ob-dir { width: auto; flex: 0 0 90px; }
+
 /* ── Data Maintenance ─────────────────────────────────────────────────── */
 .dm-row-card {
   background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: var(--radius);
