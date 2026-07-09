@@ -1,6 +1,6 @@
 """Database listing endpoint and shared dependency for database alias validation."""
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 
 from app.db.multi_pool import db_registry
 from app.models.user import User
@@ -9,7 +9,7 @@ from app.services.auth_service import get_current_user
 router = APIRouter(prefix="/databases", tags=["Databases"])
 
 
-def get_db_alias(db: str = Path(..., description="Database alias")) -> str:
+def get_db_alias(request: Request, db: str = Path(..., description="Database alias")) -> str:
     """FastAPI dependency — validate that *db* is a registered database alias."""
     if not db_registry.has(db):
         available = ", ".join(db_registry.aliases()) or "(none)"
@@ -17,6 +17,7 @@ def get_db_alias(db: str = Path(..., description="Database alias")) -> str:
             status_code=404,
             detail=f"Database '{db}' not configured. Available: {available}",
         )
+    request.state.audit_db_alias = db
     return db
 
 

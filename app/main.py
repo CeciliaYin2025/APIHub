@@ -13,6 +13,8 @@ from app.api.v1 import auth, databases, health, procedures, queries, schemas, wr
 from app.core.config import settings
 from app.db.multi_pool import db_registry
 from app.db.oracle_pool import close_pool, init_pool
+from app.middleware.audit import AuditMiddleware
+from app.middleware.auth_context import AuthContextMiddleware
 from app.middleware.rate_limiter import RateLimiterMiddleware
 from app.services.sql_registry import sql_registry
 
@@ -45,6 +47,11 @@ app = FastAPI(
 )
 
 # ── Middleware ────────────────────────────────────────────────────────────────
+# Order matters. add_middleware stacks last-added = outermost. We want, outer→inner:
+#   CORS → Audit → AuthContext → RateLimiter → routers
+app.add_middleware(RateLimiterMiddleware)  # innermost of ours (reads principal)
+app.add_middleware(AuthContextMiddleware)  # resolves principal before rate limiter
+app.add_middleware(AuditMiddleware)  # times whole chain, sees final principal
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Restrict in production
@@ -52,7 +59,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(RateLimiterMiddleware)
 
 # ── Routers ──────────────────────────────────────────────────────────────────
 # Database-independent endpoints

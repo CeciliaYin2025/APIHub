@@ -17,6 +17,7 @@ class UserCreate(BaseModel):
     password: str
     full_name: str | None = None
     is_superuser: bool = False
+    is_service_account: bool = False
     role_ids: list[int] = []
 
 
@@ -26,6 +27,7 @@ class UserOut(BaseModel):
     full_name: str | None
     is_active: bool
     is_superuser: bool
+    is_service_account: bool = False
     roles: list["RoleOut"] = []
 
     model_config = {"from_attributes": True}
@@ -65,6 +67,7 @@ class UserUpdate(BaseModel):
     full_name: str | None = None
     is_active: bool | None = None
     is_superuser: bool | None = None
+    is_service_account: bool | None = None
     role_ids: list[int] | None = None
 
 
