@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import app.services.auth_service as auth_service
 from app.core.security import hash_api_key
 from app.models.user import ApiKey, Permission, Role, User
 from app.services.auth_service import ApiKeyError, resolve_api_key
@@ -59,6 +60,7 @@ def _key(**over):
 
 
 def test_valid_key_returns_principal():
+    auth_service._last_used_cache.clear()
     k = _key()
     db = _FakeDB(k)
     p = resolve_api_key(db, RAW, "10.0.0.1")
@@ -68,6 +70,25 @@ def test_valid_key_returns_principal():
     # Verify side-effect: last_used_at was updated and commit() was called
     assert db.committed is True
     assert k.last_used_at is not None
+
+
+def test_last_used_at_throttled_within_window():
+    auth_service._last_used_cache.clear()
+    key_id = 42
+
+    k1 = _key(id=key_id)
+    db1 = _FakeDB(k1)
+    resolve_api_key(db1, RAW, "10.0.0.1")
+    assert db1.committed is True
+    assert k1.last_used_at is not None
+
+    # Second call for the SAME key id, within the throttle window: must not
+    # write last_used_at or commit again.
+    k2 = _key(id=key_id)
+    db2 = _FakeDB(k2)
+    resolve_api_key(db2, RAW, "10.0.0.1")
+    assert db2.committed is False
+    assert k2.last_used_at is None
 
 
 def test_unknown_key_raises_401():

@@ -50,21 +50,77 @@ def test_anonymous_when_no_principal():
 
 
 def test_request_succeeds_even_if_audit_write_raises(monkeypatch):
+    # write_audit is invoked as a BackgroundTask after the response is built;
+    # a raise there must never surface to the client (swallowed by the
+    # background-task wrapper / dispatch try-except).
     def _boom(row):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(au, "write_audit", _boom)
+    monkeypatch.setattr(au, "_should_skip", lambda path: False)
 
     application = FastAPI()
     application.add_middleware(AuditMiddleware)
 
-    @application.get("/ok")
+    @application.get("/api/v1/ok")
     def ok():
         return {"ok": True}
 
-    resp = TestClient(application).get("/ok")
+    resp = TestClient(application).get("/api/v1/ok")
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+
+
+def test_write_audit_swallows_db_failure(monkeypatch):
+    class _FakeSession:
+        def add(self, _obj):
+            pass
+
+        def commit(self):
+            raise RuntimeError("db down")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(au, "SessionLocal", lambda: _FakeSession())
+
+    row = {
+        "principal_type": "anonymous",
+        "principal": "anonymous",
+        "api_key_id": None,
+        "api_key_name": None,
+        "client_ip": "127.0.0.1",
+        "method": "GET",
+        "path": "/api/v1/ok",
+        "db_alias": None,
+        "action": None,
+        "status_code": 200,
+        "duration_ms": 1,
+    }
+
+    # Must not raise.
+    au.write_audit(row)
+
+
+def test_background_audit_write_runs_after_response(monkeypatch):
+    # Proves the DB write actually happens (via BackgroundTask under
+    # BaseHTTPMiddleware, or the threadpool fallback) even though it is not
+    # awaited inline in dispatch.
+    calls = []
+    monkeypatch.setattr(au, "write_audit", lambda row: calls.append(row))
+    monkeypatch.setattr(au, "_should_skip", lambda path: False)
+
+    application = FastAPI()
+    application.add_middleware(AuditMiddleware)
+
+    @application.get("/api/v1/ok")
+    def ok():
+        return {"ok": True}
+
+    resp = TestClient(application).get("/api/v1/ok")
+    assert resp.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["path"] == "/api/v1/ok"
 
 
 def test_should_skip_audits_normal_api_call():

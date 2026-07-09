@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # Rate limiting
     rate_limit_per_minute: int = 60
 
+    # API key last_used_at bookkeeping: skip the write (and its commit) when
+    # the key was already recorded within this many seconds.
+    api_key_last_used_throttle_seconds: int = 60
+
     # SQL definitions
     sql_definitions_dir: str = "app/sql_definitions"
 

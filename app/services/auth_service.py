@@ -1,6 +1,7 @@
 """Authentication service: user lookup, token validation, permission checks."""
 
 import ipaddress
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -41,6 +42,21 @@ class ApiKeyError(Exception):
         super().__init__(detail)
 
 
+# Per-key last recorded "last_used_at" write time (process-local, in-memory).
+# Throttles how often resolve_api_key writes + commits to the platform store.
+_last_used_cache: dict[int, float] = {}
+
+
+def _should_record_last_used(key_id: int, now: float) -> bool:
+    """Return True (and record `now`) if `key_id` is due for a last_used_at
+    write: never recorded, or last recorded more than the throttle window ago."""
+    last = _last_used_cache.get(key_id)
+    if last is not None and (now - last) < settings.api_key_last_used_throttle_seconds:
+        return False
+    _last_used_cache[key_id] = now
+    return True
+
+
 def _ip_allowed(client_ip: str, allowlist: list[str]) -> bool:
     try:
         addr = ipaddress.ip_address(client_ip)
@@ -72,8 +88,9 @@ def resolve_api_key(db, raw_key: str, client_ip: str) -> Principal:
     if user is None or not user.is_active:
         raise ApiKeyError(401, "Could not validate credentials")
 
-    row.last_used_at = datetime.now(timezone.utc)
-    db.commit()
+    if _should_record_last_used(row.id, time.time()):
+        row.last_used_at = datetime.now(timezone.utc)
+        db.commit()
     return Principal(
         type="api_key",
         user=user,
