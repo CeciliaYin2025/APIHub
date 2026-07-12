@@ -95,3 +95,16 @@ def test_unknown_user_created_roleless_when_autocreate_on(monkeypatch):
     assert created.is_superuser is False
     claims = jwt.decode(resp.access_token, settings.secret_key, algorithms=[settings.algorithm])
     assert claims["sub"] == "alice"
+
+
+def test_autocreated_user_cannot_password_login(monkeypatch):
+    monkeypatch.setattr(settings, "mcp_bridge_secret", "s3cret")
+    monkeypatch.setattr(settings, "mcp_bridge_autocreate", True)
+    db = _FakeDB(user=None)
+    sso_token_bridge(_payload(), x_bridge_secret="s3cret", db=db)
+    created = db.added[0]
+    assert created.hashed_password  # valid hash, never empty
+    from app.services.auth_service import authenticate_user
+
+    # Must return None (generic 401 path), never raise
+    assert authenticate_user(db, "alice", "any-password") is None

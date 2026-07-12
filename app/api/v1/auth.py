@@ -348,10 +348,11 @@ def sso_token_bridge(
     if user is None:
         if not settings.mcp_bridge_autocreate:
             raise HTTPException(status_code=403, detail="User not provisioned")
-        # User has no `email` column; SSO users get an empty local password hash.
+        # User has no `email` column; SSO users get a valid-but-unguessable hash
+        # so password login stays a generic 401 (verify("") would raise instead).
         user = User(
             username=payload.username,
-            hashed_password="",  # SSO users have no local password
+            hashed_password=get_password_hash(secrets.token_urlsafe(32)),  # SSO users have no usable local password
             is_active=True,
             is_superuser=False,
             is_service_account=False,
