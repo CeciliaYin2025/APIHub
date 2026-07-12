@@ -50,7 +50,10 @@ and `gateway-net` only (no direct DB/Redis access). Phase 2 OAuth is enabled
 by default (`MCP_OAUTH_ENABLED=true`): callers present a Bearer token from
 isap-auth, which is introspected and exchanged for a local API Hub JWT via
 the identity-bridge endpoint (`POST /api/v1/auth/sso-token`, gated by
-`settings.mcp_bridge_secret` — see `app/api/v1/auth.py`).
+`settings.mcp_bridge_secret` — see `app/api/v1/auth.py`). That bridge path is
+blocked at the gateway (`gateway-conf/apihub.conf` returns a hard 404 for
+`/apihub/api/v1/auth/sso-token`) — only the docker-internal `apihub-mcp` ->
+`apihub-api:8000` call can ever reach it.
 
 ### New `.env` values (see `.env.example` for full comments)
 
