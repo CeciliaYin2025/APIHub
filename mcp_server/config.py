@@ -19,12 +19,6 @@ class McpSettings(BaseSettings):
     # Tool catalog is re-fetched on the next tools/list after this many seconds
     catalog_ttl_seconds: int = 300
 
-    # Streamable HTTP transport
-    http_host: str = "0.0.0.0"
-    http_port: int = 8810
-    # Public URL prefix when served behind a reverse proxy (e.g. /apihub/mcp)
-    path_prefix: str = ""
-
     # Phase 2 — OAuth 2.1 Resource Server (isap-auth)
     oauth_enabled: bool = False
     public_url: str = ""  # e.g. https://isap.sercomm.com/apihub/mcp
