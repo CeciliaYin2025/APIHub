@@ -17,12 +17,13 @@ import contextvars
 
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from mcp_server.catalog import ToolCatalog
 from mcp_server.client import ApiHubClient
 from mcp_server.config import mcp_settings
+from mcp_server.oauth import TokenExchanger, challenge_header, protected_resource_metadata
 from mcp_server.server import create_server
 
 _request_headers: contextvars.ContextVar[dict] = contextvars.ContextVar("mcp_request_headers", default={})
@@ -56,6 +57,43 @@ class CredentialPassthroughMiddleware:
             _request_headers.reset(token)
 
 
+class OAuthGateMiddleware:
+    """OAuth 2.1 Resource Server gate for /mcp (Phase 2).
+
+    Validates the caller's Bearer token via isap-auth introspection, exchanges
+    it for a local API Hub JWT through the identity bridge, and injects that
+    JWT into the passthrough contextvar so every proxied REST call runs with
+    the SSO user's own RBAC and audit identity.
+    """
+
+    def __init__(self, app, exchanger: TokenExchanger):
+        self.app = app
+        self.exchanger = exchanger
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/mcp"):
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        auth = headers.get("authorization", "")
+        local_jwt = None
+        if auth.startswith("Bearer "):
+            local_jwt = await self.exchanger.exchange(auth[len("Bearer ") :])
+        if local_jwt is None:
+            response = Response(
+                status_code=401,
+                content=b"",
+                headers={"WWW-Authenticate": challenge_header()},
+            )
+            await response(scope, receive, send)
+            return
+        token = _request_headers.set({"Authorization": f"Bearer {local_jwt}"})
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _request_headers.reset(token)
+
+
 def create_http_app():
     client = ApiHubClient(mcp_settings.api_hub_url, headers_provider=passthrough_headers)
     aliases = [a.strip() for a in mcp_settings.db_aliases.split(",") if a.strip()] or None
@@ -74,6 +112,9 @@ def create_http_app():
     async def health(request):
         return JSONResponse({"status": "ok"})
 
+    async def oauth_metadata(request):
+        return JSONResponse(protected_resource_metadata())
+
     @contextlib.asynccontextmanager
     async def lifespan(app):
         async with session_manager.run():
@@ -81,9 +122,15 @@ def create_http_app():
         await client.aclose()
 
     starlette_app = Starlette(
-        routes=[Route("/health", health), Mount("/mcp", app=handle_mcp)],
+        routes=[
+            Route("/health", health),
+            Route("/.well-known/oauth-protected-resource", oauth_metadata),
+            Mount("/mcp", app=handle_mcp),
+        ],
         lifespan=lifespan,
     )
+    if mcp_settings.oauth_enabled:
+        return OAuthGateMiddleware(starlette_app, TokenExchanger())
     return CredentialPassthroughMiddleware(starlette_app)
 
 
