@@ -50,10 +50,14 @@ class TokenExchanger:
         return result
 
     async def _exchange_uncached(self, bearer_token: str) -> str | None:
+        headers = {}
+        if mcp_settings.introspection_secret:
+            headers["Authorization"] = f"Bearer {mcp_settings.introspection_secret}"
         try:
             resp = await self._http.post(
                 mcp_settings.introspection_url,
-                data={"token": bearer_token, "secret": mcp_settings.introspection_secret},
+                data={"token": bearer_token},
+                headers=headers,
             )
             claims = resp.json()
         except (httpx.HTTPError, ValueError):

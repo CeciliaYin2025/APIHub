@@ -33,6 +33,9 @@ def _transport(introspect_response, bridge_response=None, calls=None):
         if calls is not None:
             calls.append(str(request.url))
         if "introspect" in str(request.url):
+            assert request.headers.get("Authorization") == "Bearer isecret"
+            body = request.content.decode()
+            assert "token=" in body and "secret=" not in body
             return httpx.Response(200, json=introspect_response)
         if "sso-token" in str(request.url):
             assert request.headers["X-Bridge-Secret"] == "bsecret"
