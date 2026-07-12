@@ -115,11 +115,17 @@ def create_http_app():
     async def oauth_metadata(request):
         return JSONResponse(protected_resource_metadata())
 
+    exchanger = TokenExchanger() if mcp_settings.oauth_enabled else None
+
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        async with session_manager.run():
-            yield
-        await client.aclose()
+        try:
+            async with session_manager.run():
+                yield
+        finally:
+            await client.aclose()
+            if exchanger is not None:
+                await exchanger.aclose()
 
     starlette_app = Starlette(
         routes=[
@@ -130,7 +136,7 @@ def create_http_app():
         lifespan=lifespan,
     )
     if mcp_settings.oauth_enabled:
-        return OAuthGateMiddleware(starlette_app, TokenExchanger())
+        return OAuthGateMiddleware(starlette_app, exchanger)
     return CredentialPassthroughMiddleware(starlette_app)
 
 
