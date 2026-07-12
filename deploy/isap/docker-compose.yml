@@ -121,8 +121,8 @@ services:
       # exposed through the gateway, so this stays off gateway-net entirely.
       MCP_API_HUB_URL: http://apihub-api:8000
       MCP_OAUTH_ENABLED: "true"
-      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL}
-      MCP_AUTH_ISSUER: ${MCP_AUTH_ISSUER}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:?MCP_PUBLIC_URL is required for OAuth metadata}
+      MCP_AUTH_ISSUER: ${MCP_AUTH_ISSUER:?MCP_AUTH_ISSUER is required for OAuth metadata}
       MCP_INTROSPECTION_URL: http://isap-auth:9997/auth/api/v1/introspect
       MCP_INTROSPECTION_SECRET: ${OAUTH_INTROSPECTION_SECRET}
       MCP_BRIDGE_SECRET: ${MCP_BRIDGE_SECRET:-}
