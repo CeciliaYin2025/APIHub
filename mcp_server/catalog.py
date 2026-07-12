@@ -96,7 +96,7 @@ class ToolCatalog:
 
     async def tools(self, force: bool = False) -> list[Tool]:
         stale = (time.monotonic() - self._loaded_at) > self._ttl
-        if force or not self._tools or stale:
+        if force or self._loaded_at == 0.0 or stale:
             await self._load()
         return self._tools
 

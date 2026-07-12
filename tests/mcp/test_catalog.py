@@ -87,6 +87,17 @@ async def test_catalog_respects_explicit_aliases_and_ttl_cache():
 
 
 @pytest.mark.asyncio
+async def test_empty_catalog_respects_ttl():
+    counter: list[str] = []
+    client = _mock_client({"pg_test": []}, counter=counter)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=3600)
+    assert await catalog.tools() == []
+    assert await catalog.tools() == []  # within TTL — served from cache
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_name_collision_first_wins():
     defs = [DEFINITION, DEFINITION | {"name": "order summary"}]  # sanitizes to same name
     client = _mock_client({"pg_test": defs})
