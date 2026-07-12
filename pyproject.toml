@@ -28,6 +28,8 @@ dependencies = [
     "oracledb>=3.4.2",
     "psycopg2-binary>=2.9.9",
     "pymssql>=2.2.8",
+    # MCP server (mcp_server/ package; StreamableHTTPSessionManager requires >=1.8)
+    "mcp>=1.8.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +40,9 @@ dev = [
     "ruff>=0.3.0",
     "flower>=2.0.0",
 ]
+
+[tool.setuptools]
+packages = ["app", "mcp_server"]
 
 [tool.ruff]
 target-version = "py310"
