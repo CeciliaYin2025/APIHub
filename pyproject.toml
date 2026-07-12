@@ -41,8 +41,8 @@ dev = [
     "flower>=2.0.0",
 ]
 
-[tool.setuptools]
-packages = ["app", "mcp_server"]
+[tool.setuptools.packages.find]
+include = ["app*", "mcp_server*"]
 
 [tool.ruff]
 target-version = "py310"
