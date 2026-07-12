@@ -58,6 +58,10 @@ celery -A app.tasks.celery_app flower --port=5555
 - **Tasks** (`app/tasks/`): Celery async task definitions
 - **Models** (`app/models/`): SQLAlchemy ORM for User/Role/Permission and SQL Definition tables
 - **Admin UI** (`app/admin/`): Vanilla JS SPA served as static files at `/admin`
+- **MCP server** (`mcp_server/`): standalone MCP process exposing SQL definitions as
+  dynamic tools. Thin HTTP proxy over the REST API (never imports `app/` or touches
+  DBs directly). stdio (`python -m mcp_server`) + Streamable HTTP
+  (`uvicorn mcp_server.http_app:app`). Settings: `MCP_*` env vars / `.env.mcp`.
 
 ### Data Source Databases vs Platform Store
 
