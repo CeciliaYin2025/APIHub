@@ -64,13 +64,17 @@ That bridge path is blocked at the gateway (`gateway-conf/apihub-test.conf` retu
 hard 404 for `/apihub-test/api/v1/auth/sso-token`) — only the docker-internal
 `apihub-test-mcp` -> `apihub-test-api:8000` call can ever reach it.
 
-### New `.env` values (see `.env.example` for full comments)
+### New `.env.mcp` values (see `.env.mcp.example` for full comments)
+
+These belong to the MCP add-on's `.env.mcp`, except `MCP_BRIDGE_SECRET` and
+`MCP_BRIDGE_AUTOCREATE`, which the api reads from `.env` and which must match
+the `.env.mcp` value.
 
 | Var | Notes |
 |---|---|
 | `MCP_PUBLIC_URL` | `https://<GATEWAY_SERVER_NAME>/apihub-test/mcp` — the RS resource identifier clients see. |
 | `MCP_AUTH_ISSUER` | `https://<GATEWAY_SERVER_NAME>/auth` — isap-auth's issuer. |
-| `OAUTH_INTROSPECTION_SECRET` | **Shared with isap-auth.** Must be the exact same value isap-auth's own `OAUTH_INTROSPECTION_SECRET` uses for its `/auth/api/v1/introspect` endpoint — copy it from the isap-auth deployment, do not generate a new one here. |
+| `MCP_INTROSPECTION_SECRET` | **Shared with isap-auth.** Must be the exact same value isap-auth's own `OAUTH_INTROSPECTION_SECRET` uses for its `/auth/api/v1/introspect` endpoint — copy it from the isap-auth deployment, do not generate a new one here. |
 | `MCP_BRIDGE_SECRET` | New per-deployment secret (`openssl rand -base64 32`). Required in both `apihub-test-api`'s env (activates the bridge endpoint) and `apihub-test-mcp`'s env (used to call it) — the compose file wires the same `.env` value into both services. |
 | `MCP_BRIDGE_AUTOCREATE` | Optional, default `false`. `true` auto-creates a role-less local user on first SSO login instead of rejecting unknown SSO users with 403. |
 
