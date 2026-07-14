@@ -1,0 +1,91 @@
+# =============================================================================
+# Oracle API Hub CI — lint, tests (with a Postgres platform store), deploy-stack
+# validation, and secret scanning. Shared runners (no tags), per-job Docker
+# images, following the org convention (cf. baseadmin-platform / e-Budget).
+# =============================================================================
+
+stages:
+  - lint
+  - test
+  - validate
+  - security
+
+# Run on merge requests and on pushes to main only (not on every branch push).
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ── Lint ─────────────────────────────────────────────────────────────────────
+ruff-lint:
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - pip install --quiet ruff
+    - ruff check app/ tests/
+
+# ── Tests ────────────────────────────────────────────────────────────────────
+# The platform store is PostgreSQL; a postgres:16 service backs the run. No
+# Redis service is needed — no test exercises Celery/Redis. Tables + default
+# admin are created by scripts.init_db before the suite runs.
+pytest:
+  stage: test
+  image: python:3.11-slim
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+  variables:
+    POSTGRES_DB: api_hub_ci
+    POSTGRES_USER: api_hub
+    POSTGRES_PASSWORD: ci-postgres-pw
+    # app/core/config.py reads these to build the platform-store connection.
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    SECRET_KEY: ci-only-not-a-real-secret
+  before_script:
+    - pip install --quiet -e ".[dev]"
+    # Wait for the postgres service to accept connections, then create tables.
+    - |
+      python - <<'PY'
+      import os, time, psycopg2
+      for _ in range(30):
+          try:
+              psycopg2.connect(
+                  host=os.environ["POSTGRES_HOST"], port=os.environ["POSTGRES_PORT"],
+                  user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"],
+                  dbname=os.environ["POSTGRES_DB"],
+              ).close()
+              print("postgres is ready"); break
+          except Exception as e:
+              print("waiting for postgres:", e); time.sleep(2)
+      else:
+          raise SystemExit("postgres did not become ready in time")
+      PY
+    - python -m scripts.init_db
+  script:
+    - pytest -q
+
+# ── Deploy-stack validation ──────────────────────────────────────────────────
+# Guards the prod/test split: every compose file must parse. `docker compose
+# config` only parses/interpolates — it needs no daemon and no live infra.
+deploy-validate:
+  stage: validate
+  image: docker:27-cli
+  script:
+    - |
+      for d in apihub apihub-test; do
+        cp "deploy/$d/.env.example"      "deploy/$d/.env"
+        cp "deploy/$d/.env.mcp.example"  "deploy/$d/.env.mcp"
+        docker compose -f "deploy/$d/docker-compose.yml"      config -q
+        docker compose -f "deploy/$d/docker-compose.mcp.yml"  config -q
+        echo "deploy/$d: compose files OK"
+      done
+
+# ── Security ─────────────────────────────────────────────────────────────────
+secret-scan:
+  stage: security
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  script:
+    - gitleaks detect --source . --redact --verbose --exit-code 1
