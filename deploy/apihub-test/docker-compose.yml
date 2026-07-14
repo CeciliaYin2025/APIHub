@@ -1,0 +1,127 @@
+# ==============================================================================
+# Oracle API Hub — ISAP platform deployment stack (TEST)
+# ==============================================================================
+# Test/UAT sibling of deploy/apihub/docker-compose.yml. Self-registers against
+# the same shared ISAP infrastructure but with test-only names so it coexists
+# with prod: container prefix apihub-test-*, DB apihub_test, route /apihub-test,
+# Redis logical DBs 3/4/5 (prod uses 0/1/2).
+#
+# Deploy:  cd deploy/apihub-test && cp .env.example .env && <edit> && docker compose up -d --build
+# ==============================================================================
+
+services:
+  # ── one-shot: create the platform-store database in shared postgres ───────
+  apihub-test-db-init:
+    image: postgres:16-alpine
+    container_name: apihub-test-db-init
+    restart: "no"
+    env_file: [.env]
+    networks: [db-net]
+    entrypoint: ["sh", "/db-init/create-database.sh"]
+    volumes:
+      - ./db-init:/db-init:ro
+
+  # ── one-shot: create tables + seed default admin (idempotent) ─────────────
+  apihub-test-migrate:
+    build:
+      context: ../..
+    image: oracle-api-hub:latest
+    container_name: apihub-test-migrate
+    restart: "no"
+    env_file: [.env]
+    networks: [db-net, redis-net]
+    command: ["python", "-m", "scripts.init_db"]
+    depends_on:
+      apihub-test-db-init:
+        condition: service_completed_successfully
+
+  # ── one-shot: register the gateway route and reload nginx ─────────────────
+  apihub-test-route-register:
+    image: docker:27-cli
+    container_name: apihub-test-route-register
+    restart: "no"
+    volumes:
+      - ./gateway-conf/apihub-test.conf:/conf/apihub-test.conf:ro
+      - ${INFRA_GATEWAY_APPS_DIR:-/opt/isap/gateway-apps}:/dest
+      - /var/run/docker.sock:/var/run/docker.sock
+    # See deploy/apihub/docker-compose.yml for the inlined-script contract
+    # ($$ escapes, whole script in entrypoint list).
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        DEST=/dest/apihub-test.conf
+        BAK=/dest/.apihub-test.conf.bak
+        [ -f "$$DEST" ] && cp -f "$$DEST" "$$BAK" || true
+        cp -f /conf/apihub-test.conf "$$DEST"
+        if docker exec isap-gateway nginx -t; then
+          if docker kill -s HUP isap-gateway; then
+            echo "apihub-test route registered and gateway reloaded."
+            rm -f "$$BAK"
+          else
+            echo "route conf valid but SIGHUP reload of isap-gateway failed." >&2
+            exit 1
+          fi
+        else
+          echo "nginx -t failed; restoring previous conf to avoid breaking the gateway." >&2
+          if [ -f "$$BAK" ]; then mv -f "$$BAK" "$$DEST"; else rm -f "$$DEST"; fi
+          exit 1
+        fi
+
+  # ── long-running: FastAPI app ─────────────────────────────────────────────
+  apihub-test-api:
+    build:
+      context: ../..
+    image: oracle-api-hub:latest
+    container_name: apihub-test-api
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      MCP_BRIDGE_SECRET: ${MCP_BRIDGE_SECRET:-}
+      MCP_BRIDGE_AUTOCREATE: ${MCP_BRIDGE_AUTOCREATE:-false}
+    networks: [gateway-net, db-net, redis-net]
+    volumes:
+      - ../../app/database_definitions:/app/app/database_definitions
+      - ./sql_definitions:/app/app/sql_definitions
+      - ../../app/admin:/app/app/admin:ro
+    depends_on:
+      apihub-test-migrate:
+        condition: service_completed_successfully
+      apihub-test-route-register:
+        condition: service_completed_successfully
+
+  # ── long-running: Celery write-queue worker ───────────────────────────────
+  apihub-test-celery-write:
+    image: oracle-api-hub:latest
+    container_name: apihub-test-celery-write
+    restart: unless-stopped
+    env_file: [.env]
+    networks: [db-net, redis-net]
+    volumes:
+      - ../../app/database_definitions:/app/app/database_definitions
+      - ./sql_definitions:/app/app/sql_definitions
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "-Q", "write", "-l", "info", "--concurrency=4"]
+    depends_on:
+      apihub-test-api:
+        condition: service_started
+
+  # ── long-running: Celery procedure-queue worker ───────────────────────────
+  apihub-test-celery-proc:
+    image: oracle-api-hub:latest
+    container_name: apihub-test-celery-proc
+    restart: unless-stopped
+    env_file: [.env]
+    networks: [db-net, redis-net]
+    volumes:
+      - ../../app/database_definitions:/app/app/database_definitions
+      - ./sql_definitions:/app/app/sql_definitions
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "-Q", "procedure", "-l", "info", "--concurrency=2"]
+    depends_on:
+      apihub-test-api:
+        condition: service_started
+
+networks:
+  gateway-net: { external: true }
+  db-net:      { external: true }
+  redis-net:   { external: true }
