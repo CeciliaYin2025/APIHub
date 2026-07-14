@@ -91,7 +91,7 @@ Conventions to follow:
 
 - **No plaintext passwords in the YAML.** Leave `password: ""` and supply it via the env var `DB_{ALIAS_UPPER}_PASSWORD` (e.g. alias `pg_test` → `DB_PG_TEST_PASSWORD`). The env var, when set, overrides the YAML value (`multi_pool.py` `_load_file`). Every alias needs its own var or its connection fails.
 - **Definitions load once at startup** (`db_registry.load()` in the lifespan); pools are created lazily on first use. There is **no hot-reload endpoint** for data sources (unlike SQL definitions) — editing `databases.yaml` requires a **process/container restart** to take effect, and the Celery workers must be restarted too (they connect via the same YAML).
-- **Both compose stacks bind-mount the directory** so edits need only a restart, not a rebuild: root `docker-compose.yaml` (local dev) and `deploy/isap/docker-compose.yml` (ISAP gateway) mount `app/database_definitions` into the `api` and both celery services. When adding an alias there, also add its `DB_*_PASSWORD` to the corresponding `.env`.
+- **Both compose stacks bind-mount the directory** so edits need only a restart, not a rebuild: root `docker-compose.yaml` (local dev) and `deploy/apihub/docker-compose.yml` (ISAP gateway; `deploy/apihub-test/` for the test/UAT stack) mount `app/database_definitions` into the `api` and both celery services. When adding an alias there, also add its `DB_*_PASSWORD` to the corresponding `.env`.
 
 ### Dialect Layer
 

@@ -1,0 +1,72 @@
+# ==============================================================================
+# Oracle API Hub — MCP server add-on (Streamable HTTP, OAuth 2.1 Resource Server)
+# ==============================================================================
+# Optional add-on to docker-compose.yml. Brings up the MCP server and registers
+# its gateway route (/apihub/mcp/*). Thin proxy over apihub-api's REST API — it
+# never touches the databases or Celery directly.
+#
+# Prerequisites: the main stack (docker-compose.yml) is built + up, so the
+# oracle-api-hub:latest image exists and apihub-api is reachable on gateway-net.
+#
+# Deploy:
+#   cd deploy/apihub && cp .env.mcp.example .env.mcp   # edit every <...> value
+#   grep -nE '<[^>]+>' .env.mcp                        # must return nothing
+#   docker compose -f docker-compose.mcp.yml up -d
+#
+# NOTE: only the app-scoped route (apihub-mcp.conf) is auto-registered here. The
+# root well-known rewrite (oauth-wellknown-apihub-mcp.snippet.conf) is a SHARED
+# gateway file and must be pasted in by hand — see README.md "MCP server".
+# ==============================================================================
+
+services:
+  # ── one-shot: register the MCP gateway route and reload nginx ──────────────
+  apihub-mcp-route-register:
+    image: docker:27-cli
+    container_name: apihub-mcp-route-register
+    restart: "no"
+    volumes:
+      - ./gateway-conf/apihub-mcp.conf:/conf/apihub-mcp.conf:ro
+      - ${INFRA_GATEWAY_APPS_DIR:-/opt/isap/gateway-apps}:/dest
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Same inlined-script contract as apihub-route-register in docker-compose.yml:
+    # the whole script MUST live in this entrypoint list, and shell vars use $$
+    # so Compose does not interpolate them.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        DEST=/dest/apihub-mcp.conf
+        BAK=/dest/.apihub-mcp.conf.bak
+        [ -f "$$DEST" ] && cp -f "$$DEST" "$$BAK" || true
+        cp -f /conf/apihub-mcp.conf "$$DEST"
+        if docker exec isap-gateway nginx -t; then
+          if docker kill -s HUP isap-gateway; then
+            echo "apihub-mcp route registered and gateway reloaded."
+            rm -f "$$BAK"
+          else
+            echo "route conf valid but SIGHUP reload of isap-gateway failed." >&2
+            exit 1
+          fi
+        else
+          echo "nginx -t failed; restoring previous conf to avoid breaking the gateway." >&2
+          if [ -f "$$BAK" ]; then mv -f "$$BAK" "$$DEST"; else rm -f "$$DEST"; fi
+          exit 1
+        fi
+
+  # ── long-running: MCP server ──────────────────────────────────────────────
+  apihub-mcp:
+    image: oracle-api-hub:latest
+    container_name: apihub-mcp
+    restart: unless-stopped
+    env_file: [.env.mcp]
+    command: ["uvicorn", "mcp_server.http_app:app", "--host", "0.0.0.0", "--port", "8810"]
+    # gateway-net only: reaches apihub-api (also on gateway-net) for the REST
+    # proxy + identity bridge. No db-net/redis-net (thin HTTP proxy).
+    networks: [gateway-net]
+    depends_on:
+      apihub-mcp-route-register:
+        condition: service_completed_successfully
+
+networks:
+  gateway-net: { external: true }
