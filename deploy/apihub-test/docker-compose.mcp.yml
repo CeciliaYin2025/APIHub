@@ -1,0 +1,57 @@
+# ==============================================================================
+# Oracle API Hub — MCP server add-on (TEST)
+# ==============================================================================
+# Test/UAT sibling of deploy/apihub/docker-compose.mcp.yml. Registers the MCP
+# route /apihub-test/mcp/* and runs apihub-test-mcp. Bring up the test main
+# stack first (it builds oracle-api-hub:latest and runs apihub-test-api).
+#
+# Deploy:
+#   cd deploy/apihub-test && cp .env.mcp.example .env.mcp   # edit every <...> value
+#   docker compose -f docker-compose.mcp.yml up -d
+# ==============================================================================
+
+services:
+  apihub-test-mcp-route-register:
+    image: docker:27-cli
+    container_name: apihub-test-mcp-route-register
+    restart: "no"
+    volumes:
+      - ./gateway-conf/apihub-test-mcp.conf:/conf/apihub-test-mcp.conf:ro
+      - ${INFRA_GATEWAY_APPS_DIR:-/opt/isap/gateway-apps}:/dest
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        DEST=/dest/apihub-test-mcp.conf
+        BAK=/dest/.apihub-test-mcp.conf.bak
+        [ -f "$$DEST" ] && cp -f "$$DEST" "$$BAK" || true
+        cp -f /conf/apihub-test-mcp.conf "$$DEST"
+        if docker exec isap-gateway nginx -t; then
+          if docker kill -s HUP isap-gateway; then
+            echo "apihub-test-mcp route registered and gateway reloaded."
+            rm -f "$$BAK"
+          else
+            echo "route conf valid but SIGHUP reload of isap-gateway failed." >&2
+            exit 1
+          fi
+        else
+          echo "nginx -t failed; restoring previous conf to avoid breaking the gateway." >&2
+          if [ -f "$$BAK" ]; then mv -f "$$BAK" "$$DEST"; else rm -f "$$DEST"; fi
+          exit 1
+        fi
+
+  apihub-test-mcp:
+    image: oracle-api-hub:latest
+    container_name: apihub-test-mcp
+    restart: unless-stopped
+    env_file: [.env.mcp]
+    command: ["uvicorn", "mcp_server.http_app:app", "--host", "0.0.0.0", "--port", "8810"]
+    networks: [gateway-net]
+    depends_on:
+      apihub-test-mcp-route-register:
+        condition: service_completed_successfully
+
+networks:
+  gateway-net: { external: true }
