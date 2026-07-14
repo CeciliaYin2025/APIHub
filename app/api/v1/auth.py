@@ -1,9 +1,12 @@
 """Authentication endpoints: login, user/role/permission CRUD."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import secrets
+
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import create_access_token, get_password_hash
 from app.db.session import get_db
 from app.models.user import Permission, Role, User
@@ -21,6 +24,7 @@ from app.schemas.auth import (
     UserOut,
     UserUpdate,
 )
+from app.schemas.sso_token import SsoTokenRequest, SsoTokenResponse
 from app.services.api_key_service import (
     create_api_key,
     list_api_keys,
@@ -318,3 +322,46 @@ def revoke_api_key_endpoint(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"message": f"API key {key_id} revoked"}
+
+
+# ── MCP identity bridge (internal only) ─────────────────────────────────────
+
+
+@router.post("/sso-token", response_model=SsoTokenResponse, include_in_schema=False)
+def sso_token_bridge(
+    payload: SsoTokenRequest,
+    x_bridge_secret: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    """Identity bridge for the MCP OAuth Resource Server (internal only).
+
+    The MCP RS calls this AFTER validating a Bearer token via isap-auth
+    introspection; the claims here are therefore already verified. Guarded by
+    a shared secret; never route this path through the public gateway.
+    """
+    if not settings.mcp_bridge_secret:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not secrets.compare_digest(x_bridge_secret, settings.mcp_bridge_secret):
+        raise HTTPException(status_code=403, detail="Invalid bridge secret")
+
+    user = db.query(User).filter(User.username == payload.username).first()
+    if user is None:
+        if not settings.mcp_bridge_autocreate:
+            raise HTTPException(status_code=403, detail="User not provisioned")
+        # User has no `email` column; SSO users get a valid-but-unguessable hash
+        # so password login stays a generic 401 (verify("") would raise instead).
+        user = User(
+            username=payload.username,
+            hashed_password=get_password_hash(secrets.token_urlsafe(32)),  # SSO users have no usable local password
+            is_active=True,
+            is_superuser=False,
+            is_service_account=False,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    if user.is_service_account or not user.is_active:
+        raise HTTPException(status_code=403, detail="Account not eligible for SSO bridge")
+
+    token = create_access_token(data={"sub": user.username})
+    return SsoTokenResponse(access_token=token)

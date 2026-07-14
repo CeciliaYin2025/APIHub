@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     # the key was already recorded within this many seconds.
     api_key_last_used_throttle_seconds: int = 60
 
+    # MCP identity bridge (Phase 2 OAuth): shared secret required in X-Bridge-Secret.
+    # Empty (default) disables the endpoint entirely.
+    mcp_bridge_secret: str = ""
+    # Auto-create a role-less local user on first SSO login via the bridge.
+    mcp_bridge_autocreate: bool = False
+
     # SQL definitions
     sql_definitions_dir: str = "app/sql_definitions"
 

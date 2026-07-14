@@ -83,6 +83,14 @@ services:
     container_name: apihub-api
     restart: unless-stopped
     env_file: [.env]
+    environment:
+      # MCP identity bridge (POST /api/v1/auth/sso-token). Empty secret keeps
+      # the endpoint disabled — set it here AND on apihub-mcp with the same
+      # value once the MCP OAuth gateway is deployed (Task 8 self-review note).
+      MCP_BRIDGE_SECRET: ${MCP_BRIDGE_SECRET:-}
+      # Auto-create a role-less local user on first SSO login via the bridge.
+      # Off by default per site policy — flip in .env if desired.
+      MCP_BRIDGE_AUTOCREATE: ${MCP_BRIDGE_AUTOCREATE:-false}
     networks: [gateway-net, db-net, redis-net]
     volumes:
       # Edit data-source definitions without rebuilding the image — `docker
@@ -99,6 +107,34 @@ services:
         condition: service_completed_successfully
       apihub-route-register:
         condition: service_completed_successfully
+
+  # ── long-running: MCP server (Streamable HTTP, OAuth 2.1 Resource Server) ──
+  # Thin proxy over apihub-api's REST API — never touches the databases
+  # directly. Gateway route: deploy/isap/gateway-conf/apihub-mcp.conf.
+  apihub-mcp:
+    image: oracle-api-hub:latest
+    container_name: apihub-mcp
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      # docker-internal only — the bridge endpoint (X-Bridge-Secret) is never
+      # exposed through the gateway, so this stays off gateway-net entirely.
+      MCP_API_HUB_URL: http://apihub-api:8000
+      MCP_OAUTH_ENABLED: "true"
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:?MCP_PUBLIC_URL is required for OAuth metadata}
+      MCP_AUTH_ISSUER: ${MCP_AUTH_ISSUER:?MCP_AUTH_ISSUER is required for OAuth metadata}
+      MCP_INTROSPECTION_URL: http://isap-auth:9997/auth/api/v1/introspect
+      MCP_INTROSPECTION_SECRET: ${OAUTH_INTROSPECTION_SECRET}
+      MCP_BRIDGE_SECRET: ${MCP_BRIDGE_SECRET:-}
+    command: ["uvicorn", "mcp_server.http_app:app", "--host", "0.0.0.0", "--port", "8810"]
+    # gateway-net only: reaches apihub-api (also on gateway-net) for the REST
+    # proxy + identity bridge, and is where the gateway container reaches it.
+    # No db-net/redis-net — the MCP server never touches the database or
+    # Celery directly (thin HTTP proxy, per mcp_server/README.md).
+    networks: [gateway-net]
+    depends_on:
+      apihub-api:
+        condition: service_started
 
   # ── long-running: Celery write-queue worker ───────────────────────────────
   apihub-celery-write:
