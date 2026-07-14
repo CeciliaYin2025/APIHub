@@ -271,7 +271,7 @@ class Settings(BaseSettings):
 
 **載入時機與生效方式：** 定義僅在**啟動時**（lifespan 內 `db_registry.load()`）載入一次，連線池則於首次使用時延遲建立。資料來源**沒有熱更新端點**（與 SQL 定義不同）——修改 `databases.yaml` 後必須**重啟程序/容器**才會生效，且 Celery worker 也須一併重啟（它們透過同一份 YAML 連線）。
 
-**部署掛載（改檔免 rebuild）：** 本機 `docker-compose.yaml` 與 ISAP 閘道 `deploy/isap/docker-compose.yml` 兩套 compose 都將 `app/database_definitions` 目錄 bind-mount 進 `api` 與兩個 celery 服務，因此改 YAML 只需 `docker compose restart`、毋須重建映像。新增 alias 時，記得在對應的 `.env` 補上其 `DB_*_PASSWORD`。
+**部署掛載（改檔免 rebuild）：** 本機 `docker-compose.yaml` 與 ISAP 閘道 `deploy/apihub/docker-compose.yml`（測試/UAT 環境為 `deploy/apihub-test/`）兩套 compose 都將 `app/database_definitions` 目錄 bind-mount 進 `api` 與兩個 celery 服務，因此改 YAML 只需 `docker compose restart`、毋須重建映像。新增 alias 時，記得在對應的 `.env` 補上其 `DB_*_PASSWORD`。
 
 #### 4.3.2 多連線池管理器 — `app/db/multi_pool.py`
 
