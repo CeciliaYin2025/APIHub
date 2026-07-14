@@ -17,7 +17,7 @@ Self-registers against the shared ISAP infrastructure (see that repo's
 ## Deploy
 
 ```bash
-cd deploy/isap
+cd deploy/apihub
 cp .env.example .env
 # Fill every <...> value — shared infra passwords, Oracle DSN, fresh SECRET_KEY.
 grep -nE '<[^>]+>' .env   # must return nothing before continuing
@@ -43,17 +43,24 @@ curl -ksS https://<domain>/apihub/admin | grep '/apihub/admin/js/app.js'  # pres
 
 ## MCP server (`apihub-mcp`, OAuth 2.1 Resource Server)
 
-`docker-compose.yml` also brings up `apihub-mcp` — the Streamable HTTP MCP
-transport (`mcp_server/http_app.py`, port 8810 internal), a thin proxy over
-`apihub-api`'s REST API. It shares the built `oracle-api-hub:latest` image
-and `gateway-net` only (no direct DB/Redis access). Phase 2 OAuth is enabled
-by default (`MCP_OAUTH_ENABLED=true`): callers present a Bearer token from
-isap-auth, which is introspected and exchanged for a local API Hub JWT via
-the identity-bridge endpoint (`POST /api/v1/auth/sso-token`, gated by
-`settings.mcp_bridge_secret` — see `app/api/v1/auth.py`). That bridge path is
-blocked at the gateway (`gateway-conf/apihub.conf` returns a hard 404 for
-`/apihub/api/v1/auth/sso-token`) — only the docker-internal `apihub-mcp` ->
-`apihub-api:8000` call can ever reach it.
+The MCP server is an **optional add-on** in a separate compose file,
+`docker-compose.mcp.yml` (env: `.env.mcp`). Bring it up after the main stack:
+
+    cd deploy/apihub
+    cp .env.mcp.example .env.mcp   # edit every <...> value; MCP_BRIDGE_SECRET must match .env
+    grep -nE '<[^>]+>' .env.mcp    # must return nothing
+    docker compose -f docker-compose.mcp.yml up -d
+
+It brings up `apihub-mcp` — the Streamable HTTP MCP transport
+(`mcp_server/http_app.py`, port 8810 internal), a thin proxy over `apihub-api`'s
+REST API. It shares the built `oracle-api-hub:latest` image and `gateway-net`
+only (no direct DB/Redis access). Phase 2 OAuth is enabled by default
+(`MCP_OAUTH_ENABLED=true`): callers present a Bearer token from isap-auth, which
+is introspected and exchanged for a local API Hub JWT via the identity-bridge
+endpoint (`POST /api/v1/auth/sso-token`, gated by `settings.mcp_bridge_secret`).
+That bridge path is blocked at the gateway (`gateway-conf/apihub.conf` returns a
+hard 404 for `/apihub/api/v1/auth/sso-token`) — only the docker-internal
+`apihub-mcp` -> `apihub-api:8000` call can ever reach it.
 
 ### New `.env` values (see `.env.example` for full comments)
 
@@ -65,29 +72,25 @@ blocked at the gateway (`gateway-conf/apihub.conf` returns a hard 404 for
 | `MCP_BRIDGE_SECRET` | New per-deployment secret (`openssl rand -base64 32`). Required in both `apihub-api`'s env (activates the bridge endpoint) and `apihub-mcp`'s env (used to call it) — the compose file wires the same `.env` value into both services. |
 | `MCP_BRIDGE_AUTOCREATE` | Optional, default `false`. `true` auto-creates a role-less local user on first SSO login instead of rejecting unknown SSO users with 403. |
 
-### Gateway wiring (manual — outside this repo)
+### Gateway wiring
 
-Unlike `apihub.conf` (auto-registered by the `apihub-route-register`
-one-shot container), the MCP routes are **not** self-registered, because one
-of the two confs is a shared, multi-app file this repo must not blindly
-overwrite:
+The **app-scoped MCP route** (`gateway-conf/apihub-mcp.conf`) is now
+auto-registered by the `apihub-mcp-route-register` one-shot in
+`docker-compose.mcp.yml` (same mechanism as `apihub-route-register`) — no manual
+copy needed.
 
-1. **App-scoped route** — copy `gateway-conf/apihub-mcp.conf` into the
-   gateway's app-conf include dir (same directory `apihub.conf` lands in,
-   `${INFRA_GATEWAY_APPS_DIR}`, e.g. via
-   `docker cp deploy/isap/gateway-conf/apihub-mcp.conf isap-gateway:/etc/nginx/conf.d/apps/`
-   or the host bind-mount path, per your gateway's actual layout).
-2. **Root well-known rewrite** — `gateway-conf/oauth-wellknown-apihub-mcp.snippet.conf`
-   holds the `location ^~ /.well-known/oauth-protected-resource/apihub/mcp`
-   block. Paste it into the gateway's shared root well-known conf (the file
-   playing the role of ITSM-PM's `oauth-wellknown.conf`) alongside the other
-   apps' entries — do not replace that file's existing content.
-3. Reload: `docker exec isap-gateway nginx -t && docker exec isap-gateway nginx -s reload`
+The **root well-known rewrite** is still manual, because it is a shared,
+multi-app file this repo must not overwrite:
+
+1. `gateway-conf/oauth-wellknown-apihub-mcp.snippet.conf` holds the
+   `location ^~ /.well-known/oauth-protected-resource/apihub/mcp` block. Paste it
+   into the gateway's shared root well-known conf (the file playing the role of
+   ITSM-PM's `oauth-wellknown.conf`) alongside the other apps' entries — do not
+   replace that file's existing content.
+2. Reload: `docker exec isap-gateway nginx -t && docker exec isap-gateway nginx -s reload`
 
 If this gateway does not yet ship `conf.d/snippets/internal-only.conf` (the
-RFC1918 allowlist both new confs `include`), create it from ITSM-PM's copy
-(`deploy/infrastructure/gateway/conf.d/snippets/internal-only.conf`) first —
-both `apihub-mcp.conf` and the well-known snippet depend on it.
+RFC1918 allowlist both new confs `include`), create it from ITSM-PM's copy first.
 
 ### End-to-end verification checklist (post-deployment verification — requires live environment)
 
@@ -132,11 +135,11 @@ docker compose up -d --build      # rebuilds image, recreates containers
 ## Decommission
 
 ```bash
+docker compose -f docker-compose.mcp.yml down   # if the MCP add-on was started
 docker compose down
-rm -f /opt/isap/gateway-apps/apihub.conf
-# MCP routes were added manually (see "Gateway wiring" above) — remove
-# apihub-mcp.conf from the gateway's app-conf dir and delete the
-# apihub/mcp well-known location block from the shared root conf by hand.
+rm -f /opt/isap/gateway-apps/apihub.conf /opt/isap/gateway-apps/apihub-mcp.conf
+# The root well-known block was added manually — delete the apihub/mcp
+# location block from the shared root conf by hand.
 docker exec isap-gateway nginx -s reload
 # The 'apihub' database in isap-postgres is left intact — drop manually if desired.
 ```
