@@ -7,7 +7,7 @@
 #   - drops its nginx route and reloads the gateway (apihub-route-register)
 #   - api + celery workers join gateway-net / db-net / redis-net
 #
-# Deploy:  cd deploy/isap && cp .env.example .env && <edit> && docker compose up -d --build
+# Deploy:  cd deploy/apihub && cp .env.example .env && <edit> && docker compose up -d --build
 # ==============================================================================
 
 services:
