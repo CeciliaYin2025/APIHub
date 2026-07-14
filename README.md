@@ -272,10 +272,12 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
 ### Deploying to the ISAP platform gateway
 
 To run behind the shared ISAP nginx gateway at `/apihub/`, use the
-self-registering stack in [`deploy/isap/`](deploy/isap/README.md). It creates
+self-registering stack in [`deploy/apihub/`](deploy/apihub/README.md). It creates
 its DB in `isap-postgres`, uses `isap-redis` for Celery, and drops its own
 nginx route — no edits to the `isap-infrastructure` repo. Set `ROOT_PATH=/apihub`
-so the app and admin UI generate prefix-aware URLs.
+so the app and admin UI generate prefix-aware URLs. A parallel test/UAT stack
+lives in [`deploy/apihub-test/`](deploy/apihub-test/README.md) (route
+`/apihub-test/`, DB `apihub_test`, Redis logical DBs 3/4/5).
 
 ## Adding a New Query Definition
 
