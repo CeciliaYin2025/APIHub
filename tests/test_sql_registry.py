@@ -1,6 +1,5 @@
 """Tests for the SQL definition registry."""
 
-import tempfile
 from pathlib import Path
 
 import pytest

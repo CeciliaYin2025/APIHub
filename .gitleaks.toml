@@ -1,0 +1,22 @@
+# gitleaks configuration for Oracle API Hub — extends the default ruleset and
+# allowlists known non-secrets so the secret-scan CI job (`gitleaks detect`,
+# which scans the full git history) stays meaningful without failing on
+# documentation placeholders. Auto-loaded by gitleaks from the repo root.
+title = "Oracle API Hub gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented example tokens and placeholder env files are not real secrets"
+paths = [
+    # *.env.example / *.env.mcp.example hold placeholder values by definition
+    # (e.g. <openssl rand -base64 48>, <shared infra PG_ADMIN_PASSWORD>).
+    '''(^|/)\.env(\.mcp)?\.example$''',
+]
+regexes = [
+    # Truncated example JWTs in API docs, e.g.
+    #   "access_token": "eyJhbGciOiJIUzI1NiIs..."
+    # A real token never ends in a literal "..."; this cannot mask a live secret.
+    '''eyJ[A-Za-z0-9_-]*\.\.\.''',
+]
