@@ -166,3 +166,8 @@ class MssqlDialect(Dialect):
 
     def table_name_regex(self) -> re.Pattern[str]:
         return _TABLE_RE
+
+    # ── Health check ────────────────────────────────────────────────────
+
+    def health_check_sql(self) -> str:
+        return "SELECT 1"
