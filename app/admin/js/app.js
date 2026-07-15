@@ -11,6 +11,7 @@ let currentUser = null;
 let currentDb = localStorage.getItem('hub_current_db') || '';
 let databases = [];
 let qcDefs = [];  // definitions for the Query Console picker (scoped to currentDb)
+let qcAuthMode = 'jwt';  // 'jwt' | 'apikey' — which credential the generated examples show
 
 /* ── Bootstrap ────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
@@ -1327,6 +1328,43 @@ function qcExampleParams(params) {
   return out;
 }
 
+// Radio pair that switches the generated examples between a human JWT and a
+// service-account API key. Rendered once per code tab; `group` keeps the radio
+// names/ids unique, and qcSetAuthMode keeps every group in sync.
+function qcAuthToggleHtml(group) {
+  return `
+    <div class="qc-auth">
+      <span class="qc-auth-label">Auth</span>
+      <div class="qc-auth-opt">
+        <input type="radio" name="qcAuth-${group}" id="qcAuth-${group}-jwt" value="jwt"
+               ${qcAuthMode === 'jwt' ? 'checked' : ''} onchange="qcSetAuthMode('jwt')">
+        <label for="qcAuth-${group}-jwt">JWT (user login)</label>
+      </div>
+      <div class="qc-auth-opt">
+        <input type="radio" name="qcAuth-${group}" id="qcAuth-${group}-apikey" value="apikey"
+               ${qcAuthMode === 'apikey' ? 'checked' : ''} onchange="qcSetAuthMode('apikey')">
+        <label for="qcAuth-${group}-apikey">API Key (service account)</label>
+      </div>
+    </div>`;
+}
+
+// Auth header the examples send: X-API-Key for service accounts, Bearer JWT for
+// human logins. Both are accepted by AuthContextMiddleware.
+function qcAuthHeader() {
+  return qcAuthMode === 'apikey'
+    ? { name: 'X-API-Key', value: 'ahk_YOUR_API_KEY' }
+    : { name: 'Authorization', value: 'Bearer YOUR_ACCESS_TOKEN' };
+}
+
+window.qcSetAuthMode = function(mode) {
+  qcAuthMode = mode === 'apikey' ? 'apikey' : 'jwt';
+  ['py', 'curl'].forEach(group => {
+    const el = document.getElementById(`qcAuth-${group}-${qcAuthMode}`);
+    if (el) el.checked = true;
+  });
+  refreshQcPreviews();
+};
+
 // Load the current database's SQL definitions for the picker.
 async function qcLoadDefinitions() {
   try {
@@ -1350,6 +1388,7 @@ function renderQueryConsole() {
           <button class="tab-btn active" data-qctab="params" onclick="switchQcTab('params')">Query Parameter</button>
           <button class="tab-btn" data-qctab="body" onclick="switchQcTab('body')">Request Body</button>
           <button class="tab-btn" data-qctab="python" onclick="switchQcTab('python')">Python Example</button>
+          <button class="tab-btn" data-qctab="curl" onclick="switchQcTab('curl')">cURL Example</button>
         </div>
 
         <div class="tab-content active" id="qcTab-params">
@@ -1396,10 +1435,19 @@ function renderQueryConsole() {
         </div>
 
         <div class="tab-content" id="qcTab-python">
-          <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+          <div class="qc-code-toolbar">
+            ${qcAuthToggleHtml('py')}
             <button class="btn btn-outline btn-sm" onclick="copyQcPython()">&#128203; Copy</button>
           </div>
           <pre class="sql-preview" id="qcPythonPreview"></pre>
+        </div>
+
+        <div class="tab-content" id="qcTab-curl">
+          <div class="qc-code-toolbar">
+            ${qcAuthToggleHtml('curl')}
+            <button class="btn btn-outline btn-sm" onclick="copyQcCurl()">&#128203; Copy</button>
+          </div>
+          <pre class="sql-preview" id="qcCurlPreview"></pre>
         </div>
 
         <div style="margin-top:16px">
@@ -1490,13 +1538,17 @@ function toPyLiteral(v, indent) {
   return 'None';
 }
 
+function qcExecuteUrl() {
+  return `${window.location.origin}${API}${dbPrefix()}/queries/execute`;
+}
+
 function qcPythonCode(body) {
-  const url = `${window.location.origin}${API}${dbPrefix()}/queries/execute`;
+  const auth = qcAuthHeader();
   return `import requests
 
-url = "${url}"
+url = "${qcExecuteUrl()}"
 headers = {
-    "Authorization": "Bearer YOUR_ACCESS_TOKEN",
+    ${JSON.stringify(auth.name)}: ${JSON.stringify(auth.value)},
     "Content-Type": "application/json",
 }
 payload = ${toPyLiteral(body, 0)}
@@ -1507,24 +1559,45 @@ result = response.json()
 print(result)`;
 }
 
-// Refresh the Request Body and Python Example previews from the live form.
+// Wrap a string in single quotes for POSIX shells: end the quote, emit an
+// escaped quote, reopen. Params can contain apostrophes.
+function toShellSingleQuoted(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+function qcCurlCode(body) {
+  const auth = qcAuthHeader();
+  return `curl -X POST "${qcExecuteUrl()}" \\
+  -H "${auth.name}: ${auth.value}" \\
+  -H "Content-Type: application/json" \\
+  -d ${toShellSingleQuoted(JSON.stringify(body, null, 2))}`;
+}
+
+// Refresh the Request Body, Python and cURL previews from the live form.
 function refreshQcPreviews() {
   const { body, paramsError } = qcBuildBody();
   const bodyPre = document.getElementById('qcBodyPreview');
   const pyPre = document.getElementById('qcPythonPreview');
-  if (!bodyPre || !pyPre) return;
+  const curlPre = document.getElementById('qcCurlPreview');
+  if (!bodyPre || !pyPre || !curlPre) return;
 
   if (paramsError) {
     const msg = `// Invalid Parameters JSON: ${esc(paramsError)}`;
+    const shellMsg = `<span style="color:var(--red,#dc2626)"># Invalid Parameters JSON: ${esc(paramsError)}</span>`;
     bodyPre.innerHTML = `<span style="color:var(--red,#dc2626)">${msg}</span>`;
-    pyPre.innerHTML = `<span style="color:var(--red,#dc2626)"># Invalid Parameters JSON: ${esc(paramsError)}</span>`;
+    pyPre.innerHTML = shellMsg;
+    curlPre.innerHTML = shellMsg;
     window._qcPythonCode = '';
+    window._qcCurlCode = '';
     return;
   }
   bodyPre.innerHTML = syntaxHighlight(JSON.stringify(body, null, 2));
   const code = qcPythonCode(body);
   window._qcPythonCode = code;
   pyPre.textContent = code;
+  const curl = qcCurlCode(body);
+  window._qcCurlCode = curl;
+  curlPre.textContent = curl;
 }
 
 window.switchQcTab = function(tab) {
@@ -1532,7 +1605,7 @@ window.switchQcTab = function(tab) {
     b.classList.toggle('active', b.dataset.qctab === tab));
   document.querySelectorAll('#qcInputBody .tab-content').forEach(c =>
     c.classList.toggle('active', c.id === `qcTab-${tab}`));
-  if (tab === 'body' || tab === 'python') refreshQcPreviews();
+  if (tab === 'body' || tab === 'python' || tab === 'curl') refreshQcPreviews();
 };
 
 function collapseQcInput(collapsed) {
@@ -1548,15 +1621,22 @@ window.toggleQcCollapse = function() {
   collapseQcInput(!collapsed);
 };
 
-window.copyQcPython = async function() {
-  const code = window._qcPythonCode || '';
+async function qcCopyCode(code, label) {
   if (!code) return toast('Nothing to copy', 'error');
   try {
     await navigator.clipboard.writeText(code);
-    toast('Python example copied', 'success');
+    toast(`${label} example copied`, 'success');
   } catch {
     toast('Copy failed — select and copy manually', 'error');
   }
+}
+
+window.copyQcPython = function() {
+  return qcCopyCode(window._qcPythonCode || '', 'Python');
+};
+
+window.copyQcCurl = function() {
+  return qcCopyCode(window._qcCurlCode || '', 'cURL');
 };
 
 window.executeQuery = async function() {

@@ -235,6 +235,13 @@ textarea.monospace,
 }
 
 /* ── Query Console ───────────────────────────────────────────────────── */
+.qc-code-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.qc-auth { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.qc-auth-label { font-size: .82rem; color: var(--gray-500); font-weight: 500; }
+.qc-auth-opt { display: flex; align-items: center; gap: 6px; }
+.qc-auth-opt input[type=radio] { width: 15px; height: 15px; cursor: pointer; }
+.qc-auth-opt label { font-size: .85rem; cursor: pointer; }
+
 .result-area { margin-top: 16px; }
 .result-area pre {
   background: var(--gray-900); color: #e5e7eb; padding: 16px; border-radius: var(--radius);
