@@ -3,10 +3,10 @@
 | 項目 | 內容 |
 |------|------|
 | 文件名稱 | Oracle RESTful API Hub 系統規格書 |
-| 版本 | 1.6.0 |
+| 版本 | 1.7.0 |
 | 目標資料庫 | Oracle Database 11g (11.1.0.4)（支援多資料庫） |
 | 框架 | FastAPI (Python 3.10+) |
-| 文件日期 | 2026-06-18 |
+| 文件日期 | 2026-07-15 |
 
 ---
 
@@ -557,6 +557,43 @@ DELETE FROM employees WHERE emp_id = :wh_emp_id
 
 ---
 
+### 4.11 資料庫健康檢查服務 — `app/services/db_health_service.py`
+
+回報每個資料來源 alias 的**即時連線狀態**。`DatabaseRegistry.list_databases()` 的欄位全部來自設定檔，其 `pool_active` 只代表「pool 物件已建立」，並不等於連線健康；`init_all_pools()` 又刻意容忍死掉的資料來源（避免一個後端拖垮整個 App 啟動）。因此一個 alias 可能從啟動起就從未連通，而 Dashboard 上看起來一切正常。本服務即為了讓這種狀態浮上檯面。
+
+| 元件 | 說明 |
+|------|------|
+| `check_database(alias)` | 取得 dialect 的健康檢查 SQL、實際取連線執行並計時。回傳 `status="online"` 或 `"offline"`。**不會拋例外** —— 任何 driver/組態錯誤都轉成 `offline` + 原始錯誤字串 |
+| `check_all_databases()` | 以 `ThreadPoolExecutor` 併發檢查 `db_registry.aliases()` 全部 alias，共用單一整體 deadline。逾時者回 `status="timeout"` |
+| `_MAX_WORKERS = 8` | 單次檢查內的併發上限（非累積上限，見下方限制） |
+
+**健康檢查 SQL 由 Dialect 層提供**（`Dialect.health_check_sql()`），service 不得 branch `db_type`：
+
+| Dialect | 回傳 |
+|---------|------|
+| `OracleDialect` | `SELECT 1 FROM DUAL`（Oracle 無 FROM 不合法） |
+| `PostgresqlDialect` / `MssqlDialect` | `SELECT 1` |
+
+**回傳結構（每個 alias 一筆）：**
+
+```python
+{
+    "alias": str,
+    "status": "online" | "offline" | "timeout",
+    "latency_ms": float | None,   # offline / timeout 時為 None
+    "error": str | None,          # online 時為 None；否則為 driver 原始錯誤
+    "checked_at": str,            # ISO-8601 UTC
+}
+```
+
+**整體 deadline（重要設計）：** 三個 driver（`oracledb` / `psycopg2` / `pymssql`）都是阻塞式同步 API，因此併發只能靠 thread。submit 完所有 future 後記錄單一 `deadline`，再逐一以「剩餘時間」取值 —— **所有 alias 共用同一份 `DB_HEALTH_CHECK_TIMEOUT` 預算**，10 個死掉的資料庫最多仍只等 N 秒，而非 10×N 秒。
+
+**已知限制：** Python 無法安全砍掉執行中的 thread，逾時後只能放棄該 worker（`shutdown(wait=False, cancel_futures=True)`），它會存活到 driver 自身的網路逾時才結束。故此 timeout 限制的是「呼叫端等待的時間」，不是「thread 存活的時間」；`_MAX_WORKERS` 只限制單次檢查內的併發，executor 每次呼叫都重建，重複 Refresh 打向卡死的資料庫會累積被放棄的 thread。實務上受限於本端點僅開放 superuser。根治方式是在三個 adapter 各自設定 driver 層 connect timeout（未納入）。
+
+**注意：** 健康檢查會佔用一個真實的 pool 連線；當 alias 已達 `pool_max` 時，健康的資料庫也可能因等不到連線而顯示為 `timeout`。
+
+---
+
 ## 5. API 端點規格
 
 **基本路徑 (Base URL):** `/api/v1`
@@ -578,7 +615,8 @@ DELETE FROM employees WHERE emp_id = :wh_emp_id
 
 | 方法 | 路徑 | 認證 | 說明 |
 |------|------|------|------|
-| `GET` | `/api/v1/databases` | Bearer Token | 列出所有已設定的 Oracle 資料庫連線 |
+| `GET` | `/api/v1/databases` | Bearer Token | 列出所有已設定的資料庫連線（僅設定內容，不代表連得上） |
+| `GET` | `/api/v1/databases/status` | Bearer Token（**superuser only**） | 即時檢查每個資料庫的連線狀態（詳見 §4.11） |
 
 **回應範例：**
 
@@ -604,6 +642,29 @@ DELETE FROM employees WHERE emp_id = :wh_emp_id
   }
 ]
 ```
+
+**`GET /api/v1/databases/status` 回應範例：**
+
+```json
+[
+  {
+    "alias": "hr_db",
+    "status": "online",
+    "latency_ms": 3.4,
+    "error": null,
+    "checked_at": "2026-07-15T07:45:58.915811+00:00"
+  },
+  {
+    "alias": "finance_db",
+    "status": "offline",
+    "latency_ms": null,
+    "error": "DPY-4001: no credentials specified\nORA-01005: null password given; logon denied",
+    "checked_at": "2026-07-15T07:45:25.809322+00:00"
+  }
+]
+```
+
+**為何收斂至 superuser：** 此端點會實際開連線，並將 **driver 原始錯誤訊息**（可能含主機、埠、帳號等線索）回傳給呼叫端，比僅列設定的 `GET /api/v1/databases`（只需 `get_current_user`）敏感，故改用 `get_current_active_superuser`。非 superuser 呼叫回 403；Admin UI 會 catch 後將該欄顯示為 `—`，不影響 Dashboard 其餘功能。
 
 **`get_db_alias` 共用依賴：**
 
@@ -1686,7 +1747,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 | 頁面 | 路徑 | 說明 |
 |------|------|------|
 | **Login** | `/admin` | JWT 登入頁面（帳號密碼表單） |
-| **Dashboard** | — | 統計總覽（使用者數、角色數、權限數、SQL 定義數、資料庫數）、資料庫列表、快捷資訊 |
+| **Dashboard** | — | 統計總覽（使用者數、角色數、權限數、SQL 定義數、資料庫數）、資料庫列表（含**即時連線狀態**欄與 Refresh 按鈕）、快捷資訊 |
 | **Users** | — | 使用者清單 + 新增使用者（帳號、密碼、角色指派、超級管理員設定） |
 | **Roles** | — | 角色清單 + 新增角色（名稱、描述、權限指派） |
 | **Permissions** | — | 權限清單 + 新增權限（resource、action、描述） |
@@ -2013,6 +2074,7 @@ curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
 | `SQL_DEFINITIONS_DIR` | `app/sql_definitions` | SQL 定義檔目錄路徑 |
 | `DATABASE_DEFINITIONS_DIR` | `app/database_definitions` | 資料庫定義檔目錄路徑 |
 | `DB_{ALIAS}_PASSWORD` | — | 覆蓋指定資料庫別名的密碼（如 `DB_HR_DB_PASSWORD`） |
+| `DB_HEALTH_CHECK_TIMEOUT` | `5.0` | `GET /api/v1/databases/status` 的**整體**逾時秒數 —— 所有 alias 共用此預算，非每個 alias 各算（見 §4.11） |
 
 ---
 
@@ -2048,7 +2110,8 @@ Oracle-api-hub/
 │   │   ├── query_service.py             # SQL 查詢執行 + ROWNUM 分頁
 │   │   ├── procedure_service.py         # Oracle Procedure / Function 呼叫
 │   │   ├── write_service.py             # DML 操作（INSERT/UPDATE/DELETE + 批次交易）
-│   │   └── schema_service.py            # 表結構探查（ALL_TAB_COLUMNS / 主鍵偵測）
+│   │   ├── schema_service.py            # 表結構探查（ALL_TAB_COLUMNS / 主鍵偵測）
+│   │   └── db_health_service.py         # 資料來源即時連線檢查（併發 + 共用 deadline）
 │   ├── tasks/
 │   │   ├── __init__.py
 │   │   ├── celery_app.py                # Celery 組態 + 佇列路由

@@ -123,6 +123,13 @@ Drop YAML files into `app/database_definitions/` — each file is a list of data
 ### 6. Rate Limiting
 - Per-client sliding window rate limiter (configurable)
 
+### 7. Database Connection Status (`/api/v1/databases/status`)
+- Live per-database connectivity check — `Online` (with latency), `Offline` (with the raw driver error), or `Timeout`
+- Surfaced in the Admin dashboard's Databases card as a **Status** column with a **Refresh** button
+- Every alias is probed concurrently under a **single shared timeout budget**, so N unreachable databases still cost one `DB_HEALTH_CHECK_TIMEOUT`, not N of them
+- The probe SQL comes from the dialect layer (`SELECT 1 FROM DUAL` on Oracle, `SELECT 1` elsewhere)
+- **Superuser only** — it opens real connections and returns raw driver error text. Other users see the dashboard normally, with the column showing `—`
+
 ## System-to-System Integration
 
 Oracle API Hub 設計為給其他系統（ERP、HR、BI 等）透過 REST API 存取 Oracle 資料的中繼平台。以下說明外部系統如何整合，以及權限設置方式。
@@ -357,6 +364,7 @@ Or use the **Export YAML** / **Upload YAML** buttons on the Admin UI SQL Definit
 | `SECRET_KEY` | JWT signing key | (change this!) |
 | `CELERY_BROKER_URL` | Redis URL for Celery | `redis://localhost:6379/1` |
 | `RATE_LIMIT_PER_MINUTE` | Max requests per client per minute | `60` |
+| `DB_HEALTH_CHECK_TIMEOUT` | Total seconds for `GET /databases/status` — shared across all aliases, not per-alias | `5.0` |
 
 ## Project Structure
 
@@ -389,7 +397,8 @@ app/
 │   ├── sql_registry.py      # SQL definition registry (DB primary, YAML fallback)
 │   ├── query_service.py     # Query execution with pagination
 │   ├── procedure_service.py # Oracle proc/func execution
-│   └── write_service.py     # DML operations
+│   ├── write_service.py     # DML operations
+│   └── db_health_service.py # Live connectivity checks for data sources
 ├── tasks/
 │   ├── celery_app.py        # Celery configuration
 │   ├── write_tasks.py       # Async write tasks
