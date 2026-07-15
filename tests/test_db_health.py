@@ -1,6 +1,8 @@
 """Per-database connectivity probing."""
 
 import contextlib
+import threading
+import time
 
 from app.services import db_health_service as svc
 
@@ -62,3 +64,75 @@ def test_check_database_offline_captures_driver_error(monkeypatch):
     assert result["status"] == "offline"
     assert "ORA-12541" in result["error"]
     assert result["latency_ms"] is None
+
+
+def _result(alias, status="online"):
+    return {
+        "alias": alias,
+        "status": status,
+        "latency_ms": 1.0 if status == "online" else None,
+        "error": None if status == "online" else "boom",
+        "checked_at": "2026-07-15T00:00:00+00:00",
+    }
+
+
+def test_check_all_returns_one_entry_per_alias(monkeypatch):
+    monkeypatch.setattr(svc.db_registry, "aliases", lambda: ["a", "b"])
+    monkeypatch.setattr(svc, "check_database", lambda alias: _result(alias))
+
+    results = svc.check_all_databases()
+
+    assert sorted(r["alias"] for r in results) == ["a", "b"]
+
+
+def test_check_all_with_no_aliases_returns_empty(monkeypatch):
+    monkeypatch.setattr(svc.db_registry, "aliases", lambda: [])
+    assert svc.check_all_databases() == []
+
+
+def test_check_all_isolates_failures(monkeypatch):
+    def _fake(alias):
+        return _result(alias, "offline" if alias == "bad" else "online")
+
+    monkeypatch.setattr(svc.db_registry, "aliases", lambda: ["good", "bad"])
+    monkeypatch.setattr(svc, "check_database", _fake)
+
+    statuses = {r["alias"]: r["status"] for r in svc.check_all_databases()}
+
+    # One dead database must not poison the others.
+    assert statuses == {"good": "online", "bad": "offline"}
+
+
+def test_check_all_marks_hung_database_timeout(monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(svc.db_registry, "aliases", lambda: ["slow"])
+    monkeypatch.setattr(svc.settings, "db_health_check_timeout", 0.1)
+    monkeypatch.setattr(svc, "check_database", lambda alias: release.wait(10))
+
+    try:
+        results = svc.check_all_databases()
+        assert results[0]["status"] == "timeout"
+        assert results[0]["latency_ms"] is None
+        assert "exceeded" in results[0]["error"]
+    finally:
+        # Release the abandoned worker so it does not block interpreter exit.
+        release.set()
+
+
+def test_check_all_shares_one_deadline_across_aliases(monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(svc.db_registry, "aliases", lambda: ["s1", "s2", "s3"])
+    monkeypatch.setattr(svc.settings, "db_health_check_timeout", 0.2)
+    monkeypatch.setattr(svc, "check_database", lambda alias: release.wait(10))
+
+    try:
+        started = time.perf_counter()
+        results = svc.check_all_databases()
+        elapsed = time.perf_counter() - started
+
+        assert all(r["status"] == "timeout" for r in results)
+        # Three hung databases share ONE 0.2s budget; they must not
+        # accumulate to 3 x 0.2s.
+        assert elapsed < 0.6
+    finally:
+        release.set()

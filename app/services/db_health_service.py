@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from typing import Any
 
+from app.core.config import settings
 from app.db.dialect_registry import get_dialect
 from app.db.multi_pool import db_registry
 
 logger = logging.getLogger(__name__)
+
+# Bounded so repeated refreshes against a hung database cannot grow threads
+# without limit (see spec section 6).
+_MAX_WORKERS = 8
 
 
 def _now_iso() -> str:
@@ -49,3 +56,42 @@ def check_database(alias: str) -> dict[str, Any]:
         "error": None,
         "checked_at": _now_iso(),
     }
+
+
+def check_all_databases() -> list[dict[str, Any]]:
+    """Probe every configured database concurrently under one shared deadline.
+
+    The drivers are blocking, so concurrency requires threads. All aliases
+    share a single ``db_health_check_timeout`` budget rather than each getting
+    their own, so N dead databases cost N-times-nothing extra in wall clock.
+    """
+    aliases = db_registry.aliases()
+    if not aliases:
+        return []
+
+    timeout = settings.db_health_check_timeout
+    executor = ThreadPoolExecutor(max_workers=min(len(aliases), _MAX_WORKERS))
+    try:
+        futures = {alias: executor.submit(check_database, alias) for alias in aliases}
+        deadline = time.perf_counter() + timeout
+
+        results: list[dict[str, Any]] = []
+        for alias, future in futures.items():
+            remaining = max(0.0, deadline - time.perf_counter())
+            try:
+                results.append(future.result(timeout=remaining))
+            except FutureTimeoutError:
+                future.cancel()
+                logger.warning("Health check for '%s' exceeded %.1fs", alias, timeout)
+                results.append({
+                    "alias": alias,
+                    "status": "timeout",
+                    "latency_ms": None,
+                    "error": f"Health check exceeded {timeout}s",
+                    "checked_at": _now_iso(),
+                })
+        return results
+    finally:
+        # Do not join abandoned workers — a hung driver call would block the
+        # response until its own network timeout fires.
+        executor.shutdown(wait=False)
