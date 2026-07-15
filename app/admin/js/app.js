@@ -343,6 +343,12 @@ async function renderDashboard() {
 }
 
 function dbStatusHtml(r) {
+  // Badge markup only — no title attribute. Driver errors (e.g. psycopg2's
+  // `connection to server at "localhost" ...`) routinely contain double
+  // quotes, and esc() (textContent->innerHTML) does not escape them, so
+  // string-templating the error into a title="..." attribute would close
+  // the attribute early. The tooltip is set via the DOM property instead
+  // by the caller, which is quote-safe by construction.
   if (r.status === 'online') {
     return `<span class="badge badge-green">Online</span> <small>${esc(String(r.latency_ms))}ms</small>`;
   }
@@ -351,12 +357,12 @@ function dbStatusHtml(r) {
     : '<span class="badge badge-red">Offline</span>';
   const err = r.error || '';
   const short = err.length > 60 ? err.slice(0, 60) + '…' : err;
-  return `${badge} <small title="${esc(err)}">${esc(short)}</small>`;
+  return `${badge} <small>${esc(short)}</small>`;
 }
 
 async function refreshDbStatus() {
   const cell = alias => document.getElementById(`dbstat-${alias}`);
-  databases.forEach(d => { const c = cell(d.alias); if (c) c.textContent = 'Checking…'; });
+  databases.forEach(d => { const c = cell(d.alias); if (c) { c.textContent = 'Checking…'; c.title = ''; } });
 
   let rows;
   try {
@@ -364,13 +370,13 @@ async function refreshDbStatus() {
   } catch (err) {
     // Non-superusers get 403 here. The dashboard stays usable; the column
     // simply reports nothing rather than showing an error.
-    databases.forEach(d => { const c = cell(d.alias); if (c) c.textContent = '—'; });
+    databases.forEach(d => { const c = cell(d.alias); if (c) { c.textContent = '—'; c.title = ''; } });
     return;
   }
 
   rows.forEach(r => {
     const c = cell(r.alias);
-    if (c) c.innerHTML = dbStatusHtml(r);
+    if (c) { c.innerHTML = dbStatusHtml(r); c.title = r.error || ''; }
   });
 }
 
