@@ -92,10 +92,10 @@ def health_check_sql(self) -> str:
 三個 driver（`oracledb` / `psycopg2` / `pymssql`）都是**阻塞式同步 API**，因此併發只能靠 thread：
 
 - 以 `ThreadPoolExecutor` 對 `db_registry.aliases()` 逐一 submit `check_database`。
-- executor 大小為 `min(len(aliases), 8)` —— **有界**，避免對卡住的資料庫重複 Refresh 時無限增生 thread。
+- executor 大小為 `min(len(aliases), 8)` —— **僅限制單次檢查內的併發數**，並非累積上限（executor 每次呼叫都重建；詳見 §6）。
 - 採**整體 deadline**：submit 完所有 future 後記錄 `deadline = perf_counter() + settings.db_health_check_timeout`，再逐一以 `future.result(timeout=max(0, deadline - perf_counter()))` 取值。所有 alias **共用同一份 N 秒預算** —— 10 個死掉的資料庫最多仍只等 N 秒，而非 10×N 秒。
 - 逾時（`concurrent.futures.TimeoutError`）→ 該 alias 回 `status="timeout"`、`error="Health check exceeded {N}s"`。
-- 以 `shutdown(wait=False)` 收尾，不等待被放棄的 thread（見 §6）。
+- 以 `shutdown(wait=False, cancel_futures=True)` 收尾：不等待已在執行、被放棄的 thread（見 §6），並取消尚未開始的排隊項目，避免對「已經沒人在等」的 alias 再開連線。
 
 **設定**：`app/core/config.py` 新增 `db_health_check_timeout: float = 5.0`（env `DB_HEALTH_CHECK_TIMEOUT`）。
 

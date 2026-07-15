@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Bounds concurrency WITHIN a single check. Note this executor is created per
 # call, so it is not a cumulative ceiling: each refresh against a hung database
-# abandons up to this many threads (shutdown(wait=False) below), and they live
+# abandons up to this many running threads (shutdown does not wait, below), and they live
 # until the driver's own network timeout fires. Accepted trade-off — see spec §6.
 _MAX_WORKERS = 8
 
