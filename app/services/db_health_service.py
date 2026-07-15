@@ -15,8 +15,10 @@ from app.db.multi_pool import db_registry
 
 logger = logging.getLogger(__name__)
 
-# Bounded so repeated refreshes against a hung database cannot grow threads
-# without limit (see spec section 6).
+# Bounds concurrency WITHIN a single check. Note this executor is created per
+# call, so it is not a cumulative ceiling: each refresh against a hung database
+# abandons up to this many threads (shutdown(wait=False) below), and they live
+# until the driver's own network timeout fires. Accepted trade-off — see spec §6.
 _MAX_WORKERS = 8
 
 
@@ -93,5 +95,8 @@ def check_all_databases() -> list[dict[str, Any]]:
         return results
     finally:
         # Do not join abandoned workers — a hung driver call would block the
-        # response until its own network timeout fires.
-        executor.shutdown(wait=False)
+        # response until its own network timeout fires. cancel_futures drops
+        # any aliases still queued (relevant when len(aliases) > _MAX_WORKERS
+        # and the deadline has already expired) so they don't open pointless
+        # connections after we've already returned.
+        executor.shutdown(wait=False, cancel_futures=True)

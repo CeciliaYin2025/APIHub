@@ -147,7 +147,9 @@ renderDashboard()
 
 **逾時無法真正中斷阻塞中的 driver 呼叫。** Python 無法安全地砍掉執行中的 thread。逾時後我們放棄該 worker thread 並回報 `timeout`，但該 thread 會一直存活到 driver 自身的網路逾時觸發才結束。
 
-因此本設計的 timeout **限制的是「Dashboard 等待的時間」，而非「thread 存活的時間」**。緩解措施是 executor 有界（最多 8），使重複 Refresh 打向一個卡死的資料庫時 thread 不會無限增長。
+因此本設計的 timeout **限制的是「Dashboard 等待的時間」，而非「thread 存活的時間」**。executor 有界（最多 8）**只限制單次檢查內的併發數**，不是累積上限：`ThreadPoolExecutor` 是在 `check_all_databases()` 內**每次呼叫都重新建立**，因此重複 Refresh 打向同一個卡死的資料庫時，每次都會放棄（`shutdown(wait=False)`）最多 8 個新 thread，這些 thread 會一路存活到 driver 自身的網路逾時才結束——10 次 Refresh 就會累積 10 組被放棄的 thread。這是已知且刻意接受的取捨：實務上受限於本端點僅開放 superuser 呼叫（見 §4.3 權限收斂），且被放棄的 thread 終究會在 driver timeout 後自然結束，不會無限存活。
+
+另外一個目前未記錄的後果：`ThreadPoolExecutor` 的 worker 是 non-daemon thread，並由 Python 的 `atexit` hook 負責 join，因此一次卡在 driver 呼叫上的健康檢查會**延後 interpreter/process 的結束**，直到該 driver 逾時為止——實務上會表現為 container 重啟變慢。
 
 真正的根治方式是在三個 adapter 各自設定 driver 層的 connect timeout，那是跨 `app/db/adapters/` 三個檔案的較大變更，本案不納入（已與需求方確認接受此取捨）。
 

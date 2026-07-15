@@ -132,7 +132,9 @@ def test_check_all_shares_one_deadline_across_aliases(monkeypatch):
 
         assert all(r["status"] == "timeout" for r in results)
         # Three hung databases share ONE 0.2s budget; they must not
-        # accumulate to 3 x 0.2s.
-        assert elapsed < 0.6
+        # accumulate to 3 x 0.2s (0.6s). A regression to per-alias timeouts
+        # would land at exactly 0.6s, so use 0.45 to leave margin on both
+        # sides between the correct (~0.2s) and regressed (~0.6s) outcomes.
+        assert elapsed < 0.45
     finally:
         release.set()
