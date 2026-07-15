@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # Database definitions (multi-database support)
     database_definitions_dir: str = "app/database_definitions"
 
+    # Health check: seconds allowed for ALL database probes combined
+    db_health_check_timeout: float = 5.0
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

@@ -306,15 +306,19 @@ async function renderDashboard() {
       </div>
 
       <div class="card mt-4">
-        <div class="card-header"><h2>Databases (${databases.length})</h2></div>
+        <div class="card-header">
+          <h2>Databases (${databases.length})</h2>
+          <button class="btn btn-sm" onclick="refreshDbStatus()">Refresh</button>
+        </div>
         <div class="card-body no-pad">
-          <table class="data-table"><thead><tr><th>Alias</th><th>Type</th><th>Description</th><th>Connection</th><th>User</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Alias</th><th>Type</th><th>Description</th><th>Connection</th><th>User</th><th>Status</th></tr></thead>
           <tbody>${databases.map(d => `<tr>
             <td><strong>${esc(d.alias)}</strong>${d.alias === currentDb ? ' <span class="badge badge-blue">Active</span>' : ''}</td>
             <td><span class="badge ${d.db_type === 'oracle' ? 'badge-blue' : d.db_type === 'postgresql' ? 'badge-green' : 'badge-amber'}">${esc((d.db_type || 'oracle').toUpperCase())}</span></td>
             <td>${esc(d.description || '—')}</td>
             <td><code>${esc(d.dsn || (d.host ? d.host + ':' + d.port + '/' + d.database : '—'))}</code></td>
             <td>${esc(d.user)}</td>
+            <td id="dbstat-${d.alias}">Checking…</td>
           </tr>`).join('')}</tbody></table>
         </div>
       </div>
@@ -329,9 +333,51 @@ async function renderDashboard() {
         </div>
       </div>
     `;
+
+    // Deliberately NOT awaited: a slow or hung database must not delay the
+    // rest of the dashboard from rendering.
+    refreshDbStatus();
   } catch (err) {
     area.innerHTML = `<div class="card"><div class="card-body"><p>Error loading dashboard: ${esc(err.message)}</p></div></div>`;
   }
+}
+
+function dbStatusHtml(r) {
+  // Badge markup only — no title attribute. Driver errors (e.g. psycopg2's
+  // `connection to server at "localhost" ...`) routinely contain double
+  // quotes, and esc() (textContent->innerHTML) does not escape them, so
+  // string-templating the error into a title="..." attribute would close
+  // the attribute early. The tooltip is set via the DOM property instead
+  // by the caller, which is quote-safe by construction.
+  if (r.status === 'online') {
+    return `<span class="badge badge-green">Online</span> <small>${esc(String(r.latency_ms))}ms</small>`;
+  }
+  const badge = r.status === 'timeout'
+    ? '<span class="badge badge-amber">Timeout</span>'
+    : '<span class="badge badge-red">Offline</span>';
+  const err = r.error || '';
+  const short = err.length > 60 ? err.slice(0, 60) + '…' : err;
+  return `${badge} <small>${esc(short)}</small>`;
+}
+
+async function refreshDbStatus() {
+  const cell = alias => document.getElementById(`dbstat-${alias}`);
+  databases.forEach(d => { const c = cell(d.alias); if (c) { c.textContent = 'Checking…'; c.title = ''; } });
+
+  let rows;
+  try {
+    rows = await api('GET', '/databases/status');
+  } catch (err) {
+    // Non-superusers get 403 here. The dashboard stays usable; the column
+    // simply reports nothing rather than showing an error.
+    databases.forEach(d => { const c = cell(d.alias); if (c) { c.textContent = '—'; c.title = ''; } });
+    return;
+  }
+
+  rows.forEach(r => {
+    const c = cell(r.alias);
+    if (c) { c.innerHTML = dbStatusHtml(r); c.title = r.error || ''; }
+  });
 }
 
 /* ── Users ─────────────────────────────────────────────────────────────── */

@@ -105,3 +105,9 @@ class Dialect(abc.ABC):
     @abc.abstractmethod
     def table_name_regex(self) -> re.Pattern[str]:
         """Return a compiled regex for valid table names."""
+
+    # ── Health check ────────────────────────────────────────────────────
+
+    @abc.abstractmethod
+    def health_check_sql(self) -> str:
+        """Return a trivial query that proves the connection is alive."""
