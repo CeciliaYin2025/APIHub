@@ -1,0 +1,48 @@
+# Dockerfile 使用 `COPY . .`,沒有這個檔案的話整個工作目錄都會被烤進 image layer。
+# 以下項目「絕對不能」進 image。
+
+# ── 機密 ────────────────────────────────────────────────────────────────
+# 真實密碼。容器是靠 compose 的 env_file: 以環境變數注入,不是靠 image 裡的檔案。
+.env
+.env.mcp
+deploy/**/.env
+deploy/**/.env.mcp
+# .env.example / .env.mcp.example 是範本(不含真實密碼),不排除。
+
+# git 歷史。早期 commit 內含已移除的明文密碼,不應隨 image 散布。
+.git
+.gitignore
+.gitattributes
+
+# ── 環境專屬設定 ────────────────────────────────────────────────────────
+# 每個環境自行維護,由 compose bind-mount 提供(mount 會蓋掉 image 內容)。
+# .example / .sample 範本保留在 image 中供參考。
+app/database_definitions/databases.yaml
+
+# ── 開發用/非執行時期需要 ───────────────────────────────────────────────
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+*.egg
+dist/
+build/
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# ── 雜項 ────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+temp/
+*.db
+*.sqlite
+celerybeat-schedule
