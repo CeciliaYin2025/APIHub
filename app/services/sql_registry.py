@@ -155,7 +155,11 @@ class SqlRegistry:
         logger.info("Loaded %d SQL definitions from YAML (%s)", count, base)
 
     def _load_yaml_file(self, path: Path) -> None:
-        with open(path) as f:
+        # encoding is explicit: definition files are UTF-8, but open() defaults to the
+        # platform locale (cp950 on the Windows dev machines), which fails on any
+        # non-ASCII description. The failure surfaces only as a logged exception in
+        # _load_from_yaml, so the definition would silently go missing.
+        with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
 
         params = {}
