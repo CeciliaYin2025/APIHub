@@ -1,6 +1,26 @@
 """Application configuration loaded from environment variables."""
 
+from pathlib import Path
+
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
+
+# Populate os.environ from .env before anything reads it.
+#
+# Necessary because the per-alias DB_{ALIAS_UPPER}_PASSWORD entries are NOT Settings
+# fields — app/db/multi_pool.py reads them straight from os.environ. pydantic-settings
+# parses .env for its own fields but never exports to os.environ, so without this every
+# data-source password resolves to "" under a bare `uvicorn`/`celery` run.
+#
+# This module is the right home: it is the one import both app/main.py and
+# app/tasks/celery_app.py go through, so the load is guaranteed to happen before
+# multi_pool reads the environment.
+#
+# override=False -> real environment variables win. Under Docker the passwords arrive
+# via compose `env_file:` as real env vars and .env is excluded from the image
+# (.dockerignore), so this call is a harmless no-op there.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_PROJECT_ROOT / ".env", override=False)
 
 
 class Settings(BaseSettings):
@@ -66,7 +86,13 @@ class Settings(BaseSettings):
     # Health check: seconds allowed for ALL database probes combined
     db_health_check_timeout: float = 5.0
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # extra="ignore" is required, not cosmetic: .env also carries the per-alias
+    # DB_{ALIAS_UPPER}_PASSWORD entries, which are consumed directly from os.environ by
+    # app/db/multi_pool.py and are intentionally not Settings fields. pydantic-settings
+    # ignores unknown OS env vars but forbids unknown keys read from the env_file, so
+    # without this the app starts under Docker (env_file: -> real env vars) and crashes
+    # in local dev (.env read from disk).
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

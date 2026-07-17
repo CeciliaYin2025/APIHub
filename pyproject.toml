@@ -13,6 +13,7 @@ dependencies = [
     "sqlalchemy>=2.0.0,<3.0.0",
     "pydantic>=2.0.0,<3.0.0",
     "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",  # direct import in app/core/config.py
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
     # passlib 1.7.4 is incompatible with bcrypt 4.1+ (removed __about__, self-test

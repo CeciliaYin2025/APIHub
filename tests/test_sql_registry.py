@@ -74,3 +74,30 @@ def test_empty_directory(tmp_path: Path):
     registry = SqlRegistry()
     registry.load(str(tmp_path))
     assert len(registry.list_all()) == 0
+
+
+def test_load_yaml_file_reads_utf8_regardless_of_locale(tmp_path: Path):
+    """Definition files are UTF-8; loading must not depend on the platform locale.
+
+    Regression: _load_yaml_file used a bare open(), which decodes with the locale
+    encoding (cp950 on the Windows dev machines) and raises UnicodeDecodeError on any
+    non-ASCII description. _load_from_yaml swallows that into a logged exception, so
+    the definition silently went missing instead of failing loudly.
+
+    _load_yaml_file is called directly because load() prefers the DB and would ignore
+    the directory argument entirely.
+    """
+    defn = {
+        "name": "zh_query",
+        "description": "員工基本資料查詢",
+        "sql": "SELECT 1 FROM DUAL",
+    }
+    path = tmp_path / "zh_query.yaml"
+    # allow_unicode=True keeps real UTF-8 bytes on disk; the default escapes them to
+    # ASCII \uXXXX sequences, which would not exercise the decode path at all.
+    path.write_text(yaml.dump(defn, allow_unicode=True), encoding="utf-8")
+
+    registry = SqlRegistry()
+    registry._load_yaml_file(path)
+
+    assert registry.get("zh_query").description == "員工基本資料查詢"

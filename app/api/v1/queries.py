@@ -107,7 +107,7 @@ def import_yaml_definitions(
 
     for path in sorted(base.glob("*.y*ml")):
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
 
             name = raw["name"]

@@ -3,6 +3,9 @@ uvicorn[standard]>=0.27.0
 sqlalchemy>=2.0.0,<3.0.0
 pydantic>=2.0.0,<3.0.0
 pydantic-settings>=2.0.0
+# Imported directly by app/core/config.py (load_dotenv); do not rely on it
+# arriving transitively via pydantic-settings.
+python-dotenv>=1.0.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 # passlib 1.7.4 reads bcrypt.__about__.__version__, removed in bcrypt 4.1+,

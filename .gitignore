@@ -10,6 +10,12 @@ build/
 .env.mcp
 .venv/
 venv/
+
+# 資料來源連線定義:每個環境(dev/test/prod)的主機、帳號、alias 都不同,
+# 因此由各環境自行維護,不進版控 —— 與 .env 相同模式。
+# 新環境請複製 databases.yaml.sample 或 .example 後修改;兩份範本仍在版控中。
+# 注意:改完需重啟 api + 兩個 celery worker(啟動時載入,無 hot-reload)。
+app/database_definitions/databases.yaml
 .idea/
 .vscode/*
 !.vscode/launch.json
