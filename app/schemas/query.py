@@ -15,13 +15,14 @@ class QueryRequest(BaseModel):
     - **batch**: stream results in a fixed-size batch, use ``batch_size`` + ``batch_offset``.
     - **top_n**: return the first N rows, use ``top_n``.
     - **one**: return exactly one row (or 404).
+    - **count**: return only the matching row count (no data), via ``total``.
     """
     query_name: str = Field(..., description="Name of the registered SQL definition")
     params: dict[str, Any] = Field(default_factory=dict, description="Bind parameters")
     fetch_mode: str = Field(
         default="page",
-        pattern="^(page|all|batch|top_n|one)$",
-        description="Fetch mode: page, all, batch, top_n, one",
+        pattern="^(page|all|batch|top_n|one|count)$",
+        description="Fetch mode: page, all, batch, top_n, one, count",
     )
     # page mode
     page: int = Field(default=1, ge=1, description="Page number (fetch_mode=page)")

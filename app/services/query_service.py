@@ -1,11 +1,12 @@
 """Service layer for executing SQL queries via engine-agnostic pool and dialect.
 
-Supports five fetch modes:
+Supports six fetch modes:
 - page   : paginated via page + page_size (default)
 - all    : return every row
 - batch  : fixed-size batch with offset (for cursor-style iteration)
 - top_n  : first N rows only
 - one    : exactly one row
+- count  : matching row count only, no data query
 """
 
 import logging
@@ -87,6 +88,8 @@ def execute_query(
         return _fetch_top_n(sql, bind_params, top_n, db_alias, order_by)
     elif fetch_mode == "one":
         return _fetch_one(sql, bind_params, db_alias, order_by)
+    elif fetch_mode == "count":
+        return _fetch_count(sql, bind_params, db_alias)
     else:
         raise ValueError(f"Unknown fetch_mode: {fetch_mode}")
 
@@ -221,6 +224,25 @@ def _fetch_one(
         "columns": columns,
         "data": data[:1],
         "total": 1,
+    }
+
+
+def _fetch_count(
+    sql: str,
+    binds: dict[str, Any],
+    db_alias: str | None = None,
+) -> dict[str, Any]:
+    """Return only the matching row count — no data query."""
+    dialect = get_dialect_for(db_alias)
+    count_sql = dialect.wrap_count(sql)
+
+    with get_connection(db_alias) as conn:
+        total = _get_count(conn, count_sql, binds, dialect)
+
+    return {
+        "columns": [],
+        "data": [],
+        "total": total,
     }
 
 
