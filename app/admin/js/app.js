@@ -1379,7 +1379,7 @@ function renderQueryConsole() {
   const area = document.getElementById('contentArea');
   area.innerHTML = `
     <div class="card" id="qcInputCard">
-      <div class="card-header">
+      <div class="card-header" id="qcInputHeader" onclick="qcHeaderClick(event)">
         <h2>Query Console</h2>
         <button class="btn btn-outline btn-sm" id="qcCollapseBtn" onclick="toggleQcCollapse()">&#9650; Collapse</button>
       </div>
@@ -1611,14 +1611,27 @@ window.switchQcTab = function(tab) {
 function collapseQcInput(collapsed) {
   const bodyEl = document.getElementById('qcInputBody');
   const btn = document.getElementById('qcCollapseBtn');
+  const header = document.getElementById('qcInputHeader');
   if (!bodyEl || !btn) return;
   bodyEl.classList.toggle('hidden', collapsed);
   btn.innerHTML = collapsed ? '&#9660; Expand' : '&#9650; Collapse';
+  if (header) header.classList.toggle('is-collapsed', collapsed);
 }
 
 window.toggleQcCollapse = function() {
   const collapsed = document.getElementById('qcInputBody').classList.contains('hidden');
   collapseQcInput(!collapsed);
+};
+
+// While collapsed, clicking anywhere on the header re-expands it (the button remains
+// a valid target too, but no longer the only way in). Once expanded, only the button
+// collapses it again — clicking the header shouldn't fight with clicks on its title.
+window.qcHeaderClick = function(event) {
+  if (event.target.closest('#qcCollapseBtn')) return;
+  const bodyEl = document.getElementById('qcInputBody');
+  if (bodyEl && bodyEl.classList.contains('hidden')) {
+    collapseQcInput(false);
+  }
 };
 
 async function qcCopyCode(code, label) {

@@ -16,6 +16,9 @@ venv/
 # 新環境請複製 databases.yaml.sample 或 .example 後修改;兩份範本仍在版控中。
 # 注意:改完需重啟 api + 兩個 celery worker(啟動時載入,無 hot-reload)。
 app/database_definitions/databases.yaml
+# 備份檔請用 .bak 結尾:DatabaseRegistry.load() 會 glob *.yaml,
+# 取名 "databases copy.yaml" 之類的檔案會被當成正式定義一起載入。
+app/database_definitions/*.bak
 .idea/
 .vscode/*
 !.vscode/launch.json
