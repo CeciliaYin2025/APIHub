@@ -244,6 +244,17 @@ textarea.monospace,
 .qc-auth-opt input[type=radio] { width: 15px; height: 15px; cursor: pointer; }
 .qc-auth-opt label { font-size: .85rem; cursor: pointer; }
 
+.qc-params-info {
+  border: 1px solid var(--gray-200); border-radius: var(--radius);
+  padding: 10px 12px; min-height: 120px; max-height: 200px; overflow-y: auto;
+  font-size: .85rem;
+}
+.qc-param-item { padding: 6px 0; border-bottom: 1px solid var(--gray-100); }
+.qc-param-item:last-child { border-bottom: none; }
+.qc-param-name { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-weight: 600; }
+.qc-param-meta { color: var(--gray-500); font-size: .78rem; margin-left: 6px; }
+.qc-param-desc { color: var(--gray-600); margin-top: 2px; }
+
 .result-area { margin-top: 16px; }
 .result-area pre {
   background: var(--gray-900); color: #e5e7eb; padding: 16px; border-radius: var(--radius);

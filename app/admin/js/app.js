@@ -121,6 +121,7 @@ async function loadDatabases() {
         const paramsEl = document.getElementById('qcParams');
         if (nameEl) nameEl.value = '';
         if (paramsEl) paramsEl.value = '{}';
+        qcRenderParamsInfo(null);
         refreshQcPreviews();
       });
     }
@@ -1459,9 +1460,17 @@ function renderQueryConsole() {
               <div class="form-group"><label>Top N</label><input type="number" id="qcTopN" value="10" min="1" max="1000"></div>
             </div>
           </div>
-          <div class="form-group query-console">
-            <label>Parameters (JSON)</label>
-            <textarea id="qcParams" placeholder='{"dept": "IT"}'>{}</textarea>
+          <div class="form-row">
+            <div class="form-group query-console">
+              <label>Parameters (JSON)</label>
+              <textarea id="qcParams" placeholder='{"dept": "IT"}'>{}</textarea>
+            </div>
+            <div class="form-group">
+              <label>Parameter Reference</label>
+              <div class="qc-params-info" id="qcParamsInfo">
+                <p class="text-muted text-sm">Select a query to see parameter details.</p>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1512,6 +1521,27 @@ function qcPopulatePicker() {
   if (current && qcDefs.some(d => d.name === current)) sel.value = current;
 }
 
+// Render the "Parameter Reference" panel next to Parameters (JSON) from the
+// selected query's declared params — always the full list, independent of
+// whatever the user has typed into the JSON textarea.
+function qcRenderParamsInfo(def) {
+  const el = document.getElementById('qcParamsInfo');
+  if (!el) return;
+  const entries = def ? Object.entries(def.params || {}) : [];
+  if (entries.length === 0) {
+    el.innerHTML = `<p class="text-muted text-sm">${
+      def ? 'This query has no parameters.' : 'Select a query to see parameter details.'
+    }</p>`;
+    return;
+  }
+  el.innerHTML = entries.map(([name, p]) => `
+    <div class="qc-param-item">
+      <span class="qc-param-name">${esc(name)}</span>
+      <span class="qc-param-meta">${esc(p.type || 'string')} &middot; ${p.required ? 'required' : 'optional'}</span>
+      ${p.description ? `<div class="qc-param-desc">${esc(p.description)}</div>` : ''}
+    </div>`).join('');
+}
+
 // When a query is picked, fill Parameters with type-based examples.
 window.qcOnSelectQuery = function() {
   const sel = document.getElementById('qcName');
@@ -1520,6 +1550,7 @@ window.qcOnSelectQuery = function() {
   const def = qcDefs.find(d => d.name === sel.value);
   const example = def ? qcExampleParams(def.params) : {};
   paramsEl.value = JSON.stringify(example, null, 2);
+  qcRenderParamsInfo(def);
   refreshQcPreviews();
 };
 

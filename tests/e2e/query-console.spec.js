@@ -82,3 +82,37 @@ test('copying the Raw JSON response places plain JSON on the clipboard', async (
   const clip = await page.evaluate(() => navigator.clipboard.readText());
   expect(JSON.parse(clip)).toEqual(mockResult);
 });
+
+test('Parameter Reference shows a placeholder before a query is selected', async ({ page }) => {
+  const text = await page.textContent('#qcParamsInfo');
+  expect(text).toContain('Select a query to see parameter details.');
+});
+
+test('Parameter Reference shows type, required/optional and description per param', async ({ page }) => {
+  await page.selectOption('#qcName', 'inventory_view');
+  const info = page.locator('#qcParamsInfo');
+  const productCode = info.locator('.qc-param-item', { hasText: 'product_code' });
+  await expect(productCode).toContainText('string');
+  await expect(productCode).toContainText('required');
+  await expect(productCode).toContainText('SKU or product code to filter by');
+
+  const warehouse = info.locator('.qc-param-item', { hasText: 'warehouse' });
+  await expect(warehouse).toContainText('optional');
+  await expect(warehouse.locator('.qc-param-desc')).toHaveCount(0);
+});
+
+test('Parameter Reference omits the description block when there is none', async ({ page }) => {
+  await page.selectOption('#qcName', 'e2e_types');
+  const info = page.locator('#qcParamsInfo');
+  await expect(info.locator('.qc-param-item')).toHaveCount(3);
+  await expect(info.locator('.qc-param-desc')).toHaveCount(0);
+});
+
+test('switching the DB resets Parameter Reference to the placeholder', async ({ page }) => {
+  await page.selectOption('#qcName', 'employees');
+  await expect(page.locator('#qcParamsInfo')).toContainText('Filter by department code');
+  await page.selectOption('#dbSelect', 'pg_test');
+  await expect
+    .poll(async () => page.textContent('#qcParamsInfo'))
+    .toContain('Select a query to see parameter details.');
+});

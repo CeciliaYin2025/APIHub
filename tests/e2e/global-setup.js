@@ -69,10 +69,13 @@ module.exports = async () => {
   });
   const { access_token } = await tokRes.json();
 
-  const p = (type) => ({ type, required: false, description: '' });
+  const p = (type, opts = {}) => ({ type, required: !!opts.required, description: opts.description || '' });
   const definitions = [
-    { name: 'employees', params: { dept: p('string') } },
-    { name: 'inventory_view', params: { product_code: p('string'), warehouse: p('string') } },
+    { name: 'employees', params: { dept: p('string', { description: 'Filter by department code' }) } },
+    { name: 'inventory_view', params: {
+      product_code: p('string', { required: true, description: 'SKU or product code to filter by' }),
+      warehouse: p('string'),
+    } },
     { name: 'e2e_types', params: { n: p('number'), d: p('date'), s: p('string') } },
   ];
   for (const d of definitions) {
