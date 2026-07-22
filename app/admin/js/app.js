@@ -240,6 +240,41 @@ function syntaxHighlight(json) {
   });
 }
 
+/* ── Raw JSON copy (shared across consoles) ──────────────────────────────
+   The visible <pre> holds syntax-highlighted HTML, not plain text, so the
+   copyable plain-text JSON is kept in a small registry keyed by a per-block
+   id and read back when the Copy button is clicked. */
+const _copyRegistry = {};
+
+function registerCopyPayload(id, text) {
+  _copyRegistry[id] = text;
+}
+
+window.copyPayload = async function(id, label) {
+  const text = _copyRegistry[id];
+  if (!text) return toast('Nothing to copy', 'error');
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${label} copied`, 'success');
+  } catch {
+    toast('Copy failed', 'error');
+  }
+};
+
+// Renders a syntax-highlighted <pre> plus a Copy button for `data`,
+// registering the plain-text JSON under `id`. Callers embed the result
+// wherever a raw JSON response used to be shown directly.
+function rawJsonBlock(id, data) {
+  const json = JSON.stringify(data, null, 2);
+  registerCopyPayload(id, json);
+  return `
+    <div class="qc-code-toolbar" style="margin-bottom:4px">
+      <span></span>
+      <button class="btn btn-outline btn-sm" onclick="copyPayload('${id}','JSON')">&#128203; Copy</button>
+    </div>
+    <pre>${syntaxHighlight(json)}</pre>`;
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    Page Renderers
    ══════════════════════════════════════════════════════════════════════════ */
@@ -1681,7 +1716,7 @@ window.executeQuery = async function() {
         </div>
       ` : '<p class="text-muted">No data returned</p>'}
       <details class="mt-4"><summary class="text-sm" style="cursor:pointer">Raw JSON Response</summary>
-        <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+        ${rawJsonBlock('qcResultJson', result)}
       </details>
     `;
     collapseQcInput(true);

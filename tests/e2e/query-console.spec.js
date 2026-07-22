@@ -64,3 +64,21 @@ test('switching the DB clears the selection and parameters', async ({ page }) =>
   const opts = await page.$$eval('#qcName option', (els) => els.map((e) => e.value));
   expect(opts).toEqual(['']);
 });
+
+test('copying the Raw JSON response places plain JSON on the clipboard', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const mockResult = { total: 1, columns: ['dept'], data: [{ dept: 'IT' }] };
+  await page.route('**/api/v1/default/queries/execute', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(mockResult),
+  }));
+
+  await page.selectOption('#qcName', 'employees');
+  await page.click('button:has-text("Execute Query")');
+  await page.click('#qcResult summary');
+  await page.click('#qcResult button:has-text("Copy")');
+
+  const clip = await page.evaluate(() => navigator.clipboard.readText());
+  expect(JSON.parse(clip)).toEqual(mockResult);
+});
