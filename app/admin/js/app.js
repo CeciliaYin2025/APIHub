@@ -1407,6 +1407,7 @@ function renderQueryConsole() {
                 <option value="batch">batch</option>
                 <option value="top_n">top_n</option>
                 <option value="one">one</option>
+                <option value="count">count</option>
               </select>
             </div>
           </div>

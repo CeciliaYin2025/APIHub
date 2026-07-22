@@ -388,6 +388,7 @@ def execute(
     - **batch**: fixed-size batch with offset. Use ``batch_size`` + ``batch_offset``.
     - **top_n**: first N rows. Use ``top_n``.
     - **one**: exactly one row (404 if none).
+    - **count**: matching row count only (``total``), no data returned.
     """
     request.state.audit_action = payload.query_name
     definition = sql_registry.get(payload.query_name, db_alias=db)
