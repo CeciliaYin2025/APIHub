@@ -2213,7 +2213,7 @@ window.dmExecute = async function(asyncMode) {
               </table>
             </div>
             <details class="mt-4"><summary class="text-sm" style="cursor:pointer">Raw JSON</summary>
-              <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+              ${rawJsonBlock('dmBatchResultJson', result)}
             </details>
           </div>
         </div>
