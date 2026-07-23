@@ -121,6 +121,7 @@ async function loadDatabases() {
         const paramsEl = document.getElementById('qcParams');
         if (nameEl) nameEl.value = '';
         if (paramsEl) paramsEl.value = '{}';
+        qcRenderParamsInfo(null);
         refreshQcPreviews();
       });
     }
@@ -238,6 +239,41 @@ function syntaxHighlight(json) {
     }
     return `<span class="${cls}">${match}</span>`;
   });
+}
+
+/* ── Raw JSON copy (shared across consoles) ──────────────────────────────
+   The visible <pre> holds syntax-highlighted HTML, not plain text, so the
+   copyable plain-text JSON is kept in a small registry keyed by a per-block
+   id and read back when the Copy button is clicked. */
+const _copyRegistry = {};
+
+function registerCopyPayload(id, text) {
+  _copyRegistry[id] = text;
+}
+
+window.copyPayload = async function(id, label) {
+  const text = _copyRegistry[id];
+  if (!text) return toast('Nothing to copy', 'error');
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${label} copied`, 'success');
+  } catch {
+    toast('Copy failed', 'error');
+  }
+};
+
+// Renders a syntax-highlighted <pre> plus a Copy button for `data`,
+// registering the plain-text JSON under `id`. Callers embed the result
+// wherever a raw JSON response used to be shown directly.
+function rawJsonBlock(id, data) {
+  const json = JSON.stringify(data, null, 2);
+  registerCopyPayload(id, json);
+  return `
+    <div class="qc-code-toolbar" style="margin-bottom:4px">
+      <span></span>
+      <button class="btn btn-outline btn-sm" onclick="copyPayload('${id}','JSON')">&#128203; Copy</button>
+    </div>
+    <pre>${syntaxHighlight(json)}</pre>`;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1424,9 +1460,17 @@ function renderQueryConsole() {
               <div class="form-group"><label>Top N</label><input type="number" id="qcTopN" value="10" min="1" max="1000"></div>
             </div>
           </div>
-          <div class="form-group query-console">
-            <label>Parameters (JSON)</label>
-            <textarea id="qcParams" placeholder='{"dept": "IT"}'>{}</textarea>
+          <div class="form-row">
+            <div class="form-group query-console">
+              <label>Parameters (JSON)</label>
+              <textarea id="qcParams" placeholder='{"dept": "IT"}'>{}</textarea>
+            </div>
+            <div class="form-group">
+              <label>Parameter Reference</label>
+              <div class="qc-params-info" id="qcParamsInfo">
+                <p class="text-muted text-sm">Select a query to see parameter details.</p>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1477,6 +1521,27 @@ function qcPopulatePicker() {
   if (current && qcDefs.some(d => d.name === current)) sel.value = current;
 }
 
+// Render the "Parameter Reference" panel next to Parameters (JSON) from the
+// selected query's declared params — always the full list, independent of
+// whatever the user has typed into the JSON textarea.
+function qcRenderParamsInfo(def) {
+  const el = document.getElementById('qcParamsInfo');
+  if (!el) return;
+  const entries = def ? Object.entries(def.params || {}) : [];
+  if (entries.length === 0) {
+    el.innerHTML = `<p class="text-muted text-sm">${
+      def ? 'This query has no parameters.' : 'Select a query to see parameter details.'
+    }</p>`;
+    return;
+  }
+  el.innerHTML = entries.map(([name, p]) => `
+    <div class="qc-param-item">
+      <span class="qc-param-name">${esc(name)}</span>
+      <span class="qc-param-meta">${esc(p.type || 'string')} &middot; ${p.required ? 'required' : 'optional'}</span>
+      ${p.description ? `<div class="qc-param-desc">${esc(p.description)}</div>` : ''}
+    </div>`).join('');
+}
+
 // When a query is picked, fill Parameters with type-based examples.
 window.qcOnSelectQuery = function() {
   const sel = document.getElementById('qcName');
@@ -1485,6 +1550,7 @@ window.qcOnSelectQuery = function() {
   const def = qcDefs.find(d => d.name === sel.value);
   const example = def ? qcExampleParams(def.params) : {};
   paramsEl.value = JSON.stringify(example, null, 2);
+  qcRenderParamsInfo(def);
   refreshQcPreviews();
 };
 
@@ -1681,7 +1747,7 @@ window.executeQuery = async function() {
         </div>
       ` : '<p class="text-muted">No data returned</p>'}
       <details class="mt-4"><summary class="text-sm" style="cursor:pointer">Raw JSON Response</summary>
-        <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+        ${rawJsonBlock('qcResultJson', result)}
       </details>
     `;
     collapseQcInput(true);
@@ -1749,7 +1815,7 @@ window.executeProcedure = async function() {
     const result = await api('POST', endpoint, body);
     resultArea.innerHTML = `
       <div class="mb-4"><span class="badge badge-green">SUCCESS</span></div>
-      <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+      ${rawJsonBlock('pcResultJson', result)}
     `;
   } catch (err) {
     resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
@@ -1823,7 +1889,7 @@ window.executeWrite = async function() {
     const result = await api('POST', `${dbPrefix()}/writes/execute`, body);
     resultArea.innerHTML = `
       <div class="mb-4"><span class="badge badge-green">SUCCESS</span></div>
-      <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+      ${rawJsonBlock('wcResultJson', result)}
     `;
   } catch (err) {
     resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
@@ -1878,7 +1944,7 @@ window.checkTask = async function() {
         <span class="badge ${statusBadge}">${esc(result.status)}</span>
         <span class="text-muted text-sm" style="margin-left:8px">Task: ${esc(result.task_id)}</span>
       </div>
-      <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+      ${rawJsonBlock('taskResultJson', result)}
     `;
   } catch (err) {
     resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
@@ -2147,7 +2213,7 @@ window.dmExecute = async function(asyncMode) {
               </table>
             </div>
             <details class="mt-4"><summary class="text-sm" style="cursor:pointer">Raw JSON</summary>
-              <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+              ${rawJsonBlock('dmBatchResultJson', result)}
             </details>
           </div>
         </div>
