@@ -1815,7 +1815,7 @@ window.executeProcedure = async function() {
     const result = await api('POST', endpoint, body);
     resultArea.innerHTML = `
       <div class="mb-4"><span class="badge badge-green">SUCCESS</span></div>
-      <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+      ${rawJsonBlock('pcResultJson', result)}
     `;
   } catch (err) {
     resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
@@ -1889,7 +1889,7 @@ window.executeWrite = async function() {
     const result = await api('POST', `${dbPrefix()}/writes/execute`, body);
     resultArea.innerHTML = `
       <div class="mb-4"><span class="badge badge-green">SUCCESS</span></div>
-      <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+      ${rawJsonBlock('wcResultJson', result)}
     `;
   } catch (err) {
     resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
@@ -1944,7 +1944,7 @@ window.checkTask = async function() {
         <span class="badge ${statusBadge}">${esc(result.status)}</span>
         <span class="text-muted text-sm" style="margin-left:8px">Task: ${esc(result.task_id)}</span>
       </div>
-      <pre>${syntaxHighlight(JSON.stringify(result, null, 2))}</pre>
+      ${rawJsonBlock('taskResultJson', result)}
     `;
   } catch (err) {
     resultArea.innerHTML = `<div class="mt-2"><span class="badge badge-red">ERROR</span> <span class="text-sm">${esc(err.message)}</span></div>`;
