@@ -127,6 +127,25 @@ a:hover { text-decoration: underline; }
 .card-header h2 { font-size: 1rem; font-weight: 600; }
 .card-body { padding: 20px; }
 .card-body.no-pad { padding: 0; }
+/* Action bar for full-page forms — the page equivalent of a modal footer. */
+.card-footer {
+  padding: 16px 20px; border-top: 1px solid var(--gray-200);
+  display: flex; justify-content: flex-end; gap: 8px;
+}
+
+/* ── Sub-page navigation (list → detail → form) ───────────────────────── */
+.page-nav { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.page-nav-crumb { font-size: .85rem; color: var(--gray-500); }
+
+/* Read-only field grid on detail pages. */
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
+.detail-item { display: flex; flex-direction: column; gap: 2px; }
+.detail-item.detail-wide { grid-column: 1 / -1; }
+.detail-label {
+  font-size: .78rem; font-weight: 600; color: var(--gray-500);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.detail-value { font-size: .9rem; color: var(--gray-800); }
 
 /* ── Tables ───────────────────────────────────────────────────────────── */
 .data-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
@@ -332,6 +351,7 @@ textarea.monospace,
   .sidebar.open { transform: translateX(0); }
   .main-area { margin-left: 0; }
   .form-row { grid-template-columns: 1fr; }
+  .detail-grid { grid-template-columns: 1fr; }
   .stats-grid { grid-template-columns: 1fr 1fr; }
   .modal { width: 95%; margin: 0 10px; }
 }

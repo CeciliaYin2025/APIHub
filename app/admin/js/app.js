@@ -1039,7 +1039,9 @@ window.revokeApiKey = async function(id, name) {
 
 /* ── SQL Definitions ──────────────────────────────────────────────────── */
 async function renderSqlDefs() {
-  const area = document.getElementById('contentArea');
+  // Reached both from the sidebar and from Back/Cancel on the detail and form
+  // pages, so it restores the section header itself.
+  const area = enterSqlDefView('SQL Definitions');
   area.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
 
   const isSuperuser = currentUser && currentUser.is_superuser;
@@ -1052,7 +1054,7 @@ async function renderSqlDefs() {
           <h2>SQL Definitions — ${esc(currentDb)} (${defs.length})</h2>
           <div class="btn-group">
             ${isSuperuser ? `
-              <button class="btn btn-success btn-sm" onclick="openSqlDefModal('create')">+ New Definition</button>
+              <button class="btn btn-success btn-sm" onclick="openSqlDefForm('create')">+ New Definition</button>
               <button class="btn btn-info btn-sm" onclick="exportYamlDefs()">Export YAML</button>
               <button class="btn btn-primary btn-sm" onclick="uploadYamlFile()">Upload YAML</button>
               <button class="btn btn-primary btn-sm" onclick="importYamlDefs()">Import YAML</button>
@@ -1076,8 +1078,8 @@ async function renderSqlDefs() {
               <div class="btn-group">
                 <button class="btn btn-sm btn-outline" onclick="viewSqlDef('${esc(d.name)}')">Detail</button>
                 ${isSuperuser ? `
-                  <button class="btn btn-sm btn-primary" onclick="openSqlDefModal('edit','${esc(d.name)}')">Edit</button>
-                  <button class="btn btn-sm btn-info" onclick="openSqlDefModal('copy','${esc(d.name)}')">Copy</button>
+                  <button class="btn btn-sm btn-primary" onclick="openSqlDefForm('edit','${esc(d.name)}')">Edit</button>
+                  <button class="btn btn-sm btn-info" onclick="openSqlDefForm('copy','${esc(d.name)}')">Copy</button>
                   <button class="btn btn-sm btn-danger" onclick="deleteSqlDef('${esc(d.name)}')">Delete</button>
                 ` : ''}
               </div>
@@ -1165,7 +1167,35 @@ window.uploadYamlFile = async function() {
   input.click();
 };
 
-window.openSqlDefModal = async function(mode, name) {
+// SQL Definitions is a three-view section — list, detail and create/edit form —
+// that all live under one sidebar entry. The sub-views render into #contentArea
+// like any page, so they set the header title and keep the nav highlight.
+function enterSqlDefView(title) {
+  document.querySelectorAll('.sidebar-nav a').forEach(a =>
+    a.classList.toggle('active', a.dataset.page === 'sql-definitions'));
+  document.getElementById('pageTitle').textContent = title;
+  const area = document.getElementById('contentArea');
+  area.scrollTop = 0;
+  return area;
+}
+
+// Fetch one definition: superusers get the full record (including SQL) from the
+// detail endpoint; everyone else falls back to the list, re-fetching it when the
+// page was opened without going through the list first.
+async function fetchSqlDef(name) {
+  if (currentUser && currentUser.is_superuser) {
+    try {
+      return await api('GET', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`);
+    } catch (_) { /* fall through to the list */ }
+  }
+  const cached = (window._cachedDefs || []).find(x => x.name === name);
+  if (cached) return cached;
+  const defs = await api('GET', `${dbPrefix()}/queries/definitions`);
+  window._cachedDefs = defs;
+  return defs.find(x => x.name === name);
+}
+
+window.openSqlDefForm = async function(mode, name) {
   let data = { name: '', description: '', sql: '', permission: '', params: {} };
   if ((mode === 'edit' || mode === 'copy') && name) {
     try {
@@ -1184,49 +1214,62 @@ window.openSqlDefModal = async function(mode, name) {
     data = { ...data, name: `${data.name}_copy`, permission: '' };
   }
 
-  const title = isEdit ? `Edit: ${name}` : (isCopy ? `Copy: ${name}` : 'New SQL Definition');
+  const title = isEdit ? `Edit Definition: ${name}` : (isCopy ? `Copy Definition: ${name}` : 'New SQL Definition');
   const paramsJson = Object.keys(data.params || {}).length > 0
     ? JSON.stringify(data.params, null, 2)
     : '{}';
+  // Cancel returns where the user came from: the detail page when editing an
+  // existing definition, the list otherwise.
+  const cancel = isEdit ? `viewSqlDef('${esc(name)}')` : 'renderSqlDefs()';
 
-  const body = `
-    <div class="form-group">
-      <label>Name</label>
-      <input type="text" id="sdName" value="${esc(data.name)}" ${isEdit ? 'disabled' : ''} placeholder="e.g. employees">
-      ${isEdit ? '' : '<div class="hint">Unique identifier, cannot be changed later</div>'}
+  const area = enterSqlDefView(title);
+  area.innerHTML = `
+    <div class="page-nav">
+      <button class="btn btn-outline btn-sm" onclick="${cancel}">&#8592; Back</button>
+      <span class="page-nav-crumb">SQL Definitions — ${esc(currentDb)}</span>
     </div>
-    <div class="form-group">
-      <label>Description</label>
-      <input type="text" id="sdDesc" value="${esc(data.description)}" placeholder="Short description">
-    </div>
-    <div class="form-group">
-      <label>Permission</label>
-      <input type="text" id="sdPerm" value="${esc(data.permission)}" placeholder="query:name (auto-generated if empty)">
-      <div class="hint">Format: query:&lt;name&gt;</div>
-    </div>
-    <div class="form-group">
-      <label>SQL</label>
-      <textarea id="sdSql" class="monospace" rows="8" placeholder="SELECT ... FROM ... WHERE ...">${esc(data.sql || '')}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Parameters (JSON)</label>
-      <textarea id="sdParams" class="monospace" rows="5" placeholder='{"param": {"type":"string","required":false,"description":"..."}}'>${esc(paramsJson)}</textarea>
-      <div class="hint">JSON object: { "param_name": { "type": "string|number|date", "required": false, "description": "..." } }</div>
-    </div>
-    <div class="form-group">
-      <label>Order By</label>
-      <div id="sdOrderByRows"></div>
-      <button type="button" class="btn btn-xs btn-outline" onclick="addOrderByRow()">+ Add order column</button>
-      <div class="hint">Sorts on output column names. Applied by the Hub in the wrapper (works on MSSQL). Empty = no ordering.</div>
+    <div class="card">
+      <div class="card-header"><h2>${esc(title)}</h2></div>
+      <div class="card-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="sdName" value="${esc(data.name)}" ${isEdit ? 'disabled' : ''} placeholder="e.g. employees">
+            ${isEdit ? '' : '<div class="hint">Unique identifier, cannot be changed later</div>'}
+          </div>
+          <div class="form-group">
+            <label>Permission</label>
+            <input type="text" id="sdPerm" value="${esc(data.permission)}" placeholder="query:name (auto-generated if empty)">
+            <div class="hint">Format: query:&lt;name&gt;</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <input type="text" id="sdDesc" value="${esc(data.description)}" placeholder="Short description">
+          <div class="hint">Shown in the list, the detail page and every Query Console example.</div>
+        </div>
+        <div class="form-group">
+          <label>SQL</label>
+          <textarea id="sdSql" class="monospace" rows="16" placeholder="SELECT ... FROM ... WHERE ...">${esc(data.sql || '')}</textarea>
+        </div>
+        <div class="form-group">
+          <label>Parameters (JSON)</label>
+          <textarea id="sdParams" class="monospace" rows="8" placeholder='{"param": {"type":"string","required":false,"description":"..."}}'>${esc(paramsJson)}</textarea>
+          <div class="hint">JSON object: { "param_name": { "type": "string|number|date", "required": false, "description": "..." } }</div>
+        </div>
+        <div class="form-group">
+          <label>Order By</label>
+          <div id="sdOrderByRows"></div>
+          <button type="button" class="btn btn-xs btn-outline" onclick="addOrderByRow()">+ Add order column</button>
+          <div class="hint">Sorts on output column names. Applied by the Hub in the wrapper (works on MSSQL). Empty = no ordering.</div>
+        </div>
+      </div>
+      <div class="card-footer">
+        <button class="btn btn-secondary" onclick="${cancel}">Cancel</button>
+        <button class="btn btn-primary" onclick="submitSqlDef('${mode}', '${esc(name || '')}')">${isEdit ? 'Update' : 'Create'}</button>
+      </div>
     </div>
   `;
-
-  const footer = `
-    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="submitSqlDef('${mode}', '${esc(name || '')}')">${isEdit ? 'Update' : 'Create'}</button>
-  `;
-
-  openModal(title, body, footer);
   (data.order_by || []).forEach(o => addOrderByRow(o.column, o.direction));
 };
 
@@ -1274,16 +1317,19 @@ window.submitSqlDef = async function(mode, name) {
   const orderBy = collectOrderBy();
 
   try {
+    let saved;
     if (mode === 'create' || mode === 'copy') {
       await api('POST', `${dbPrefix()}/queries/definitions`, { name: nameVal, description: desc, sql, permission: perm, params, order_by: orderBy });
       toast(`Definition '${nameVal}' created`, 'success');
+      saved = nameVal;
     } else {
       const body = { description: desc, sql, permission: perm, params, order_by: orderBy };
       await api('PUT', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`, body);
       toast(`Definition '${name}' updated`, 'success');
+      saved = name;
     }
-    closeModal();
-    renderSqlDefs();
+    window._cachedDefs = null;  // list cache is stale after a write
+    viewSqlDef(saved);          // land on the detail page so the result is visible
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -1301,39 +1347,76 @@ window.deleteSqlDef = async function(name) {
 };
 
 window.viewSqlDef = async function(name) {
-  let d;
-  // Try to get full details (with SQL) for superusers
-  if (currentUser && currentUser.is_superuser) {
-    try {
-      d = await api('GET', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`);
-    } catch (_) {
-      d = (window._cachedDefs || []).find(x => x.name === name);
-    }
-  } else {
-    d = (window._cachedDefs || []).find(x => x.name === name);
-  }
-  if (!d) return;
+  const area = enterSqlDefView(`SQL Definition: ${name}`);
+  area.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
 
-  const body = `
-    <div class="form-group"><label>Name</label><input type="text" value="${esc(d.name)}" disabled></div>
-    <div class="form-group"><label>Description</label><input type="text" value="${esc(d.description)}" disabled></div>
-    <div class="form-group"><label>Permission</label><input type="text" value="${esc(d.permission)}" disabled></div>
-    ${d.sql ? `<div class="form-group"><label>SQL</label><pre class="sql-preview">${esc(d.sql)}</pre></div>` : ''}
-    <div class="form-group">
-      <label>Parameters</label>
-      ${Object.keys(d.params || {}).length === 0 ? '<p class="text-muted">No parameters</p>' :
-        `<table class="data-table"><thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
-        <tbody>${Object.entries(d.params).map(([k,v]) => `<tr>
-          <td><code>${esc(k)}</code></td><td>${esc(v.type)}</td>
-          <td>${v.required ? '<span class="badge badge-red">Yes</span>' : 'No'}</td>
-          <td>${esc(v.description || '—')}</td>
-        </tr>`).join('')}</tbody></table>`}
+  let d;
+  try {
+    d = await fetchSqlDef(name);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+  if (!d) {
+    area.innerHTML = `
+      <div class="page-nav"><button class="btn btn-outline btn-sm" onclick="renderSqlDefs()">&#8592; Back to list</button></div>
+      <div class="card"><div class="card-body"><p class="text-muted">Definition "${esc(name)}" not found in ${esc(currentDb)}.</p></div></div>`;
+    return;
+  }
+
+  const isSuperuser = currentUser && currentUser.is_superuser;
+  const params = Object.entries(d.params || {});
+  const orderBy = d.order_by || [];
+
+  area.innerHTML = `
+    <div class="page-nav">
+      <button class="btn btn-outline btn-sm" onclick="renderSqlDefs()">&#8592; Back to list</button>
+      <span class="page-nav-crumb">SQL Definitions — ${esc(currentDb)}</span>
     </div>
-    <div class="mt-4">
-      <button class="btn btn-primary btn-sm" onclick="closeModal();prefillQuery('${esc(d.name)}')">Open in Query Console</button>
+    <div class="card">
+      <div class="card-header">
+        <h2>${esc(d.name)}</h2>
+        <div class="btn-group">
+          <button class="btn btn-sm btn-success" onclick="prefillQuery('${esc(d.name)}')">&#9654; Open in Query Console</button>
+          ${isSuperuser ? `
+            <button class="btn btn-sm btn-primary" onclick="openSqlDefForm('edit','${esc(d.name)}')">Edit</button>
+            <button class="btn btn-sm btn-info" onclick="openSqlDefForm('copy','${esc(d.name)}')">Copy</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteSqlDef('${esc(d.name)}')">Delete</button>
+          ` : ''}
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="detail-grid">
+          <div class="detail-item"><span class="detail-label">Name</span><span class="detail-value"><code>${esc(d.name)}</code></span></div>
+          <div class="detail-item"><span class="detail-label">Permission</span><span class="detail-value"><span class="tag">${esc(d.permission)}</span></span></div>
+          <div class="detail-item detail-wide"><span class="detail-label">Description</span><span class="detail-value">${esc(d.description || '—')}</span></div>
+        </div>
+
+        <div class="form-group mt-4">
+          <label>SQL</label>
+          ${d.sql
+            ? `<pre class="sql-preview">${esc(d.sql)}</pre>`
+            : '<p class="text-muted text-sm">SQL is only visible to superusers.</p>'}
+        </div>
+
+        <div class="form-group">
+          <label>Parameters (${params.length})</label>
+          ${params.length === 0 ? '<p class="text-muted text-sm">This definition takes no parameters.</p>' :
+            `<table class="data-table"><thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+            <tbody>${params.map(([k, v]) => `<tr>
+              <td><code>${esc(k)}</code></td><td>${esc(v.type || 'string')}</td>
+              <td>${v.required ? '<span class="badge badge-red">Yes</span>' : 'No'}</td>
+              <td>${esc(v.description || '—')}</td>
+            </tr>`).join('')}</tbody></table>`}
+        </div>
+
+        <div class="form-group">
+          <label>Order By</label>
+          ${orderBy.length === 0 ? '<p class="text-muted text-sm">No ordering applied.</p>' :
+            `<div>${orderBy.map(o => `<span class="tag">${esc(o.column)} ${esc(o.direction || 'ASC')}</span>`).join(' ')}</div>`}
+        </div>
+      </div>
     </div>
   `;
-  openModal(`SQL Definition: ${d.name}`, body, '');
 };
 
 window.prefillQuery = async function(name) {
