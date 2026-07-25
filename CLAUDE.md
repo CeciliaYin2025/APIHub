@@ -9,32 +9,25 @@ Oracle API Hub is a FastAPI-based REST gateway that exposes **Oracle (11g+), Pos
 ## Commands
 
 ```bash
-# Install (dev mode)
-pip install -e ".[dev]"
-
 # Run the app
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-# Run all tests
+# Run all Python tests — tests/e2e is EXCLUDED via norecursedirs, run it separately
 pytest -v
 
-# Run a single test file
-pytest tests/test_security.py -v
+# MCP server tests (plain pytest, no live server needed)
+pytest tests/mcp -v
 
-# Run a single test
-pytest tests/test_security.py::test_password_hashing -v
-
-# Lint
-ruff check app/ tests/
-
-# Format
-ruff format app/ tests/
+# Admin UI e2e (Playwright + throwaway Postgres container; needs Docker + Node 24+)
+cd tests/e2e && npm install && npx playwright install chromium && npm test
 
 # Initialize DB tables and default admin user
 python -m scripts.init_db
 
-# Docker
-docker-compose up -d
+# Backfill db_alias on pre-existing SQL definition rows (one-time migration)
+python -m scripts.migrate_sql_def_db_alias
+
+# Same init inside Docker
 docker-compose exec api python -m scripts.init_db
 
 # Celery workers
@@ -45,22 +38,11 @@ celery -A app.tasks.celery_app flower --port=5555
 
 ## Architecture
 
-**Layered design**: Middleware → Router → Service → Data Access
+**Layered design**: Middleware → Router → Service → Data Access. `app/main.py` owns the lifespan (init pools, load SQL registry).
 
-- **Entry point**: `app/main.py` — FastAPI app with lifespan (init pools, load SQL registry)
-- **Routers** (`app/api/v1/`): auth, queries, procedures, writes, schemas, databases, health
-- **Services** (`app/services/`): Business logic layer called by routers
-- **DB layer** (`app/db/`): Multi-engine connection pool management
-  - `multi_pool.py` — `DatabaseRegistry` singleton, one `PoolAdapter` per alias
-  - `pool_factory.py` + `adapters/` — per-engine pool implementations (oracle/postgresql/mssql)
-  - `dialects/` — per-engine SQL rewriting (pagination, bind conversion, procedure calls, introspection)
-  - `session.py` — SQLAlchemy session for the platform store
-- **Tasks** (`app/tasks/`): Celery async task definitions
-- **Models** (`app/models/`): SQLAlchemy ORM for User/Role/Permission and SQL Definition tables
-- **Admin UI** (`app/admin/`): Vanilla JS SPA served as static files at `/admin`
 - **MCP server** (`mcp_server/`): standalone MCP process exposing SQL definitions as
-  dynamic tools. Thin HTTP proxy over the REST API (never imports `app/` or touches
-  DBs directly). stdio (`python -m mcp_server`) + Streamable HTTP
+  dynamic tools. Thin HTTP proxy over the REST API — it **never imports `app/`** or touches
+  DBs directly. stdio (`python -m mcp_server`) + Streamable HTTP
   (`uvicorn mcp_server.http_app:app`). Settings: `MCP_*` env vars / `.env.mcp`.
 
 ### Data Source Databases vs Platform Store
@@ -74,24 +56,7 @@ Two distinct database roles, do not confuse them:
 
 Database-scoped endpoints use `/{db}/` path prefix (e.g., `/{db}/queries/execute`), where `{db}` is the YAML `alias`. Legacy single-DB env vars (`ORACLE_DSN`, etc.) auto-create a `default` alias for backward compatibility when no YAML is present.
 
-### Configuring Data Sources (`database_definitions`)
-
-All data-source connections (read + write/procedure targets) are defined in `app/database_definitions/databases.yaml`. The file is a **YAML list** where each entry is one alias; `DatabaseRegistry.load()` (in `app/db/multi_pool.py`) reads it. There is no separate "source" vs "target" concept — an alias is a connection that serves both queries (read) and writes/procedures (write); add multiple aliases for multiple sources/targets.
-
-Per-entry fields (loaded into `DatabaseConfig`):
-
-- `alias` (required): identifier and API path segment. Regex `^[a-zA-Z][a-zA-Z0-9_]{0,63}$`.
-- `db_type`: `oracle` (default), `postgresql`, or `mssql` — selects the adapter (`app/db/adapters/`) and dialect (`app/db/dialects/`).
-- `description`: shown in `GET /api/v1/databases` and the Admin UI DB selector.
-- Oracle: `dsn` (`host:port/service`).
-- PostgreSQL / MSSQL: `host`, `port`, `database`.
-- Common: `user`, `password`, `pool_min`, `pool_max`, `pool_increment` (Oracle only).
-
-Conventions to follow:
-
-- **No plaintext passwords in the YAML.** Leave `password: ""` and supply it via the env var `DB_{ALIAS_UPPER}_PASSWORD` (e.g. alias `pg_test` → `DB_PG_TEST_PASSWORD`). The env var, when set, overrides the YAML value (`multi_pool.py` `_load_file`). Every alias needs its own var or its connection fails.
-- **Definitions load once at startup** (`db_registry.load()` in the lifespan); pools are created lazily on first use. There is **no hot-reload endpoint** for data sources (unlike SQL definitions) — editing `databases.yaml` requires a **process/container restart** to take effect, and the Celery workers must be restarted too (they connect via the same YAML).
-- **Both compose stacks bind-mount the directory** so edits need only a restart, not a rebuild: root `docker-compose.yaml` (local dev) and `deploy/apihub/docker-compose.yml` (ISAP gateway; `deploy/apihub-test/` for the test/UAT stack) mount `app/database_definitions` into the `api` and both celery services. When adding an alias there, also add its `DB_*_PASSWORD` to the corresponding `.env`.
+Adding or changing a data source: see `app/database_definitions/CLAUDE.md` (password env vars, no hot-reload, compose mounts).
 
 ### Dialect Layer
 
@@ -103,13 +68,36 @@ Conventions to follow:
 
 When adding engine-specific behavior, extend the `Dialect` base class — never branch on `db_type` inside services.
 
-### Query Engine — 5 Fetch Modes
+### Query Engine — 6 Fetch Modes
 
-The query service (`app/services/query_service.py`) supports: `page` (dialect-aware pagination, default), `all`, `batch` (cursor-style iteration), `top_n`, `one` (single row or 404).
+The query service (`app/services/query_service.py`) supports: `page` (dialect-aware pagination, default), `all`, `batch` (cursor-style iteration), `top_n`, `one` (single row or 404), `count` (row count only, no data). `app/schemas/query.py` is the single source of truth for the mode names, their companion fields and value ranges — keep any UI or doc copy in sync with it.
 
 ### SQL Definition System
 
-SQL definitions are stored in PostgreSQL (`api_hub_sql_definitions` table) as the primary source. At startup, `SqlRegistry` loads from DB; if the DB table is empty it falls back to YAML files in `app/sql_definitions/`. A one-time `POST /api/v1/queries/definitions/import-yaml` endpoint imports existing YAML definitions into the database. Full CRUD is available via API (`GET/POST/PUT/DELETE /api/v1/queries/definitions`) and the Admin UI. The in-memory registry is automatically refreshed after any CRUD operation.
+SQL definitions are stored in PostgreSQL (`api_hub_sql_definitions` table) as the primary source. At startup, `SqlRegistry` loads from DB; if the DB table is empty it falls back to YAML files in `app/sql_definitions/`. A one-time `POST /api/v1/queries/definitions/import-yaml` endpoint imports existing YAML definitions into the database. Full CRUD is available via API (`GET/POST/PUT/DELETE /{db}/queries/definitions`) and the Admin UI. The in-memory registry is automatically refreshed after any CRUD operation.
+
+Two things about the model (`app/models/sql_definition.py`) that are easy to miss:
+
+- **Definitions are scoped per data source**: unique constraint is `(name, db_alias)`, so the same name can exist with different SQL under two aliases. Every definition endpoint is under `/{db}/`, and the registry is keyed accordingly.
+- **`order_by`** is a JSONB list of `{column, direction}` applied by the Hub in its own wrapper (not baked into the definition's SQL), so ordering works uniformly across engines including MSSQL. Columns are validated against a strict identifier regex in `_build_order_by()`; never interpolate user input there.
+
+### Request Pipeline — Auth, Rate Limiting, Audit
+
+Middleware is registered in `app/main.py` with a deliberate order (`add_middleware` stacks last-added = outermost). Outer→inner: CORS → `AuditMiddleware` → `AuthContextMiddleware` → `RateLimiterMiddleware` → routers.
+
+- **`AuthContextMiddleware`** resolves the caller **once per request** into `request.state.principal` (`app/services/auth_service.py::resolve_principal`). A `Principal` is either `type="user"` (JWT) or `type="api_key"` (service account), both carrying a `User` for RBAC. Accepted credentials: `X-API-Key: ahk_...`, `Authorization: Bearer ahk_...`, or `Authorization: Bearer <JWT>`. A present-but-invalid API key raises `ApiKeyError` and short-circuits with JSON; a missing/invalid JWT leaves `principal=None` for the dependency layer to reject.
+- **`RateLimiterMiddleware`** is an in-memory sliding window keyed per principal, with a per-API-key `rate_limit` override. It is **process-local** — it does not coordinate across API instances or workers.
+- **`AuditMiddleware`** writes one structured log line plus one `api_hub_audit_logs` row per request, best-effort (failures are swallowed, never affecting the response). Client IP honours `TRUSTED_PROXIES`.
+
+Routers still enforce authorization per endpoint via `PermissionChecker(resource, action)` — e.g. `query:<name>`, `procedure:<name>`, `table:<table>`.
+
+### Admin UI
+
+Vanilla-JS SPA at `app/admin/`, served at `/admin` with no build step. Conventions and its e2e coverage: see `app/admin/CLAUDE.md`.
+
+### Deployment Behind a Reverse Proxy
+
+`ROOT_PATH` (e.g. `/apihub`) makes FastAPI generate correct URLs and is injected into the Admin UI as `{{BASE_PATH}}`; `tests/test_root_path.py` guards this. `deploy/apihub/` is the ISAP gateway stack and `deploy/apihub-test/` the test/UAT stack, each with its own compose file and `.env`.
 
 ### Async Task Processing
 
@@ -121,8 +109,9 @@ Celery with Redis broker. Two dedicated queues: `write` and `procedure`. Tasks r
 
 ## Code Conventions
 
-- **Python**: 3.10+, line length 120, linted with ruff
 - **Parameterized queries only**: All SQL definitions use Oracle-style bind variables (`:param_name`), never string interpolation. The dialect layer rewrites binds to `%(param_name)s` for PostgreSQL/MSSQL automatically — definitions stay engine-agnostic.
 - **Table name validation**: Strict regex in `write_service.py` (per-dialect) to prevent injection
 - **Auth**: JWT (HS256) with RBAC. Permission model is `resource:action` with wildcard support
-- **Config**: All settings via environment variables through Pydantic Settings (`app/core/config.py`)
+- **Config**: All settings via environment variables through Pydantic Settings (`app/core/config.py`). Add new settings there with a default rather than reading `os.environ` directly.
+- **Agent instruction files**: `AGENTS.md` (Codex) mirrors this file. When changing project-wide guidance here, mirror it there.
+- **Docs**: `README.md` and `docs/system_specification.md` describe the shipped behaviour; update them when adding features (the `update-spec` skill does this).
