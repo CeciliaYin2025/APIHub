@@ -1364,6 +1364,73 @@ function qcExampleParams(params) {
   return out;
 }
 
+// What each fetch mode returns, mirroring the docstring of QueryRequest in
+// app/schemas/query.py. Used by the mode hint and by every generated example.
+const QC_MODE_NOTES = {
+  page: 'paginated results (default) — driven by page + page_size',
+  all: 'every matching row, no pagination — use with care on large tables',
+  batch: 'one fixed-size slice for cursor-style iteration — driven by batch_size + batch_offset',
+  top_n: 'only the first N rows — driven by top_n',
+  one: 'exactly one row; the API returns 404 when nothing matches',
+  count: 'only the matching row count in "total", no data rows',
+};
+
+// Per-field notes for the request body, again mirroring app/schemas/query.py.
+const QC_FIELD_NOTES = {
+  query_name: 'name of the registered SQL definition',
+  params: 'bind parameters declared by the definition',
+  page: 'page number, 1-based (fetch_mode=page)',
+  page_size: 'rows per page, 1-1000 (fetch_mode=page)',
+  batch_size: 'rows per batch, 1-10000 (fetch_mode=batch)',
+  batch_offset: 'starting row offset, >= 0 (fetch_mode=batch)',
+  top_n: 'number of rows to return, 1-1000 (fetch_mode=top_n)',
+};
+
+// One-line summary of a declared parameter: "string · required — Department code".
+function qcParamNote(p) {
+  p = p || {};
+  const head = `${p.type || 'string'} · ${p.required ? 'required' : 'optional'}`;
+  return p.description ? `${head} — ${p.description}` : head;
+}
+
+// The definition currently chosen in the picker (undefined when none).
+function qcSelectedDef() {
+  const sel = document.getElementById('qcName');
+  return sel ? qcDefs.find(d => d.name === sel.value) : undefined;
+}
+
+// Extra body fields that a given fetch mode sends, in body order.
+function qcModeFields(mode) {
+  if (mode === 'page') return ['page', 'page_size'];
+  if (mode === 'batch') return ['batch_size', 'batch_offset'];
+  if (mode === 'top_n') return ['top_n'];
+  return [];
+}
+
+// Plain-text annotation shared by every example tab: what the definition does,
+// what each declared parameter means, and what the chosen fetch mode returns.
+// Returned as bare lines so each tab can prefix them with its own comment marker.
+function qcAnnotationLines(body, def) {
+  const lines = [`Query: ${body.query_name || '(no query selected)'}`];
+  if (def && def.description) lines.push(`Description: ${def.description}`);
+
+  const entries = def ? Object.entries(def.params || {}) : [];
+  lines.push('', 'Parameters:');
+  if (entries.length === 0) {
+    lines.push(def ? '  (this query takes no parameters)' : '  (select a query to see its parameters)');
+  }
+  else entries.forEach(([name, p]) => lines.push(`  ${name}: ${qcParamNote(p)}`));
+
+  lines.push('', `Fetch mode "${body.fetch_mode}": ${QC_MODE_NOTES[body.fetch_mode] || ''}`);
+  qcModeFields(body.fetch_mode).forEach(f => lines.push(`  ${f}: ${QC_FIELD_NOTES[f]}`));
+  return lines;
+}
+
+// Prefix annotation lines with a comment marker, skipping trailing spaces on blanks.
+function qcCommentBlock(lines, marker) {
+  return lines.map(l => (l ? `${marker} ${l}` : marker)).join('\n');
+}
+
 // Radio pair that switches the generated examples between a human JWT and a
 // service-account API key. Rendered once per code tab; `group` keeps the radio
 // names/ids unique, and qcSetAuthMode keeps every group in sync.
@@ -1445,6 +1512,7 @@ function renderQueryConsole() {
                 <option value="one">one</option>
                 <option value="count">count</option>
               </select>
+              <p class="qc-mode-hint" id="qcModeHint"></p>
             </div>
           </div>
           <div id="qcModeFields">
@@ -1476,6 +1544,7 @@ function renderQueryConsole() {
 
         <div class="tab-content" id="qcTab-body">
           <p class="text-sm text-muted mb-2">The JSON body sent to <code>POST ${esc(API)}${esc(dbPrefix())}/queries/execute</code>:</p>
+          <pre class="qc-notes" id="qcBodyNotes"></pre>
           <pre class="sql-preview" id="qcBodyPreview"></pre>
         </div>
 
@@ -1507,6 +1576,7 @@ function renderQueryConsole() {
       </div>
     </div>
   `;
+  toggleQcModeFields();  // seed the fetch-mode hint and the example previews
   qcLoadDefinitions().then(qcPopulatePicker);
 }
 
@@ -1528,13 +1598,17 @@ function qcRenderParamsInfo(def) {
   const el = document.getElementById('qcParamsInfo');
   if (!el) return;
   const entries = def ? Object.entries(def.params || {}) : [];
+  // The definition's own description leads the panel — it explains what the
+  // parameters below are actually filtering.
+  const desc = def && def.description
+    ? `<div class="qc-def-desc">${esc(def.description)}</div>` : '';
   if (entries.length === 0) {
-    el.innerHTML = `<p class="text-muted text-sm">${
+    el.innerHTML = desc + `<p class="text-muted text-sm">${
       def ? 'This query has no parameters.' : 'Select a query to see parameter details.'
     }</p>`;
     return;
   }
-  el.innerHTML = entries.map(([name, p]) => `
+  el.innerHTML = desc + entries.map(([name, p]) => `
     <div class="qc-param-item">
       <span class="qc-param-name">${esc(name)}</span>
       <span class="qc-param-meta">${esc(p.type || 'string')} &middot; ${p.required ? 'required' : 'optional'}</span>
@@ -1559,6 +1633,14 @@ window.toggleQcModeFields = function() {
   document.getElementById('qcPageFields').classList.toggle('hidden', mode !== 'page');
   document.getElementById('qcBatchFields').classList.toggle('hidden', mode !== 'batch');
   document.getElementById('qcTopNFields').classList.toggle('hidden', mode !== 'top_n');
+
+  const hint = document.getElementById('qcModeHint');
+  if (hint) {
+    const fields = qcModeFields(mode).map(f => `${f} — ${QC_FIELD_NOTES[f]}`);
+    hint.innerHTML = `Returns ${esc(QC_MODE_NOTES[mode] || '')}` +
+      (fields.length ? `<br>${fields.map(esc).join('<br>')}` : '');
+  }
+  refreshQcPreviews();
 };
 
 // Build the request body from the current form state. Returns { body, paramsError }.
@@ -1609,16 +1691,51 @@ function qcExecuteUrl() {
   return `${window.location.origin}${API}${dbPrefix()}/queries/execute`;
 }
 
-function qcPythonCode(body) {
+// Render the payload dict with an aligned trailing comment per line so the
+// generated code doubles as documentation: each param carries its declared
+// type/requiredness/description, each mode field its meaning.
+function qcPythonPayload(body, def) {
+  const rows = [];
+  const push = (code, note) => rows.push({ code, note: note || '' });
+  const declared = (def && def.params) || {};
+
+  push('payload = {');
+  for (const [key, val] of Object.entries(body)) {
+    if (key !== 'params') {
+      push(`    ${JSON.stringify(key)}: ${toPyLiteral(val, 1)},`,
+           key === 'fetch_mode' ? QC_MODE_NOTES[val] : QC_FIELD_NOTES[key]);
+      continue;
+    }
+    const entries = Object.entries(val || {});
+    if (entries.length === 0) {
+      push('    "params": {},', QC_FIELD_NOTES.params);
+      continue;
+    }
+    push('    "params": {', QC_FIELD_NOTES.params);
+    entries.forEach(([name, v]) =>
+      push(`        ${JSON.stringify(name)}: ${toPyLiteral(v, 2)},`,
+           declared[name] ? qcParamNote(declared[name]) : 'not declared by this definition'));
+    push('    },');
+  }
+  push('}');
+
+  // Align comments into a column, but never let one long value push the rest out.
+  const width = Math.min(56, Math.max(0, ...rows.filter(r => r.note).map(r => r.code.length)));
+  return rows.map(r => (r.note ? `${r.code.padEnd(width)}  # ${r.note}` : r.code)).join('\n');
+}
+
+function qcPythonCode(body, def) {
   const auth = qcAuthHeader();
-  return `import requests
+  return `${qcCommentBlock(qcAnnotationLines(body, def), '#')}
+
+import requests
 
 url = "${qcExecuteUrl()}"
 headers = {
     ${JSON.stringify(auth.name)}: ${JSON.stringify(auth.value)},
     "Content-Type": "application/json",
 }
-payload = ${toPyLiteral(body, 0)}
+${qcPythonPayload(body, def)}
 
 response = requests.post(url, json=payload, headers=headers)
 response.raise_for_status()
@@ -1632,9 +1749,11 @@ function toShellSingleQuoted(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
-function qcCurlCode(body) {
+function qcCurlCode(body, def) {
   const auth = qcAuthHeader();
-  return `curl -X POST "${qcExecuteUrl()}" \\
+  return `${qcCommentBlock(qcAnnotationLines(body, def), '#')}
+
+curl -X POST "${qcExecuteUrl()}" \\
   -H "${auth.name}: ${auth.value}" \\
   -H "Content-Type: application/json" \\
   -d ${toShellSingleQuoted(JSON.stringify(body, null, 2))}`;
@@ -1648,6 +1767,12 @@ function refreshQcPreviews() {
   const curlPre = document.getElementById('qcCurlPreview');
   if (!bodyPre || !pyPre || !curlPre) return;
 
+  const def = qcSelectedDef();
+  // JSON has no comment syntax, so the Request Body tab gets its annotation as a
+  // separate block above the payload — the JSON itself stays valid to copy.
+  const notesEl = document.getElementById('qcBodyNotes');
+  if (notesEl) notesEl.textContent = qcCommentBlock(qcAnnotationLines(body, def), '//');
+
   if (paramsError) {
     const msg = `// Invalid Parameters JSON: ${esc(paramsError)}`;
     const shellMsg = `<span style="color:var(--red,#dc2626)"># Invalid Parameters JSON: ${esc(paramsError)}</span>`;
@@ -1659,10 +1784,10 @@ function refreshQcPreviews() {
     return;
   }
   bodyPre.innerHTML = syntaxHighlight(JSON.stringify(body, null, 2));
-  const code = qcPythonCode(body);
+  const code = qcPythonCode(body, def);
   window._qcPythonCode = code;
   pyPre.textContent = code;
-  const curl = qcCurlCode(body);
+  const curl = qcCurlCode(body, def);
   window._qcCurlCode = curl;
   curlPre.textContent = curl;
 }
