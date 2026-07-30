@@ -35,6 +35,19 @@ def main():
         )
     print("Ensured api_hub_sql_definitions.order_by column.")
 
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS action_type varchar(20)"))
+        conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS params jsonb"))
+        conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS result_rows integer"))
+        for index_name, columns in (
+            ("ix_audit_principal_ts", "principal, ts"),
+            ("ix_audit_db_alias_ts", "db_alias, ts"),
+            ("ix_audit_action_ts", "action, ts"),
+            ("ix_audit_action_type_ts", "action_type, ts"),
+        ):
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index_name} ON api_hub_audit_logs ({columns})"))
+    print("Ensured api_hub_audit_logs report columns and indexes.")
+
     db = SessionLocal()
     try:
         # Check if admin already exists

@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     # Health check: seconds allowed for ALL database probes combined
     db_health_check_timeout: float = 5.0
 
+    # Usage report / audit retention
+    audit_retention_days: int = 365
+    # Rows whose serialized params exceed this many bytes are returned with
+    # params omitted in the detail list; the UI fetches them per row on
+    # expand. Guards the API response size, not the stored size.
+    audit_params_inline_limit: int = 4096
+
     # extra="ignore" is required, not cosmetic: .env also carries the per-alias
     # DB_{ALIAS_UPPER}_PASSWORD entries, which are consumed directly from os.environ by
     # app/db/multi_pool.py and are intentionally not Settings fields. pydantic-settings
