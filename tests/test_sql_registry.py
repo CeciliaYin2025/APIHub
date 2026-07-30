@@ -5,7 +5,20 @@ from pathlib import Path
 import pytest
 import yaml
 
-from app.services.sql_registry import SqlRegistry
+from app.services.sql_registry import SqlDefinition, SqlRegistry, _key
+
+
+@pytest.fixture
+def yaml_only(monkeypatch):
+    """Force the YAML fallback path.
+
+    ``load()`` tries PostgreSQL first and returns early the moment it finds
+    anything, ignoring its ``directory`` argument entirely. Without this
+    fixture, any test that passes a temp directory silently asserts against
+    whatever the developer's platform store happens to hold — which is exactly
+    what used to make the tests below pass or fail depending on local DB state.
+    """
+    monkeypatch.setattr(SqlRegistry, "_load_from_db", lambda self: False)
 
 
 @pytest.fixture
@@ -29,7 +42,7 @@ def sample_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_load_definitions(sample_dir: Path):
+def test_load_definitions(yaml_only, sample_dir: Path):
     registry = SqlRegistry()
     registry.load(str(sample_dir))
 
@@ -43,14 +56,14 @@ def test_load_definitions(sample_dir: Path):
     assert defn.permission == "query:test_query"
 
 
-def test_missing_definition(sample_dir: Path):
+def test_missing_definition(yaml_only, sample_dir: Path):
     registry = SqlRegistry()
     registry.load(str(sample_dir))
 
     assert registry.get("nonexistent") is None
 
 
-def test_reload(sample_dir: Path):
+def test_reload(yaml_only, sample_dir: Path):
     registry = SqlRegistry()
     registry.load(str(sample_dir))
     assert len(registry.list_all()) == 1
@@ -70,10 +83,35 @@ def test_reload(sample_dir: Path):
     assert len(registry.list_all()) == 2
 
 
-def test_empty_directory(tmp_path: Path):
+def test_empty_directory(yaml_only, tmp_path: Path):
     registry = SqlRegistry()
     registry.load(str(tmp_path))
     assert len(registry.list_all()) == 0
+
+
+def test_load_prefers_db_and_never_reads_yaml(sample_dir: Path, monkeypatch):
+    """DB wins outright: a non-empty platform store means YAML is not consulted.
+
+    This is the contract whose introduction silently broke the tests above —
+    they passed a directory and assumed it was used. Asserting it here means a
+    future change to the load-priority order fails loudly instead of turning
+    those tests environment-dependent again.
+    """
+    from_db = SqlDefinition(name="from_db", description="", sql="SELECT 1", permission="query:from_db")
+
+    def _fake_load_from_db(self) -> bool:
+        self._definitions[_key(from_db.name, from_db.db_alias)] = from_db
+        return True
+
+    yaml_calls = []
+    monkeypatch.setattr(SqlRegistry, "_load_from_db", _fake_load_from_db)
+    monkeypatch.setattr(SqlRegistry, "_load_from_yaml", lambda self, directory=None: yaml_calls.append(directory))
+
+    registry = SqlRegistry()
+    registry.load(str(sample_dir))
+
+    assert [d.name for d in registry.list_all()] == ["from_db"]
+    assert yaml_calls == [], "load() must not fall back to YAML when the DB returned definitions"
 
 
 def test_load_yaml_file_reads_utf8_regardless_of_locale(tmp_path: Path):
