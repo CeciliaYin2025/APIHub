@@ -69,3 +69,64 @@ def test_query_execute_records_params_even_when_definition_missing(monkeypatch):
     assert excinfo.value.status_code == 404
     assert req.state.audit_action_type == "query"
     assert req.state.audit_params == {"params": {"a": 1}, "fetch_mode": "page"}
+
+
+def test_procedure_execute_records_type_and_params(monkeypatch):
+    import app.api.v1.procedures as procedures_api
+    import app.services.procedure_service as ps
+    from app.schemas.query import ProcedureRequest
+
+    monkeypatch.setattr(procedures_api, "PermissionChecker", lambda *a, **k: (lambda user: None))
+    monkeypatch.setattr(ps, "execute_procedure", lambda **k: {"result": None, "out_params": {}})
+
+    req = _Req()
+    payload = ProcedureRequest(name="PKG.REBUILD", params={"day": "2026-07-30"}, out_params=["rc"])
+    procedures_api.execute(req, payload, db="dw1", current_user=object())
+
+    assert req.state.audit_action_type == "procedure"
+    assert req.state.audit_action == "PKG.REBUILD"
+    assert req.state.audit_params == {
+        "params": {"day": "2026-07-30"}, "out_params": ["rc"], "is_function": False,
+    }
+
+
+def test_write_execute_records_table_and_affected_rows(monkeypatch):
+    import app.api.v1.writes as writes_api
+    from app.schemas.query import WriteRequest
+
+    monkeypatch.setattr(writes_api, "PermissionChecker", lambda *a, **k: (lambda user: None))
+    monkeypatch.setattr(writes_api, "execute_write", lambda **k: 3)
+
+    req = _Req()
+    payload = WriteRequest(operation="insert", table="ORDERS", data=[{"id": 1}])
+    writes_api.execute(req, payload, db="dw1", current_user=object())
+
+    assert req.state.audit_action_type == "write"
+    assert req.state.audit_action == "ORDERS"
+    assert req.state.audit_params == {
+        "operation": "insert", "data": [{"id": 1}], "where": None, "async_mode": False,
+    }
+    assert req.state.audit_result_rows == 3
+
+
+def test_batch_write_records_operations_and_total_affected(monkeypatch):
+    import app.api.v1.writes as writes_api
+    from app.schemas.query import BatchOperation, BatchWriteRequest
+
+    monkeypatch.setattr(writes_api, "PermissionChecker", lambda *a, **k: (lambda user: None))
+    monkeypatch.setattr(writes_api, "execute_batch_write", lambda **k: {
+        "total_affected": 5, "operation_count": 2, "committed": True, "results": [],
+    })
+
+    req = _Req()
+    payload = BatchWriteRequest(table="ORDERS", operations=[
+        BatchOperation(operation="insert", data=[{"id": 1}]),
+        BatchOperation(operation="delete", where={"id": 2}),
+    ])
+    writes_api.batch_execute(req, payload, db="dw1", current_user=object())
+
+    assert req.state.audit_action_type == "write"
+    assert req.state.audit_action == "ORDERS"
+    assert req.state.audit_params["async_mode"] is False
+    assert len(req.state.audit_params["operations"]) == 2
+    assert req.state.audit_result_rows == 5

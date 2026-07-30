@@ -4,9 +4,10 @@ Write operations require a ``{db}`` path parameter.
 Task status lookup is database-independent (Celery task ID is global).
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.v1.databases import get_db_alias
+from app.middleware.audit import record_audit
 from app.models.user import User
 from app.schemas.query import (
     BatchWriteRequest,
@@ -43,35 +44,41 @@ def get_task_status(task_id: str, _current_user: User = Depends(get_current_user
 
 @router.post("/{db}/writes/execute", response_model=WriteResponse)
 def execute(
-    request: WriteRequest,
+    request: Request,
+    payload: WriteRequest,
     db: str = Depends(get_db_alias),
     current_user: User = Depends(get_current_user),
 ):
     """Execute a write operation (sync or async) against the specified database."""
-    resource = f"table:{request.table}"
+    record_audit(request, "write", payload.table, params={
+        "operation": payload.operation, "data": payload.data,
+        "where": payload.where, "async_mode": payload.async_mode,
+    })
+
+    resource = f"table:{payload.table}"
     checker = PermissionChecker(resource, "write")
     checker(current_user)
 
-    if request.async_mode:
+    if payload.async_mode:
         task = async_write.delay(
-            operation=request.operation,
-            table=request.table,
-            data=request.data,
-            where=request.where,
+            operation=payload.operation,
+            table=payload.table,
+            data=payload.data,
+            where=payload.where,
             db_alias=db,
         )
         return WriteResponse(
-            operation=request.operation,
+            operation=payload.operation,
             task_id=task.id,
             message="Task enqueued for async processing",
         )
 
     try:
         affected = execute_write(
-            operation=request.operation,
-            table=request.table,
-            data=request.data,
-            where=request.where,
+            operation=payload.operation,
+            table=payload.table,
+            data=payload.data,
+            where=payload.where,
             db_alias=db,
         )
     except ValueError as e:
@@ -79,16 +86,19 @@ def execute(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Write operation error: {e}")
 
+    record_audit(request, result_rows=affected)
+
     return WriteResponse(
-        operation=request.operation,
+        operation=payload.operation,
         affected_rows=affected,
-        message=f"{request.operation.upper()} completed successfully",
+        message=f"{payload.operation.upper()} completed successfully",
     )
 
 
 @router.post("/{db}/writes/batch", response_model=BatchWriteResponse)
 def batch_execute(
-    request: BatchWriteRequest,
+    request: Request,
+    payload: BatchWriteRequest,
     db: str = Depends(get_db_alias),
     current_user: User = Depends(get_current_user),
 ):
@@ -97,24 +107,25 @@ def batch_execute(
     All operations target the same table on the specified database.
     If ANY operation fails, the entire transaction is **rolled back**.
     """
-    resource = f"table:{request.table}"
+    resource = f"table:{payload.table}"
     checker = PermissionChecker(resource, "write")
     checker(current_user)
 
-    ops = [op.model_dump() for op in request.operations]
+    ops = [op.model_dump() for op in payload.operations]
+    record_audit(request, "write", payload.table, params={"operations": ops, "async_mode": payload.async_mode})
 
-    if request.async_mode:
+    if payload.async_mode:
         from app.tasks.write_tasks import async_batch_write
 
-        task = async_batch_write.delay(table=request.table, operations=ops, db_alias=db)
+        task = async_batch_write.delay(table=payload.table, operations=ops, db_alias=db)
         return BatchWriteResponse(
-            table=request.table,
+            table=payload.table,
             task_id=task.id,
             message="Batch transaction enqueued for async processing",
         )
 
     try:
-        result = execute_batch_write(table=request.table, operations=ops, db_alias=db)
+        result = execute_batch_write(table=payload.table, operations=ops, db_alias=db)
     except BatchWriteError as e:
         raise HTTPException(status_code=400, detail={
             "message": str(e),
@@ -127,8 +138,10 @@ def batch_execute(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Batch write error: {e}")
 
+    record_audit(request, result_rows=result["total_affected"])
+
     return BatchWriteResponse(
-        table=request.table,
+        table=payload.table,
         total_affected=result["total_affected"],
         operation_count=result["operation_count"],
         committed=result["committed"],
