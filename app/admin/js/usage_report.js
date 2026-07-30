@@ -253,3 +253,140 @@ async function urLoadStats() {
   if (prev) prev.addEventListener('click', () => { urState.page -= 1; urLoadStats(); });
   if (next) next.addEventListener('click', () => { urState.page += 1; urLoadStats(); });
 }
+
+/* ── Detail view ─────────────────────────────────────────────────────── */
+// scope narrows the statistics filters to one group's values. `day` pins the
+// range to a single date so a "Day" group drills into just that day.
+const urDetailState = { scope: {}, page: 1, pageSize: 25 };
+
+async function renderUsageDetail(scope) {
+  urDetailState.scope = scope || {};
+  urDetailState.page = 1;
+  const area = enterUsageView('API Usage Detail');
+  area.innerHTML = `
+    <div class="card">
+      <div class="card-body">
+        <button class="btn btn-sm btn-outline" id="urBack">&lsaquo; Back to statistics</button>
+        <span style="margin-left:12px">${urScopeChips()}</span>
+      </div>
+    </div>
+    <div id="urDetailResults"><div style="text-align:center;padding:40px"><div class="spinner"></div></div></div>`;
+  document.getElementById('urBack').addEventListener('click', renderUsageReport);
+  await urLoadDetail();
+}
+
+function urScopeChips() {
+  const s = urDetailState.scope;
+  const chips = [
+    ['Date', s.day || `${urState.dateFrom} ~ ${urState.dateTo}`],
+    ['User', s.principal || urState.principal || 'All'],
+    ['DW', s.dbAlias || urState.dbAlias || 'All'],
+    ['API', s.action || urState.action || 'All'],
+    ['Type', urState.actionTypes.join(', ') || 'All'],
+  ];
+  return chips.map(([label, value]) => `<span class="tag">${esc(label)}: ${esc(value)}</span>`).join(' ');
+}
+
+function urDetailQueryString() {
+  const s = urDetailState.scope;
+  const params = new URLSearchParams(urQueryString({
+    page: urDetailState.page, page_size: urDetailState.pageSize,
+  }));
+  if (s.day) { params.set('date_from', s.day); params.set('date_to', s.day); }
+  if (s.principal) params.set('principal', s.principal);
+  if (s.dbAlias) params.set('db_alias', s.dbAlias);
+  if (s.action) params.set('action', s.action);
+  return params.toString();
+}
+
+async function urLoadDetail() {
+  const results = document.getElementById('urDetailResults');
+  results.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
+  let data;
+  try {
+    data = await api('GET', `/audit/logs?${urDetailQueryString()}`);
+  } catch (err) {
+    results.innerHTML = `<div class="card"><div class="card-body"><p>Error: ${esc(err.message)}</p></div></div>`;
+    return;
+  }
+
+  const pages = Math.max(1, Math.ceil(data.total / urDetailState.pageSize));
+  results.innerHTML = `
+    <div class="card">
+      <div class="card-header"><h2>Detail — ${data.total} request(s)</h2></div>
+      <div class="card-body no-pad">
+        <table class="data-table"><thead><tr>
+          <th>Time</th><th>User</th><th>Source IP</th><th>DW</th><th>Type</th>
+          <th>API</th><th>Status</th><th>Duration</th><th>Rows</th><th></th>
+        </tr></thead>
+        <tbody>${data.items.length === 0
+          ? '<tr><td colspan="10">No requests match these filters.</td></tr>'
+          : data.items.map(item => urDetailRows(item)).join('')}</tbody></table>
+      </div>
+      <div class="card-body">
+        <span class="text-sm">Page ${data.page} / ${pages}</span>
+        <button class="btn btn-sm btn-outline" id="urdPrev" ${data.page <= 1 ? 'disabled' : ''}>Prev</button>
+        <button class="btn btn-sm btn-outline" id="urdNext" ${data.page >= pages ? 'disabled' : ''}>Next</button>
+      </div>
+    </div>`;
+
+  window._urLogs = {};
+  data.items.forEach(item => { window._urLogs[item.id] = item; });
+  results.querySelectorAll('.ur-expand').forEach(b =>
+    b.addEventListener('click', () => urToggleParams(Number(b.dataset.id))));
+  const prev = document.getElementById('urdPrev');
+  const next = document.getElementById('urdNext');
+  if (prev) prev.addEventListener('click', () => { urDetailState.page -= 1; urLoadDetail(); });
+  if (next) next.addEventListener('click', () => { urDetailState.page += 1; urLoadDetail(); });
+}
+
+function urDetailRows(item) {
+  const failed = item.status_code >= 400;
+  return `
+    <tr>
+      <td class="text-sm">${esc((item.ts || '').replace('T', ' ').slice(0, 19))}</td>
+      <td>${esc(item.principal)}${item.api_key_name ? ` <span class="tag">${esc(item.api_key_name)}</span>` : ''}</td>
+      <td class="text-sm">${esc(item.client_ip)}</td>
+      <td>${esc(item.db_alias || '—')}</td>
+      <td><span class="tag">${esc(item.action_type || '—')}</span></td>
+      <td><strong>${esc(item.action || item.path)}</strong></td>
+      <td${failed ? ' style="color:var(--danger)"' : ''}>${esc(item.status_code)}</td>
+      <td>${esc(item.duration_ms)} ms</td>
+      <td>${esc(item.result_rows == null ? '—' : item.result_rows)}</td>
+      <td><button class="btn btn-sm btn-outline ur-expand" data-id="${item.id}">&#9662;</button></td>
+    </tr>
+    <tr id="urParams${item.id}" class="hidden"><td colspan="10"></td></tr>`;
+}
+
+// Params for oversized payloads are not in the list response (the API omits
+// them past AUDIT_PARAMS_INLINE_LIMIT), so fetch that row on demand.
+async function urToggleParams(id) {
+  const row = document.getElementById(`urParams${id}`);
+  if (!row) return;
+  if (!row.classList.contains('hidden')) { row.classList.add('hidden'); return; }
+  row.classList.remove('hidden');
+  const cell = row.querySelector('td');
+  let item = window._urLogs[id];
+  if (item.params_omitted) {
+    cell.innerHTML = '<div class="spinner"></div>';
+    try {
+      item = await api('GET', `/audit/logs/${id}`);
+      window._urLogs[id] = item;
+    } catch (err) {
+      cell.innerHTML = `<p>Error: ${esc(err.message)}</p>`;
+      return;
+    }
+  }
+  if (item.params == null) {
+    cell.innerHTML = '<p class="text-sm">No parameters recorded for this request.</p>';
+    return;
+  }
+  const json = JSON.stringify(item.params, null, 2);
+  registerCopyPayload(`urParams-${id}`, json);
+  cell.innerHTML = `
+    <div class="qc-code-toolbar" style="margin-bottom:4px">
+      <span class="text-sm">Request parameters</span>
+      <button class="btn btn-outline btn-sm" onclick="copyPayload('urParams-${id}','Params JSON')">&#128203; Copy JSON</button>
+    </div>
+    <pre>${syntaxHighlight(json)}</pre>`;
+}
