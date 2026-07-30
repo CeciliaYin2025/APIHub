@@ -4,6 +4,7 @@ Audit writes are best-effort: any failure is logged and swallowed so it can
 never affect the response.
 """
 
+import json
 import logging
 import time
 
@@ -32,6 +33,45 @@ def _should_skip(path: str) -> bool:
     return any(path.endswith(s) for s in _SKIP_SUFFIXES)
 
 
+def record_audit(request: Request, action_type: str | None = None, action: str | None = None,
+                 params=None, result_rows: int | None = None) -> None:
+    """Stash usage-report detail on request.state for AuditMiddleware.
+
+    The middleware runs after call_next, by which point the request body is
+    already consumed — routers are the only place the parsed payload is
+    available, so they hand it over here (the same pattern the pre-existing
+    audit_action / audit_db_alias assignments use).
+
+    Safe to call more than once per request: only non-None arguments are
+    applied, so a router can record the action and params up front and add
+    result_rows once the response has been built.
+    """
+    if action_type is not None:
+        request.state.audit_action_type = action_type
+    if action is not None:
+        request.state.audit_action = action
+    if params is not None:
+        request.state.audit_params = params
+    if result_rows is not None:
+        request.state.audit_result_rows = result_rows
+
+
+def _safe_params(value):
+    """Render recorded params as something JSONB can store.
+
+    Audit writes are best-effort and must never surface, so a payload json
+    cannot encode degrades to its repr rather than raising out of
+    build_audit_row.
+    """
+    if value is None:
+        return None
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return {"_unserializable": repr(value)}
+    return value
+
+
 def build_audit_row(request: Request, response: Response, duration_ms: int) -> dict:
     principal = getattr(request.state, "principal", None)
     if principal is None:
@@ -51,6 +91,9 @@ def build_audit_row(request: Request, response: Response, duration_ms: int) -> d
         "path": request.url.path,
         "db_alias": getattr(request.state, "audit_db_alias", None),
         "action": getattr(request.state, "audit_action", None),
+        "action_type": getattr(request.state, "audit_action_type", None),
+        "params": _safe_params(getattr(request.state, "audit_params", None)),
+        "result_rows": getattr(request.state, "audit_result_rows", None),
         "status_code": response.status_code,
         "duration_ms": duration_ms,
     }

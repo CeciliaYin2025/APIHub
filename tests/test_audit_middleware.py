@@ -141,3 +141,58 @@ def test_should_skip_skips_admin_spa():
 def test_should_skip_skips_health_and_token():
     assert _should_skip("/api/v1/health") is True
     assert _should_skip("/api/v1/auth/token") is True
+
+
+def test_build_audit_row_includes_report_fields():
+    req = _Req()
+    req.state = type("S", (), {
+        "principal": None,
+        "audit_action_type": "query",
+        "audit_action": "get_orders",
+        "audit_params": {"params": {"dept": "IT"}, "fetch_mode": "page"},
+        "audit_result_rows": 12,
+    })()
+    row = build_audit_row(req, _Resp(), 5)
+    assert row["action_type"] == "query"
+    assert row["params"] == {"params": {"dept": "IT"}, "fetch_mode": "page"}
+    assert row["result_rows"] == 12
+
+
+def test_build_audit_row_report_fields_default_to_none():
+    row = build_audit_row(_Req(), _Resp(), 1)
+    assert row["action_type"] is None
+    assert row["params"] is None
+    assert row["result_rows"] is None
+
+
+def test_unserializable_params_degrade_instead_of_raising():
+    # A payload json cannot encode must not take the request down with it.
+    class _Weird:
+        def __repr__(self):
+            return "<weird>"
+
+    req = _Req()
+    req.state = type("S", (), {"principal": None, "audit_params": {"blob": _Weird()}})()
+    row = build_audit_row(req, _Resp(), 1)
+    assert row["params"] == {"_unserializable": "{'blob': <weird>}"}
+
+
+def test_record_audit_only_applies_non_none_arguments():
+    # Routers call record_audit twice: once up front, once after the response
+    # is built to add result_rows. The second call must not wipe the first.
+    req = _Req()
+    req.state = type("S", (), {"principal": None})()
+    au.record_audit(req, "write", "ORDERS", params={"operation": "insert"})
+    au.record_audit(req, result_rows=3)
+    assert req.state.audit_action_type == "write"
+    assert req.state.audit_action == "ORDERS"
+    assert req.state.audit_params == {"operation": "insert"}
+    assert req.state.audit_result_rows == 3
+
+
+def test_record_audit_records_zero_result_rows():
+    req = _Req()
+    req.state = type("S", (), {"principal": None})()
+    au.record_audit(req, "query", "get_orders")
+    au.record_audit(req, result_rows=0)
+    assert req.state.audit_result_rows == 0
