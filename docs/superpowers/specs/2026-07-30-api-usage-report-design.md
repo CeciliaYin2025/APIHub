@@ -169,6 +169,7 @@ def record_audit(request, action_type, action=None, params=None, result_rows=Non
 **`renderUsageReport()`** — 統計頁
 
 - 篩選列：日期區間、User、DW、API 下拉（選項來自 `/audit/filters`）
+- 「類型」勾選：`query` / `procedure` / `write` / `definition` / `report`，預設勾選前三者（對應 API 的 `action_type` 預設值）。沒有這組勾選，UI 就看不到管理操作，而 API 已支援該參數
 - 「分組依據」勾選：user / DW / API / 日
 - 統計表格：欄位標題可點擊排序，底部分頁，最上方一列顯示 `totals`
 - 每列尾端「明細」按鈕 → 帶該列的維度值進入明細視圖
