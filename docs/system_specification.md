@@ -1212,6 +1212,76 @@ Authorization: Bearer <token>
 | 簡單名稱 | `EMPLOYEES` | 使用目前連線使用者的 Schema |
 | Schema 限定 | `HR.EMPLOYEES` | 指定 Schema（Owner） |
 
+### 5.8 API 使用統計端點 (`/api/v1/audit`)
+
+回答「哪些使用者呼叫了哪些 API、打在哪個資料來源、幾次、多快」以及「該次查詢實際傳了什麼參數」。資料來源為 `api_hub_audit_logs`（§6.1.7）。
+
+**全部端點皆為 superuser only**（`Depends(get_current_active_superuser)`，非 superuser 回 `403`）—— 報表會揭露所有呼叫者的請求參數。
+
+這些端點**不在 `/{db}/` 底下**：報表要跨資料來源比較，`db_alias` 是篩選條件而非路由段。
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| `GET` | `/audit/usage` | 統計，依指定維度分組 |
+| `GET` | `/audit/logs` | 統計背後的個別請求，新到舊 |
+| `GET` | `/audit/logs/{log_id}` | 單筆，`params` 一律完整回傳 |
+| `GET` | `/audit/filters` | 指定期間內出現過的 distinct 使用者／資料來源／API 名稱，供 UI 下拉選單 |
+
+#### 5.8.1 `GET /audit/usage`
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `date_from` / `date_to` | 近 30 天 | 含端點；`date_to` 涵蓋當日整天 |
+| `principal` | 全部 | 使用者帳號 |
+| `db_alias` | 全部 | 資料來源別名 |
+| `action` | 全部 | API 名稱 |
+| `action_type` | `query,procedure,write` | 逗號分隔；預設排除 `definition` 與 `report`，空字串代表完全不過濾 |
+| `group_by` | `user,db,api` | 逗號分隔，可組合 `user`/`db`/`api`/`day`；空字串則 `items` 為空、只回 `totals` |
+| `sort` | `-calls` | `calls`/`success`/`failed`/`avg_duration_ms`/`max_duration_ms`/`total_rows`/`last_used_at`，前綴 `-` 為遞減 |
+| `page` / `page_size` | `1` / `50` | `page_size` 上限 **200** |
+
+**度量定義：** `success` = `status_code < 400`，`failed` = `status_code >= 400`，`calls` = 兩者之和；`avg_duration_ms` 四捨五入為整數；`total_rows` 為 `result_rows` 之和（`NULL` 視為 0）；`last_used_at` 為該組 `ts` 最大值。未被 `group_by` 選中的維度在 `items` 中為 `null`。
+
+**回應範例：**
+
+```json
+{
+  "total_groups": 128,
+  "page": 1,
+  "page_size": 50,
+  "totals": { "calls": 4210, "success": 4180, "failed": 30,
+              "avg_duration_ms": 168, "max_duration_ms": 4120,
+              "total_rows": 918233, "last_used_at": "2026-07-30T10:12:33" },
+  "items": [
+    { "principal": "alice", "db_alias": "DW1", "action": "get_orders", "day": null,
+      "calls": 320, "success": 318, "failed": 2,
+      "avg_duration_ms": 145, "max_duration_ms": 980,
+      "total_rows": 74210, "last_used_at": "2026-07-30T10:12:33" }
+  ]
+}
+```
+
+統計以**即時 `GROUP BY`** 計算，沒有預聚合表或 materialized view —— 因為分組維度由呼叫者自由勾選，預聚合會限制彈性；效能靠 §6.1.7 的四個複合索引與保留期限所界定的表大小。
+
+#### 5.8.2 `GET /audit/logs`
+
+篩選參數同 §5.8.1（drill-down 時帶入該組的維度值），另加 `status_code` 與 `min_duration_ms`。`page` / `page_size` 預設 `1` / `25`，`page_size` 上限 **100**。
+
+每筆回傳 `id`、`ts`、`principal`、`principal_type`、`api_key_name`、`client_ip`、`method`、`path`、`db_alias`、`action_type`、`action`、`status_code`、`duration_ms`、`result_rows`、`params`。
+
+**params 大小處理：** `params` 不截斷儲存，`writes/batch` 的 payload 可能達數 MB，一次 100 列會使回應爆量。因此僅在序列化後小於 `AUDIT_PARAMS_INLINE_LIMIT`（預設 4096 bytes）時內嵌；否則回 `params: null`、`params_omitted: true`、`params_bytes: <size>`，由前端展開該列時改呼叫 `GET /audit/logs/{log_id}` 取回完整內容。此上限只保護 API 回應大小，不減少儲存量。
+
+#### 5.8.3 錯誤處理
+
+| 情況 | 回應 |
+|------|------|
+| `date_from > date_to`、未知的 `group_by` / `sort` / `action_type` 值 | `400`，`detail` 附可用值 |
+| 非 superuser | `403` |
+| `GET /audit/logs/{log_id}` 查無資料 | `404` |
+| 條件查無資料 | `200`，空 `items` 與 `total_groups: 0`（不是 404） |
+
+時間基準沿用 `api_hub_audit_logs.ts` 的無時區本地時間，按日分組使用 DB 端 `date()` 截斷，不做時區轉換。
+
 ---
 
 ## 6. 資料庫設計
@@ -1292,6 +1362,48 @@ Authorization: Bearer <token>
   }
 }
 ```
+
+#### 6.1.7 稽核軌跡表 `api_hub_audit_logs`
+
+由 `AuditMiddleware` 每個 API request 寫入一列（best-effort，寫入失敗只記 log、不影響回應）。同時是 API 使用統計報表（§5.8）的唯一資料來源。
+
+| 欄位 | 型態 | 約束 | 說明 |
+|------|------|------|------|
+| `id` | BIGINT | PK, AUTO | 主鍵 |
+| `ts` | DATETIME | SERVER DEFAULT NOW, INDEX | 請求時間（平台 PostgreSQL 本地時間，無時區） |
+| `principal_type` | VARCHAR(20) | | `user` / `api_key` / `anonymous` |
+| `principal` | VARCHAR(100) | INDEX | 呼叫者帳號 |
+| `api_key_id` | INTEGER | NULL | 使用的 API key ID |
+| `api_key_name` | VARCHAR(100) | NULL | 使用的 API key 名稱 |
+| `client_ip` | VARCHAR(64) | | 來源 IP（依 `TRUSTED_PROXIES` 還原） |
+| `method` | VARCHAR(10) | | HTTP method |
+| `path` | VARCHAR(500) | | 請求路徑 |
+| `db_alias` | VARCHAR(64) | NULL | 目標資料來源別名 |
+| `action` | VARCHAR(200) | NULL | 操作對象名稱（query_name / procedure 名 / 表名 / 定義名） |
+| `status_code` | INTEGER | | HTTP 狀態碼 |
+| `duration_ms` | INTEGER | | 整條 middleware 鏈的耗時 |
+| `action_type` | VARCHAR(20) | NULL | 操作分類，見下表 |
+| `params` | JSONB | NULL | 該次請求的參數，**不遮罩、不截斷** |
+| `result_rows` | INTEGER | NULL | 回傳或影響的筆數 |
+
+**複合索引**（對應報表的篩選維度）：`ix_audit_principal_ts`、`ix_audit_db_alias_ts`、`ix_audit_action_ts`、`ix_audit_action_type_ts`，皆為 `(維度, ts)`。
+
+**`action_type` 分類與各端點寫入的內容：**
+
+| `action_type` | 端點 | `action` | `params` | `result_rows` |
+|---|---|---|---|---|
+| `query` | `POST /{db}/queries/execute` | `query_name` | `{params, fetch_mode}` | 回傳筆數；`count` 模式取 `total` |
+| `procedure` | `POST /{db}/procedures/execute`、`/execute-async` | 程序名 | `{params, out_params, is_function}` | NULL |
+| `write` | `POST /{db}/writes/execute` | 表名 | `{operation, data, where, async_mode}` | `affected_rows` |
+| `write` | `POST /{db}/writes/batch` | 表名 | `{operations, async_mode}` | `total_affected` |
+| `definition` | `POST`/`PUT`/`DELETE /{db}/queries/definitions[/{name}]` | 定義名 | 請求 body（DELETE 為 NULL） | NULL |
+| `report` | `GET /api/v1/audit/*` | `usage`/`logs`/`log_detail`/`filters` | NULL | NULL |
+
+`AuditMiddleware` 在 `call_next` 之後才組 row，讀不到已被消費的 request body，所以上表的資料是由各 router 呼叫 `app/middleware/audit.py::record_audit()` 放進 `request.state`，middleware 只負責搬進 audit row。失敗的請求（4xx/5xx）同樣留下含 `params` 的列。
+
+**保留期限：** 沒有任何自動清理機制。`params` 原樣儲存（`writes/batch` 的 payload 可能達數 MB），表的大小完全由 `AUDIT_RETENTION_DAYS` 加上手動／排程執行 `python -m scripts.purge_audit_logs [--days N] [--dry-run]` 決定；該指令分批 `DELETE`（預設每批 10000 列）以避免長交易鎖表。
+
+> **安全性：** `params` 不遮罩，呼叫方若把密碼、token 之類的值當作 bind 參數傳入會原樣落地。此表僅 superuser 可讀，但資料庫備份會一併帶走。
 
 ### 6.2 ER Diagram
 
@@ -1757,6 +1869,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 | **Write Console** | — | 執行 INSERT / UPDATE / DELETE（支援非同步佇列模式） |
 | **Data Maintenance** | — | 資料維護介面：讀取表結構 → 動態產生表單 → 支援單筆/批次交易寫入 |
 | **Async Tasks** | — | 查詢 Celery 任務狀態、連結至 Flower 監控面板 |
+| **API Usage Report** | — | API 使用統計（依日期區間／使用者／資料來源／API／類型篩選，可勾選 user／DW／API／日為分組依據，度量欄位可點擊排序），並可 drill-down 至個別請求明細，單筆展開檢視該次的請求參數 JSON 並複製。**僅 superuser**，非 superuser 連側邊欄項目都不顯示 |
 
 ### 10.3 UI 元件
 
@@ -1810,8 +1923,11 @@ app/admin/
 ├── css/
 │   └── style.css         # 完整樣式（佈局、元件、響應式）
 └── js/
-    └── app.js            # 應用邏輯（路由、API 呼叫、頁面渲染）
+    ├── app.js            # 應用邏輯（路由、共用 helper、多數頁面渲染）
+    └── usage_report.js   # API Usage Report 專屬（在 app.js 之後載入，沿用其全域 helper）
 ```
+
+`/admin/js` 是整個目錄掛載為 StaticFiles，新增 JS 檔只需在 `index.html` 加 `<script>` 標籤，不必改 `main.py`。
 
 ### 10.7 路由掛載
 
@@ -2075,6 +2191,8 @@ curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
 | `DATABASE_DEFINITIONS_DIR` | `app/database_definitions` | 資料庫定義檔目錄路徑 |
 | `DB_{ALIAS}_PASSWORD` | — | 覆蓋指定資料庫別名的密碼（如 `DB_HR_DB_PASSWORD`） |
 | `DB_HEALTH_CHECK_TIMEOUT` | `5.0` | `GET /api/v1/databases/status` 的**整體**逾時秒數 —— 所有 alias 共用此預算，非每個 alias 各算（見 §4.11） |
+| `AUDIT_RETENTION_DAYS` | `365` | `python -m scripts.purge_audit_logs` 的預設保留天數（見 §6.1.7）。無自動清理，需自行排程 |
+| `AUDIT_PARAMS_INLINE_LIMIT` | `4096` | `GET /audit/logs` 內嵌 `params` 的位元組上限，超過則改由 `GET /audit/logs/{id}` 單筆取回（見 §5.8.2） |
 
 ---
 
@@ -2125,6 +2243,7 @@ Oracle-api-hub/
 │   │   └── v1/
 │   │       ├── __init__.py
 │   │       ├── auth.py                  # 認證端點（登入 / 使用者 / 角色 / 權限 CRUD）
+│   │       ├── audit.py                 # API 使用統計端點（/audit/usage / logs / filters，superuser only）
 │   │       ├── health.py                # 健康檢查端點
 │   │       ├── databases.py             # 資料庫列表端點 + get_db_alias 依賴
 │   │       ├── queries.py               # 查詢端點（CRUD / 匯出 / 匯入 / 重載 / /{db}/執行）
@@ -2136,7 +2255,8 @@ Oracle-api-hub/
 │   │   ├── css/
 │   │   │   └── style.css                # UI 樣式
 │   │   └── js/
-│   │       └── app.js                   # 前端邏輯（路由、API、頁面渲染）
+│   │       ├── app.js                   # 前端邏輯（路由、API、頁面渲染）
+│   │       └── usage_report.js          # API Usage Report 頁面（統計 + 明細）
 │   ├── database_definitions/             # 多資料庫連線定義
 │   │   └── databases.yaml.example       # 資料庫定義範例
 │   └── sql_definitions/                 # SQL 查詢定義 YAML 備援檔（匯入至 DB 用）
@@ -2145,7 +2265,8 @@ Oracle-api-hub/
 │       └── inventory_view.yaml          # 庫存 View 查詢範例
 ├── scripts/
 │   ├── __init__.py
-│   └── init_db.py                       # 資料庫初始化腳本（建表 + 種子資料）
+│   ├── init_db.py                       # 資料庫初始化腳本（建表 + 欄位/索引補齊 + 種子資料）
+│   └── purge_audit_logs.py              # 稽核軌跡保留期限清理（分批 DELETE）
 ├── tests/
 │   ├── __init__.py
 │   ├── test_security.py                 # 安全模組測試

@@ -87,9 +87,20 @@ Middleware is registered in `app/main.py` with a deliberate order (`add_middlewa
 
 - **`AuthContextMiddleware`** resolves the caller **once per request** into `request.state.principal` (`app/services/auth_service.py::resolve_principal`). A `Principal` is either `type="user"` (JWT) or `type="api_key"` (service account), both carrying a `User` for RBAC. Accepted credentials: `X-API-Key: ahk_...`, `Authorization: Bearer ahk_...`, or `Authorization: Bearer <JWT>`. A present-but-invalid API key raises `ApiKeyError` and short-circuits with JSON; a missing/invalid JWT leaves `principal=None` for the dependency layer to reject.
 - **`RateLimiterMiddleware`** is an in-memory sliding window keyed per principal, with a per-API-key `rate_limit` override. It is **process-local** — it does not coordinate across API instances or workers.
-- **`AuditMiddleware`** writes one structured log line plus one `api_hub_audit_logs` row per request, best-effort (failures are swallowed, never affecting the response). Client IP honours `TRUSTED_PROXIES`.
+- **`AuditMiddleware`** writes one structured log line plus one `api_hub_audit_logs` row per request, best-effort (failures are swallowed, never affecting the response). Client IP honours `TRUSTED_PROXIES`. It runs *after* `call_next`, so it cannot read the consumed request body — routers hand over the details by calling `app/middleware/audit.py::record_audit(request, action_type, action, params, result_rows)`, which stashes them on `request.state`. When you add an endpoint worth reporting on, call `record_audit` there; nothing else picks it up automatically.
 
 Routers still enforce authorization per endpoint via `PermissionChecker(resource, action)` — e.g. `query:<name>`, `procedure:<name>`, `table:<table>`.
+
+### API Usage Report
+
+`/api/v1/audit/*` (`app/api/v1/audit.py` + `app/services/audit_report_service.py`) reports on the audit trail: `usage` aggregates by any combination of user / db / api / day, `logs` lists the individual requests, `logs/{id}` returns one with full params, `filters` feeds the UI dropdowns. **Superuser only** — the report exposes every caller's request parameters. Statistics are a live `GROUP BY`, not a pre-aggregated table.
+
+Two things that are easy to get wrong here:
+
+- **`params` is stored unmasked and untruncated** — a deliberate decision, so do not add masking or truncation on the write path. Consequently nothing bounds table growth except `AUDIT_RETENTION_DAYS` plus `python -m scripts.purge_audit_logs`, which is manual/scheduled and not a Celery beat job. `AUDIT_PARAMS_INLINE_LIMIT` only caps API response size, never what is stored.
+- **`action_type`** (`query` / `procedure` / `write` / `definition` / `report`) is what separates data-access volume from admin operations; `usage` and `logs` default to `query,procedure,write`. A new endpoint without an `action_type` is invisible to the report.
+
+Aggregation depends on PostgreSQL-only constructs (`JSONB`, `COUNT(*) FILTER`, `date()`), and `pytest` has no live Postgres — so `tests/test_audit_report_service.py` covers parsing/validation and compiled-SQL shape, and the **numeric** correctness lives in `tests/e2e/usage-report.spec.js`.
 
 ### Admin UI
 

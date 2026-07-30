@@ -33,6 +33,9 @@ ruff format app/ tests/
 # Initialize DB tables and default admin user
 python -m scripts.init_db
 
+# Trim the audit trail (nothing does this automatically; schedule it)
+python -m scripts.purge_audit_logs [--days N] [--dry-run]
+
 # Docker
 docker-compose up -d
 docker-compose exec api python -m scripts.init_db
@@ -87,6 +90,17 @@ The query service (`app/services/query_service.py`) supports: `page` (dialect-aw
 ### SQL Definition System
 
 SQL definitions are stored in PostgreSQL (`api_hub_sql_definitions` table) as the primary source. At startup, `SqlRegistry` loads from DB; if the DB table is empty it falls back to YAML files in `app/sql_definitions/`. A one-time `POST /api/v1/queries/definitions/import-yaml` endpoint imports existing YAML definitions into the database. Full CRUD is available via API (`GET/POST/PUT/DELETE /api/v1/queries/definitions`) and the Admin UI. The in-memory registry is automatically refreshed after any CRUD operation.
+
+### Audit Trail & API Usage Report
+
+`AuditMiddleware` writes one `api_hub_audit_logs` row per request, best-effort (failures swallowed, never affecting the response). It runs *after* `call_next` and so cannot read the consumed request body — routers hand over the details by calling `app/middleware/audit.py::record_audit(request, action_type, action, params, result_rows)`, which stashes them on `request.state`. A new endpoint worth reporting on must call `record_audit` itself; nothing picks it up automatically.
+
+`/api/v1/audit/*` (`app/api/v1/audit.py` + `app/services/audit_report_service.py`) reports on that trail: `usage` aggregates by any combination of user / db / api / day, `logs` lists the individual requests, `logs/{id}` returns one with full params, `filters` feeds the UI dropdowns. **Superuser only** — the report exposes every caller's request parameters. Statistics are a live `GROUP BY`, not a pre-aggregated table.
+
+- **`params` is stored unmasked and untruncated** — a deliberate decision; do not add masking or truncation on the write path. Nothing bounds table growth except `AUDIT_RETENTION_DAYS` plus `python -m scripts.purge_audit_logs` (manual/scheduled, not a Celery beat job). `AUDIT_PARAMS_INLINE_LIMIT` only caps API response size, never what is stored.
+- **`action_type`** (`query` / `procedure` / `write` / `definition` / `report`) separates data-access volume from admin operations; `usage` and `logs` default to `query,procedure,write`.
+
+Aggregation depends on PostgreSQL-only constructs (`JSONB`, `COUNT(*) FILTER`, `date()`) and `pytest` has no live Postgres, so `tests/test_audit_report_service.py` covers parsing/validation and compiled-SQL shape while the **numeric** correctness lives in `tests/e2e/usage-report.spec.js`.
 
 ### Async Task Processing
 

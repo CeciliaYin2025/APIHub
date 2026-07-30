@@ -130,6 +130,22 @@ Drop YAML files into `app/database_definitions/` — each file is a list of data
 - The probe SQL comes from the dialect layer (`SELECT 1 FROM DUAL` on Oracle, `SELECT 1` elsewhere)
 - **Superuser only** — it opens real connections and returns raw driver error text. Other users see the dashboard normally, with the column showing `—`
 
+### 8. API Usage Report (`/api/v1/audit`)
+
+Answers "who called which API, on which data source, how often" and "what exactly did they query", from the per-request audit trail in `api_hub_audit_logs`.
+
+- `GET /audit/usage` — statistics with a free choice of grouping dimensions (`group_by=user,db,api,day`), filtered by date range / user / data source / API / `action_type`. Returns per-group `calls`, `success`, `failed`, `avg_duration_ms`, `max_duration_ms`, `total_rows`, `last_used_at` plus grand totals. `page_size` ≤ 200
+- `GET /audit/logs` — the individual requests behind any group, newest first, each carrying the **actual request parameters**. `page_size` ≤ 100
+- `GET /audit/logs/{id}` — one request with its parameters always inlined, however large
+- `GET /audit/filters` — distinct users / data sources / API names seen in a date range, for the UI's dropdowns
+- Admin UI: **API Usage Report** under Operations — statistics table with sortable metric columns, then drill-down to the detail list where each row expands to its parameter JSON with a Copy button
+- **Superuser only** — the report exposes every caller's request parameters
+- Statistics are computed with a live `GROUP BY` (no pre-aggregated table), backed by composite indexes on `(principal|db_alias|action|action_type, ts)`
+
+Requests are tagged with an `action_type` so data access can be told apart from admin operations: `query`, `procedure`, `write`, `definition` (SQL definition CRUD) and `report` (the report's own reads). `GET /audit/usage` and `/audit/logs` default to `query,procedure,write`.
+
+> **Security note:** request parameters are recorded **unmasked and untruncated** by design. Any value a caller passes as a bind parameter lands in `api_hub_audit_logs.params`, and database backups carry it. The table is readable only by superusers, but treat backups accordingly. Table growth is bounded by `AUDIT_RETENTION_DAYS` plus `python -m scripts.purge_audit_logs` — nothing prunes it automatically.
+
 ## System-to-System Integration
 
 Oracle API Hub 設計為給其他系統（ERP、HR、BI 等）透過 REST API 存取 Oracle 資料的中繼平台。以下說明外部系統如何整合，以及權限設置方式。
@@ -276,6 +292,18 @@ curl -X POST http://localhost:8000/api/v1/queries/execute \
   -d '{"query_name": "employees", "params": {"dept": "IT"}}'
 ```
 
+### Maintenance commands
+
+```bash
+# Re-run after upgrading — idempotent, also adds any new columns/indexes
+python -m scripts.init_db
+
+# Trim the audit trail. Nothing does this automatically; schedule it.
+python -m scripts.purge_audit_logs --dry-run          # report only
+python -m scripts.purge_audit_logs                    # uses AUDIT_RETENTION_DAYS
+python -m scripts.purge_audit_logs --days 90
+```
+
 ### Deploying to the ISAP platform gateway
 
 To run behind the shared ISAP nginx gateway at `/apihub/`, use the
@@ -365,6 +393,8 @@ Or use the **Export YAML** / **Upload YAML** buttons on the Admin UI SQL Definit
 | `CELERY_BROKER_URL` | Redis URL for Celery | `redis://localhost:6379/1` |
 | `RATE_LIMIT_PER_MINUTE` | Max requests per client per minute | `60` |
 | `DB_HEALTH_CHECK_TIMEOUT` | Total seconds for `GET /databases/status` — shared across all aliases, not per-alias | `5.0` |
+| `AUDIT_RETENTION_DAYS` | Default retention window for `python -m scripts.purge_audit_logs` | `365` |
+| `AUDIT_PARAMS_INLINE_LIMIT` | Bytes of serialized params inlined in `GET /audit/logs`; larger ones are omitted and fetched per row from `GET /audit/logs/{id}` | `4096` |
 
 ## Project Structure
 
