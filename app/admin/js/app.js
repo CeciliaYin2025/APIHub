@@ -36,6 +36,10 @@ async function showApp() {
   document.getElementById('loginPage').classList.add('hidden');
   document.getElementById('appLayout').classList.remove('hidden');
   document.getElementById('userBadge').textContent = currentUser?.username || '?';
+  // The report exposes every caller's request parameters, so it is superuser
+  // only. The backend enforces it; this just avoids showing a link that 403s.
+  const usageNav = document.getElementById('navUsageReport');
+  if (usageNav) usageNav.classList.toggle('hidden', !(currentUser && currentUser.is_superuser));
   await loadDatabases();
   navigateTo('dashboard');
 }
@@ -184,7 +188,7 @@ function navigateTo(page) {
     'sql-definitions': 'SQL Definitions',
     'query-console': 'Query Console', 'procedure-console': 'Procedure Console',
     'write-console': 'Write Console', 'data-maintenance': 'Data Maintenance',
-    tasks: 'Async Tasks',
+    tasks: 'Async Tasks', 'usage-report': 'API Usage Report',
   };
   document.getElementById('pageTitle').textContent = titles[page] || page;
   const renderers = {
@@ -193,7 +197,7 @@ function navigateTo(page) {
     'sql-definitions': renderSqlDefs,
     'query-console': renderQueryConsole, 'procedure-console': renderProcConsole,
     'write-console': renderWriteConsole, 'data-maintenance': renderDataMaintenance,
-    tasks: renderTasks,
+    tasks: renderTasks, 'usage-report': renderUsageReport,
   };
   (renderers[page] || renderDashboard)();
 }
