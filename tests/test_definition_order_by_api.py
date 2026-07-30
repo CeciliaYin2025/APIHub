@@ -39,6 +39,13 @@ def _admin():
     return User(username="admin", is_superuser=True, is_active=True)
 
 
+class _Req:
+    """Stands in for the FastAPI Request the endpoints audit against."""
+
+    def __init__(self):
+        self.state = type("S", (), {"principal": None})()
+
+
 def test_row_to_out_includes_order_by():
     row = SqlDefinitionModel(
         name="q",
@@ -55,7 +62,7 @@ def test_create_persists_order_by(monkeypatch):
     monkeypatch.setattr(queries.sql_registry, "reload_from_db", lambda: None)
     db = _DB(existing=None)
     body = SqlDefinitionCreate(name="q", sql="SELECT 1", order_by=[{"column": "a", "direction": "DESC"}])
-    queries.create_definition(body, db="default", current_user=_admin(), pgdb=db)
+    queries.create_definition(_Req(), body, db="default", current_user=_admin(), pgdb=db)
     assert db.added[0].order_by == [{"column": "a", "direction": "DESC"}]
 
 
@@ -63,5 +70,5 @@ def test_update_replaces_order_by(monkeypatch):
     monkeypatch.setattr(queries.sql_registry, "reload_from_db", lambda: None)
     row = SqlDefinitionModel(name="q", db_alias="default", sql="SELECT 1", permission="query:q", order_by=[])
     body = SqlDefinitionUpdate(order_by=[{"column": "b", "direction": "ASC"}])
-    queries.update_definition("q", body, db="default", current_user=_admin(), pgdb=_DB(existing=row))
+    queries.update_definition(_Req(), "q", body, db="default", current_user=_admin(), pgdb=_DB(existing=row))
     assert row.order_by == [{"column": "b", "direction": "ASC"}]

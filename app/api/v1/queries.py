@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.api.v1.databases import get_db_alias
 from app.core.config import settings
 from app.db.session import get_db
+from app.middleware.audit import record_audit
 from app.models.sql_definition import SqlDefinitionModel
 from app.models.user import User
 from app.schemas.query import QueryRequest, QueryResponse
@@ -254,6 +255,7 @@ async def import_yaml_file(
 
 @router.post("/{db}/queries/definitions", response_model=SqlDefinitionOut, status_code=201)
 def create_definition(
+    request: Request,
     body: SqlDefinitionCreate,
     db: str = Depends(get_db_alias),
     current_user: User = Depends(get_current_user),
@@ -261,6 +263,7 @@ def create_definition(
 ):
     """Create a new SQL definition for this database. Superuser only."""
     _require_superuser(current_user)
+    record_audit(request, "definition", body.name, params=body.model_dump(mode="json"))
 
     existing = (
         pgdb.query(SqlDefinitionModel)
@@ -312,6 +315,7 @@ def get_definition(
 
 @router.put("/{db}/queries/definitions/{name}", response_model=SqlDefinitionOut)
 def update_definition(
+    request: Request,
     name: str,
     body: SqlDefinitionUpdate,
     db: str = Depends(get_db_alias),
@@ -320,6 +324,7 @@ def update_definition(
 ):
     """Update an existing SQL definition. Superuser only."""
     _require_superuser(current_user)
+    record_audit(request, "definition", name, params=body.model_dump(mode="json", exclude_none=True))
 
     row = (
         pgdb.query(SqlDefinitionModel)
@@ -348,6 +353,7 @@ def update_definition(
 
 @router.delete("/{db}/queries/definitions/{name}")
 def delete_definition(
+    request: Request,
     name: str,
     db: str = Depends(get_db_alias),
     current_user: User = Depends(get_current_user),
@@ -355,6 +361,7 @@ def delete_definition(
 ):
     """Delete a SQL definition. Superuser only."""
     _require_superuser(current_user)
+    record_audit(request, "definition", name)
 
     row = (
         pgdb.query(SqlDefinitionModel)
@@ -390,7 +397,8 @@ def execute(
     - **one**: exactly one row (404 if none).
     - **count**: matching row count only (``total``), no data returned.
     """
-    request.state.audit_action = payload.query_name
+    record_audit(request, "query", payload.query_name,
+                 params={"params": payload.params, "fetch_mode": payload.fetch_mode})
     definition = sql_registry.get(payload.query_name, db_alias=db)
     if not definition:
         raise HTTPException(
@@ -417,6 +425,10 @@ def execute(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query execution error: {e}")
+
+    # count mode returns no rows, so the matching total is the meaningful
+    # volume figure for the report.
+    record_audit(request, result_rows=result["total"] if payload.fetch_mode == "count" else len(result["data"]))
 
     return QueryResponse(
         query_name=payload.query_name,
