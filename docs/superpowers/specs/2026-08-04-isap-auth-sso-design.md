@@ -130,11 +130,14 @@ apihub-app-register:
 
 ```
 ADMIN_SSO_ENABLED=false      # 關閉時登入頁不顯示 SSO 按鈕，兩個端點回 404
+APIHUB_PUBLIC_URL=           # 本服務對外位址，如 https://isap.sercomm.com/apihub
 ISAP_AUTH_PUBLIC_URL=        # 瀏覽器導向用，如 https://isap.sercomm.com/auth
 ISAP_AUTH_INTERNAL_URL=      # 後端換 token 用，如 http://isap-auth:9997/auth
 ISAP_APP_ID=apihub
 SSO_AUTOCREATE=false         # MCP_BRIDGE_AUTOCREATE 為相容別名
 ```
+
+`APIHUB_PUBLIC_URL` 是規劃階段補上的：送給 isap-auth 的 `redirect_uri` 必須是**絕對**位址（isap-auth 拿它跟 `registered_app.redirect_uris` 逐字比對），而 `ROOT_PATH` 只是 `/apihub` 這樣的路徑前綴，組不出絕對 URL。此值必須與 `ISAP_REDIRECT_URIS` 中登記的位址一致，否則 `/authorize` 會回 `Unknown app_id or redirect_uri not allowed`。導回 Admin UI 則仍用相對路徑（`{ROOT_PATH}/admin`），不受此設定影響。
 
 公開與內部 URL 刻意分開：瀏覽器必須走公開的 `/authorize`，後端的 `POST /token` 走 docker 內網，不繞 gateway。
 
