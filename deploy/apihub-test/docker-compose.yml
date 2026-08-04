@@ -69,6 +69,20 @@ services:
           exit 1
         fi
 
+  # ── one-shot: self-register this app with isap-auth (idempotent) ──────────
+  # Skips itself (exit 0) when .env.isap has no ISAP_REGISTRATION_TOKEN, so a
+  # deployment that does not use SSO still starts normally.
+  apihub-test-app-register:
+    image: oracle-api-hub:latest
+    container_name: apihub-test-app-register
+    restart: "no"
+    env_file: [.env, .env.isap]
+    networks: [gateway-net]
+    command: ["python", "-m", "scripts.register_isap_app"]
+    depends_on:
+      apihub-test-migrate:
+        condition: service_completed_successfully
+
   # ── long-running: FastAPI app ─────────────────────────────────────────────
   apihub-test-api:
     build:
@@ -80,6 +94,9 @@ services:
     environment:
       MCP_BRIDGE_SECRET: ${MCP_BRIDGE_SECRET:-}
       MCP_BRIDGE_AUTOCREATE: ${MCP_BRIDGE_AUTOCREATE:-false}
+      # Admin UI SSO via isap-auth. Off unless .env turns it on.
+      ADMIN_SSO_ENABLED: ${ADMIN_SSO_ENABLED:-false}
+      SSO_AUTOCREATE: ${SSO_AUTOCREATE:-false}
     networks: [gateway-net, db-net, redis-net]
     volumes:
       - ../../app/database_definitions:/app/app/database_definitions
@@ -89,6 +106,8 @@ services:
       apihub-test-migrate:
         condition: service_completed_successfully
       apihub-test-route-register:
+        condition: service_completed_successfully
+      apihub-test-app-register:
         condition: service_completed_successfully
 
   # ── long-running: Celery write-queue worker ───────────────────────────────

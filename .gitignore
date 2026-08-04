@@ -8,6 +8,10 @@ build/
 *.egg
 .env
 .env.mcp
+# isap-auth self-registration bootstrap token (deploy/*/.env.isap). It can
+# rewrite this app's registered redirect_uris, so a leak is an auth-code theft
+# vector — same handling as .env and .env.mcp.
+.env.isap
 .venv/
 venv/
 
