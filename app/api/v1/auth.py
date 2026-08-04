@@ -31,6 +31,7 @@ from app.services.api_key_service import (
     revoke_api_key,
 )
 from app.services.auth_service import authenticate_user, get_current_active_superuser, get_current_user
+from app.services.sso_service import resolve_sso_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -344,24 +345,7 @@ def sso_token_bridge(
     if not secrets.compare_digest(x_bridge_secret, settings.mcp_bridge_secret):
         raise HTTPException(status_code=403, detail="Invalid bridge secret")
 
-    user = db.query(User).filter(User.username == payload.username).first()
-    if user is None:
-        if not settings.mcp_bridge_autocreate:
-            raise HTTPException(status_code=403, detail="User not provisioned")
-        # User has no `email` column; SSO users get a valid-but-unguessable hash
-        # so password login stays a generic 401 (verify("") would raise instead).
-        user = User(
-            username=payload.username,
-            hashed_password=get_password_hash(secrets.token_urlsafe(32)),  # SSO users have no usable local password
-            is_active=True,
-            is_superuser=False,
-            is_service_account=False,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    if user.is_service_account or not user.is_active:
-        raise HTTPException(status_code=403, detail="Account not eligible for SSO bridge")
+    user = resolve_sso_user(db, payload.username, payload.email or "")
 
     token = create_access_token(data={"sub": user.username})
     return SsoTokenResponse(access_token=token)

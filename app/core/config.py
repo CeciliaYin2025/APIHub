@@ -77,6 +77,31 @@ class Settings(BaseSettings):
     # Auto-create a role-less local user on first SSO login via the bridge.
     mcp_bridge_autocreate: bool = False
 
+    # ── isap-auth SSO ────────────────────────────────────────────────────────
+    # Admin UI SSO login via isap-auth (legacy app-code flow). Off by default so
+    # deployments without isap-auth (bare uvicorn, root docker-compose) are
+    # unaffected: both /auth/sso/* endpoints 404 and the UI hides the button.
+    admin_sso_enabled: bool = False
+    # This service's own public address, e.g. https://isap.sercomm.com/apihub.
+    # The redirect_uri handed to isap-auth must be ABSOLUTE and must match a line
+    # in ISAP_REDIRECT_URIS exactly — root_path alone ("/apihub") cannot build it.
+    apihub_public_url: str = ""
+    # isap-auth base URLs. Public = browser-facing /authorize; internal = the
+    # docker-network POST /token, which never leaves the gateway network.
+    isap_auth_public_url: str = ""
+    isap_auth_internal_url: str = ""
+    isap_app_id: str = "apihub"
+    # Auto-create a role-less local user on first SSO login. Applies to BOTH the
+    # Admin UI callback and the MCP identity bridge; mcp_bridge_autocreate stays
+    # as a backward-compatible alias (see sso_service.autocreate_enabled).
+    sso_autocreate: bool = False
+
+    # Read only by scripts/register_isap_app.py — the api container is not given
+    # these, so the bootstrap token never sits in a long-running process.
+    isap_app_name: str = "Oracle API Hub"
+    isap_registration_token: str = ""
+    isap_redirect_uris: str = ""  # newline- or comma-separated
+
     # SQL definitions
     sql_definitions_dir: str = "app/sql_definitions"
 
