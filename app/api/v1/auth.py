@@ -1,8 +1,10 @@
 """Authentication endpoints: login, user/role/permission CRUD."""
 
 import secrets
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -31,7 +33,7 @@ from app.services.api_key_service import (
     revoke_api_key,
 )
 from app.services.auth_service import authenticate_user, get_current_active_superuser, get_current_user
-from app.services.sso_service import resolve_sso_user
+from app.services.sso_service import SsoExchangeError, exchange_sso_code, resolve_sso_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -349,3 +351,98 @@ def sso_token_bridge(
 
     token = create_access_token(data={"sub": user.username})
     return SsoTokenResponse(access_token=token)
+
+
+# ── Admin UI SSO (isap-auth legacy app-code flow) ───────────────────────────
+
+SSO_STATE_COOKIE = "apihub_sso_state"
+
+
+def _require_sso_enabled() -> None:
+    """404 rather than 403 when SSO is off — the route should not exist."""
+    if not settings.admin_sso_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+def _sso_callback_url() -> str:
+    """Absolute callback URL; must match a line in ISAP_REDIRECT_URIS exactly."""
+    return f"{settings.apihub_public_url.rstrip('/')}{settings.api_prefix}/auth/sso/callback"
+
+
+def _admin_redirect(fragment: str) -> RedirectResponse:
+    """Hand the result back to the SPA in the URL fragment.
+
+    A fragment is never sent to the server, so the JWT stays out of nginx
+    access logs and Referer headers. The SPA strips it via history.replaceState
+    as soon as it has read it.
+    """
+    response = RedirectResponse(url=f"{settings.root_path}/admin#{fragment}", status_code=302)
+    response.delete_cookie(SSO_STATE_COOKIE, path="/")
+    return response
+
+
+@router.get("/sso/login", include_in_schema=False)
+def sso_login():
+    """Start the SSO flow: bounce the browser to isap-auth's /authorize."""
+    _require_sso_enabled()
+    state = secrets.token_urlsafe(32)
+    params = urlencode(
+        {
+            "app_id": settings.isap_app_id,
+            "redirect_uri": _sso_callback_url(),
+            "state": state,
+        }
+    )
+    response = RedirectResponse(
+        url=f"{settings.isap_auth_public_url.rstrip('/')}/api/v1/authorize?{params}",
+        status_code=302,
+    )
+    # Login-CSRF guard: without it an attacker can feed a victim a callback URL
+    # carrying the attacker's own code and silently log them into the attacker's
+    # account. isap-auth echoes `state` back unchanged, so we can compare.
+    response.set_cookie(
+        SSO_STATE_COOKIE,
+        state,
+        max_age=600,
+        httponly=True,
+        samesite="lax",
+        secure=not settings.debug,
+        path="/",
+    )
+    return response
+
+
+@router.get("/sso/callback", include_in_schema=False)
+def sso_callback(
+    request: Request,
+    code: str = Query(default=""),
+    state: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    """Exchange the auth code, map to a local user, hand a JWT to the SPA.
+
+    Every failure path redirects with a `#sso_error=` fragment rather than
+    returning JSON — this endpoint is reached by a browser navigation, so the
+    Admin UI login page is the only sensible place to surface an error.
+    """
+    _require_sso_enabled()
+
+    expected = request.cookies.get(SSO_STATE_COOKIE, "")
+    if not expected or not state or not secrets.compare_digest(state, expected):
+        return _admin_redirect("sso_error=state_mismatch")
+    if not code:
+        return _admin_redirect("sso_error=missing_code")
+
+    try:
+        info = exchange_sso_code(code)
+    except SsoExchangeError as e:
+        return _admin_redirect(f"sso_error={e.reason}")
+
+    try:
+        user = resolve_sso_user(db, info["username"], info.get("email") or "")
+    except HTTPException as e:
+        reason = "not_provisioned" if "provisioned" in str(e.detail) else "not_eligible"
+        return _admin_redirect(f"sso_error={reason}")
+
+    access_token = create_access_token(data={"sub": user.username})
+    return _admin_redirect(f"sso_token={access_token}")
