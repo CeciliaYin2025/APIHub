@@ -91,6 +91,8 @@ Middleware is registered in `app/main.py` with a deliberate order (`add_middlewa
 
 Routers still enforce authorization per endpoint via `PermissionChecker(resource, action)` — e.g. `query:<name>`, `procedure:<name>`, `table:<table>`.
 
+Two SSO entry points share `app/services/sso_service.py::resolve_sso_user`, so the provisioning policy (`SSO_AUTOCREATE`, with `MCP_BRIDGE_AUTOCREATE` kept as an alias) cannot drift between them: `POST /api/v1/auth/sso-token` (the MCP identity bridge, guarded by a shared secret) and `GET /api/v1/auth/sso/callback` (the Admin UI, guarded by a state cookie against login CSRF). The Admin UI pair 404s unless `ADMIN_SSO_ENABLED` is on, and hands the minted JWT to the SPA in a URL fragment — never a query parameter, which would reach nginx logs. `scripts/register_isap_app.py` registers this app's `redirect_uris` with isap-auth as a compose one-shot; its bootstrap token lives in `deploy/*/.env.isap`, never in `.env`.
+
 ### API Usage Report
 
 `/api/v1/audit/*` (`app/api/v1/audit.py` + `app/services/audit_report_service.py`) reports on the audit trail: `usage` aggregates by any combination of user / db / api / day, `logs` lists the individual requests, `logs/{id}` returns one with full params, `filters` feeds the UI dropdowns. **Superuser only** — the report exposes every caller's request parameters. Statistics are a live `GROUP BY`, not a pre-aggregated table.

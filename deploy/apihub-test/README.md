@@ -43,6 +43,59 @@ curl -ksS https://<domain>/apihub-test/admin | grep '/apihub-test/admin/js/app.j
 # Default admin login: admin / changeme  → CHANGE IT immediately in the UI.
 ```
 
+## isap-auth prerequisites
+
+Both MCP OAuth and Admin UI SSO depend on isap-auth. Two separate things must
+be true before either works.
+
+**1. Dynamic client registration must be enabled (MCP only).**
+
+MCP clients (Claude Code and friends) have no pre-agreed `client_id`: they bind
+a fresh ephemeral loopback port per attempt and register themselves through RFC
+7591. That endpoint is `POST /auth/api/v1/register` on isap-auth, gated by
+`OAUTH_DCR_ENABLED`, which **defaults to `False`**. With it off, client
+registration answers `403 registration_disabled` and the browser SSO step of the
+MCP verification checklist below fails.
+
+This is a platform-level decision, not one this repo can make: the flag affects
+every app on that authorization server, the endpoint takes no credential, and
+isap-auth's `ci/policy-check.sh` greps to keep the default off. Ask the
+isap-auth operators to enable it, and — per isap-auth README A.6 — to restrict
+`/auth/api/v1/register` at the gateway to internal networks at the same time.
+
+Admin UI SSO does **not** need this flag: it uses the bootstrap-token path
+(`PUT /apps/{app_id}`), which is always available.
+
+**2. This app must be registered (Admin UI SSO only).**
+
+`apihub-test-app-register` does it automatically on `docker compose up` — see
+`.env.isap.example`. The test stack has its own `app_id`, separate from
+production's, because one bootstrap token is scoped to exactly one `app_id`.
+Mint it on the isap-auth host first:
+
+    docker exec isap-auth python -m app.cli issue-token apihub-test --name "Oracle API Hub (Test)"
+
+| Symptom | Cause |
+|---|---|
+| MCP client registration gets `403 registration_disabled` | `OAUTH_DCR_ENABLED` is off |
+| `apihub-test-app-register` exits 1 with a 401 | bootstrap token invalid or revoked |
+| `apihub-test-app-register` exits 1 with a 403 | token was issued for a different `app_id` |
+| `/authorize` answers `Unknown app_id or redirect_uri not allowed` | `APIHUB_PUBLIC_URL` and `ISAP_REDIRECT_URIS` disagree |
+| `apihub-test-app-register` prints "skipped" | no `ISAP_REGISTRATION_TOKEN` in `.env.isap` |
+
+### Admin UI SSO verification (requires live environment)
+
+1. `docker compose logs apihub-test-app-register` — shows
+   `Registered 'apihub-test'` with the expected redirect_uri, exit 0.
+2. Open `https://<GATEWAY_SERVER_NAME>/apihub-test/admin` — the login page shows
+   "Sign in with ISAP SSO" above the password form.
+3. Click it — the browser reaches isap-auth (already-logged-in users bounce
+   straight back), returns to the Admin UI signed in, and the address bar has
+   **no** `#sso_token=` left in it.
+4. The user badge shows the SSO username, not a shared service account.
+5. With `SSO_AUTOCREATE=false`, an SSO user with no API Hub account lands back
+   on the login page with "Ask an administrator to create one".
+
 ## MCP server (`apihub-test-mcp`, OAuth 2.1 Resource Server)
 
 The MCP server is an **optional add-on** in a separate compose file,

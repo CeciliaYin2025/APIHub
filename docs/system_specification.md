@@ -1497,6 +1497,49 @@ Authorization: Bearer <token>
     │◀──────────────────────────────│                              │
 ```
 
+#### 7.1.1 ISAP SSO 登入流程（選用，`ADMIN_SSO_ENABLED`）
+
+Admin UI 除本地帳密外，可改用 ISAP 帳號登入。走 isap-auth 的 app-code 流程，API Hub 仍然自己簽發 JWT，因此後續每個請求的驗證路徑與本地登入完全相同。
+
+```
+  Browser                    API Hub                     isap-auth
+    │                           │                            │
+    │  GET /auth/sso/login      │                            │
+    │─────────────────────────▶│                            │
+    │                           │  產生 state，寫入          │
+    │                           │  httpOnly SameSite cookie  │
+    │  302 → /authorize?app_id=&redirect_uri=&state=         │
+    │◀─────────────────────────│                            │
+    │  GET /authorize ...                                    │
+    │───────────────────────────────────────────────────────▶│
+    │                           │        檢查 SSO cookie；   │
+    │                           │        未登入則先顯示登入頁│
+    │  302 → /auth/sso/callback?code=&state=                 │
+    │◀───────────────────────────────────────────────────────│
+    │  GET /auth/sso/callback   │                            │
+    │─────────────────────────▶│                            │
+    │                           │  比對 state 與 cookie      │
+    │                           │  POST /api/v1/token        │
+    │                           │  （走 docker 內網）        │
+    │                           │───────────────────────────▶│
+    │                           │◀───────────────────────────│
+    │                           │  resolve_sso_user()        │
+    │                           │  建立 JWT (HS256)          │
+    │  302 → /admin#sso_token=eyJ...                         │
+    │◀─────────────────────────│                            │
+```
+
+要點：
+
+- **`state` 是必要的防護**，不是選配。缺少它時，攻擊者可先自行取得一個 code，再誘導受害者開啟帶該 code 的 callback 網址，使受害者靜默登入成攻擊者的帳號。isap-auth 會原樣帶回 `state`，比對後即清除 cookie。
+- **JWT 以 URL fragment 交付**，不用 query string —— fragment 不會送到伺服器，因此不會進入 nginx access log 或 Referer。SPA 讀取後立即以 `history.replaceState` 清除。
+- **使用者解析共用** `app/services/sso_service.py::resolve_sso_user`，與 MCP identity bridge（`POST /auth/sso-token`）同一份政策：`SSO_AUTOCREATE` 決定未建檔者自動建立或 403，服務帳號與停用帳號一律拒絕。
+- **失敗一律導回登入頁**並附 `#sso_error=` slug（`missing_code`、`state_mismatch`、`auth_unreachable`、`invalid_code`、`not_provisioned`、`not_eligible`），不回傳 JSON。
+- 本地帳密登入保留，isap-auth 故障時管理者仍可進入。
+- `ADMIN_SSO_ENABLED=false`（預設）時兩個端點回 404。
+
+應用本身必須先登記在 isap-auth 的 `registered_app` 允許清單中。`scripts/register_isap_app.py` 以 `PUT /apps/{app_id}` 搭配 per-app bootstrap token 完成登記，由 compose one-shot（`apihub-app-register`）在 api 啟動前執行。該端點是宣告式的：`redirect_uris` 整批取代，因此 `deploy/*/.env.isap` 的 `ISAP_REDIRECT_URIS` 是唯一真實來源，重複執行結果一致。未設定 token 時腳本印出訊息並以 0 退出，不阻擋不使用 SSO 的部署。
+
 ### 7.2 JWT Token 結構
 
 ```json
@@ -2193,6 +2236,15 @@ curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
 | `DB_HEALTH_CHECK_TIMEOUT` | `5.0` | `GET /api/v1/databases/status` 的**整體**逾時秒數 —— 所有 alias 共用此預算，非每個 alias 各算（見 §4.11） |
 | `AUDIT_RETENTION_DAYS` | `365` | `python -m scripts.purge_audit_logs` 的預設保留天數（見 §6.1.7）。無自動清理，需自行排程 |
 | `AUDIT_PARAMS_INLINE_LIMIT` | `4096` | `GET /audit/logs` 內嵌 `params` 的位元組上限，超過則改由 `GET /audit/logs/{id}` 單筆取回（見 §5.8.2） |
+| `ADMIN_SSO_ENABLED` | `false` | Admin UI 的 ISAP SSO 登入。關閉時 `/auth/sso/login`、`/auth/sso/callback` 回 404，登入頁不顯示按鈕（見 §7.1.1） |
+| `APIHUB_PUBLIC_URL` | — | 本服務對外位址（如 `https://host/apihub`）。送給 isap-auth 的 `redirect_uri` 由此組出，**必須**與 `ISAP_REDIRECT_URIS` 登記值逐字相同 |
+| `ISAP_AUTH_PUBLIC_URL` | — | isap-auth 對外位址，供瀏覽器導向 `/authorize` |
+| `ISAP_AUTH_INTERNAL_URL` | — | isap-auth 內網位址，供後端 `POST /token` 交換 code，不繞出 gateway |
+| `ISAP_APP_ID` | `apihub` | 本應用在 isap-auth 的 app_id，必須與 bootstrap token 綁定的值相同 |
+| `SSO_AUTOCREATE` | `false` | 未建檔的 SSO 使用者是否自動建立為無角色帳號。同時作用於 Admin UI 與 MCP bridge；`MCP_BRIDGE_AUTOCREATE` 保留為相容別名 |
+| `ISAP_APP_NAME` | `Oracle API Hub` | 註冊時送出的顯示名稱。**僅** `scripts/register_isap_app.py` 讀取 |
+| `ISAP_REGISTRATION_TOKEN` | — | 自註冊用的 bootstrap token（`isapreg_…`）。**僅**註冊腳本讀取，放在 `deploy/*/.env.isap` 而非 `.env`：它能改寫本應用的 `redirect_uris`，外洩即為 auth code 竊取途徑。留空時註冊腳本跳過並以 0 退出 |
+| `ISAP_REDIRECT_URIS` | — | 登記的 callback 位址，換行或逗號分隔。宣告式整批取代。**僅**註冊腳本讀取 |
 
 ---
 

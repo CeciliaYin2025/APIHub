@@ -120,17 +120,28 @@ Drop YAML files into `app/database_definitions/` — each file is a list of data
 - Permission model: `resource:action` (e.g., `query:employees` + `read`); the action must always match exactly
 - Superuser bypass for administrative access
 
-### 6. Rate Limiting
+### 6. ISAP SSO (optional, `ADMIN_SSO_ENABLED`)
+
+Sign in to the Admin UI with an ISAP account instead of a local password, via isap-auth's app-code flow.
+
+- `GET /api/v1/auth/sso/login` redirects to isap-auth's `/authorize` with a random `state`, stored in an `httpOnly` `SameSite=Lax` cookie
+- `GET /api/v1/auth/sso/callback` verifies that `state`, exchanges the one-time code for user info over the internal network, maps it to a local user and hands the minted JWT to the SPA in a **URL fragment** (never a query parameter, which would land in access logs)
+- The local password form stays on the login page, so a broken isap-auth never locks administrators out
+- `SSO_AUTOCREATE` decides whether an unknown ISAP user is auto-provisioned as a role-less local account or rejected; it governs the MCP identity bridge too, and `MCP_BRIDGE_AUTOCREATE` remains as an alias
+- Both endpoints return 404 while `ADMIN_SSO_ENABLED` is off, and the UI hides the button
+- `python -m scripts.register_isap_app` registers this instance's `redirect_uris` with isap-auth. It runs automatically as a compose one-shot (`apihub-app-register`), is idempotent, and exits 0 without calling out when no bootstrap token is configured
+
+### 7. Rate Limiting
 - Per-client sliding window rate limiter (configurable)
 
-### 7. Database Connection Status (`/api/v1/databases/status`)
+### 8. Database Connection Status (`/api/v1/databases/status`)
 - Live per-database connectivity check — `Online` (with latency), `Offline` (with the raw driver error), or `Timeout`
 - Surfaced in the Admin dashboard's Databases card as a **Status** column with a **Refresh** button
 - Every alias is probed concurrently under a **single shared timeout budget**, so N unreachable databases still cost one `DB_HEALTH_CHECK_TIMEOUT`, not N of them
 - The probe SQL comes from the dialect layer (`SELECT 1 FROM DUAL` on Oracle, `SELECT 1` elsewhere)
 - **Superuser only** — it opens real connections and returns raw driver error text. Other users see the dashboard normally, with the column showing `—`
 
-### 8. API Usage Report (`/api/v1/audit`)
+### 9. API Usage Report (`/api/v1/audit`)
 
 Answers "who called which API, on which data source, how often" and "what exactly did they query", from the per-request audit trail in `api_hub_audit_logs`.
 
