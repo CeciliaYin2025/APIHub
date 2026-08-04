@@ -14,13 +14,56 @@ let qcDefs = [];  // definitions for the Query Console picker (scoped to current
 let qcAuthMode = 'jwt';  // 'jwt' | 'apikey' — which credential the generated examples show
 
 /* ── Bootstrap ────────────────────────────────────────────────────────── */
+/* Fragment slugs produced by GET /auth/sso/callback — keep in sync with
+   app/services/sso_service.py and app/api/v1/auth.py. */
+const SSO_ERRORS = {
+  missing_code: 'SSO login failed: no authorization code was returned.',
+  state_mismatch: 'SSO login failed: the login attempt could not be verified. Please try again.',
+  auth_unreachable: 'SSO login failed: the ISAP authentication service is unreachable.',
+  invalid_code: 'SSO login failed: the authorization code was invalid or had expired.',
+  not_provisioned: 'Your SSO account has no API Hub user yet. Ask an administrator to create one.',
+  not_eligible: 'This account may not sign in via SSO.',
+};
+
+/**
+ * Consume a #sso_token= / #sso_error= fragment left by the SSO callback.
+ * The fragment is stripped immediately so the JWT does not linger in the
+ * address bar or get re-applied on reload.
+ */
+function consumeSsoFragment() {
+  const hash = window.location.hash || '';
+  if (!hash.startsWith('#sso_')) return null;
+  const [key, ...rest] = hash.slice(1).split('=');
+  const value = rest.join('=');
+  history.replaceState(null, '', window.location.pathname + window.location.search);
+  if (key === 'sso_token' && value) return { token: value };
+  if (key === 'sso_error') return { error: SSO_ERRORS[value] || 'SSO login failed.' };
+  return null;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  if (window.__SSO_ENABLED__) {
+    const block = document.getElementById('ssoBlock');
+    const btn = document.getElementById('ssoLoginBtn');
+    if (block) block.classList.remove('hidden');
+    if (btn) btn.href = `${API}/auth/sso/login`;
+  }
+
+  const sso = consumeSsoFragment();
+  if (sso && sso.error) {
+    showLogin();
+    toast(sso.error, 'error');
+  } else if (sso && sso.token) {
+    token = sso.token;
+    localStorage.setItem('hub_token', token);
+  }
+
   if (token) {
     fetchCurrentUser().then(ok => {
       if (ok) showApp();
       else showLogin();
     });
-  } else {
+  } else if (!(sso && sso.error)) {
     showLogin();
   }
   bindGlobalEvents();

@@ -85,4 +85,6 @@ def admin_spa(rest_of_path: str = ""):
     """Serve the admin SPA index.html, substituting the base path prefix."""
     html = (_ADMIN_DIR / "index.html").read_text(encoding="utf-8")
     html = html.replace("{{BASE_PATH}}", settings.root_path)
+    # Lower-cased so it is a valid JS boolean literal, not Python's True/False.
+    html = html.replace("{{SSO_ENABLED}}", "true" if settings.admin_sso_enabled else "false")
     return HTMLResponse(content=html)

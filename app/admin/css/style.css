@@ -386,3 +386,20 @@ textarea.monospace,
   position: absolute; inset: 0; background: rgba(255,255,255,.7); display: flex;
   align-items: center; justify-content: center; z-index: 10;
 }
+
+/* ── SSO login divider ──────────────────────────────────────────────────── */
+.sso-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0;
+  color: var(--gray-500);
+  font-size: 12px;
+}
+.sso-divider::before,
+.sso-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--gray-200);
+}

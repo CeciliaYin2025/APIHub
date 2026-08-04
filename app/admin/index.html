@@ -17,6 +17,10 @@
     <div class="logo">&#9741;</div>
     <h1>Oracle API Hub</h1>
     <p class="subtitle">Management Console</p>
+    <div id="ssoBlock" class="hidden">
+      <a id="ssoLoginBtn" class="btn btn-primary" style="width:100%;justify-content:center;padding:10px;text-decoration:none;">Sign in with ISAP SSO</a>
+      <div class="sso-divider"><span>or</span></div>
+    </div>
     <form id="loginForm">
       <div class="form-group">
         <label for="loginUser">Username</label>
@@ -118,7 +122,7 @@
   </div>
 </div>
 
-<script>window.__BASE_PATH__ = "{{BASE_PATH}}";</script>
+<script>window.__BASE_PATH__ = "{{BASE_PATH}}"; window.__SSO_ENABLED__ = {{SSO_ENABLED}};</script>
 <script src="{{BASE_PATH}}/admin/js/app.js"></script>
 <script src="{{BASE_PATH}}/admin/js/usage_report.js"></script>
 </body>
