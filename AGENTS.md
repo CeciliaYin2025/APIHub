@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to Codex when working with code in this repository. It mirrors `CLAUDE.md` — keep the two in sync.
 
 ## Project Overview
 
@@ -9,35 +9,38 @@ Oracle API Hub is a FastAPI-based REST gateway that exposes **Oracle (11g+), Pos
 ## Commands
 
 ```bash
-# Install (dev mode)
+# Install (dev mode — pulls pytest/ruff/flower from the [dev] extra)
 pip install -e ".[dev]"
 
 # Run the app
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-# Run all tests
+# Run all Python tests — tests/e2e is EXCLUDED via norecursedirs, run it separately
 pytest -v
 
-# Run a single test file
-pytest tests/test_security.py -v
+# MCP server tests (plain pytest, no live server needed)
+pytest tests/mcp -v
 
-# Run a single test
-pytest tests/test_security.py::test_password_hashing -v
+# Admin UI e2e (Playwright + throwaway Postgres container; needs Docker + Node 24+)
+cd tests/e2e && npm install && npx playwright install chromium && npm test
 
-# Lint
-ruff check app/ tests/
-
-# Format
-ruff format app/ tests/
+# Lint / format (ruff; config in pyproject.toml)
+ruff check app/ tests/ mcp_server/
+ruff format app/ tests/ mcp_server/
 
 # Initialize DB tables and default admin user
 python -m scripts.init_db
 
+# Backfill db_alias on pre-existing SQL definition rows (one-time migration)
+python -m scripts.migrate_sql_def_db_alias
+
 # Trim the audit trail (nothing does this automatically; schedule it)
 python -m scripts.purge_audit_logs [--days N] [--dry-run]
 
-# Docker
-docker-compose up -d
+# Register this instance with isap-auth (no-op without a bootstrap token)
+python -m scripts.register_isap_app
+
+# Same init inside Docker
 docker-compose exec api python -m scripts.init_db
 
 # Celery workers
@@ -48,19 +51,12 @@ celery -A app.tasks.celery_app flower --port=5555
 
 ## Architecture
 
-**Layered design**: Middleware → Router → Service → Data Access
+**Layered design**: Middleware → Router → Service → Data Access. `app/main.py` owns the lifespan (init pools, load SQL registry).
 
-- **Entry point**: `app/main.py` — FastAPI app with lifespan (init pools, load SQL registry)
-- **Routers** (`app/api/v1/`): auth, queries, procedures, writes, schemas, databases, health
-- **Services** (`app/services/`): Business logic layer called by routers
-- **DB layer** (`app/db/`): Multi-engine connection pool management
-  - `multi_pool.py` — `DatabaseRegistry` singleton, one `PoolAdapter` per alias
-  - `pool_factory.py` + `adapters/` — per-engine pool implementations (oracle/postgresql/mssql)
-  - `dialects/` — per-engine SQL rewriting (pagination, bind conversion, procedure calls, introspection)
-  - `session.py` — SQLAlchemy session for the platform store
-- **Tasks** (`app/tasks/`): Celery async task definitions
-- **Models** (`app/models/`): SQLAlchemy ORM for User/Role/Permission and SQL Definition tables
-- **Admin UI** (`app/admin/`): Vanilla JS SPA served as static files at `/admin`
+- **MCP server** (`mcp_server/`): standalone MCP process exposing SQL definitions as
+  dynamic tools. Thin HTTP proxy over the REST API — it **never imports `app/`** or touches
+  DBs directly. stdio (`python -m mcp_server`) + Streamable HTTP
+  (`uvicorn mcp_server.http_app:app`). Settings: `MCP_*` env vars / `.env.mcp`.
 
 ### Data Source Databases vs Platform Store
 
@@ -73,6 +69,8 @@ Two distinct database roles, do not confuse them:
 
 Database-scoped endpoints use `/{db}/` path prefix (e.g., `/{db}/queries/execute`), where `{db}` is the YAML `alias`. Legacy single-DB env vars (`ORACLE_DSN`, etc.) auto-create a `default` alias for backward compatibility when no YAML is present.
 
+Adding or changing a data source: see `app/database_definitions/CLAUDE.md` (password env vars, no hot-reload, compose mounts).
+
 ### Dialect Layer
 
 `app/db/dialects/{oracle,postgresql,mssql}_dialect.py` isolate engine differences so the same SQL definition can target any engine:
@@ -83,28 +81,49 @@ Database-scoped endpoints use `/{db}/` path prefix (e.g., `/{db}/queries/execute
 
 When adding engine-specific behavior, extend the `Dialect` base class — never branch on `db_type` inside services.
 
-### Query Engine — 5 Fetch Modes
+### Query Engine — 6 Fetch Modes
 
-The query service (`app/services/query_service.py`) supports: `page` (dialect-aware pagination, default), `all`, `batch` (cursor-style iteration), `top_n`, `one` (single row or 404).
+The query service (`app/services/query_service.py`) supports: `page` (dialect-aware pagination, default), `all`, `batch` (cursor-style iteration), `top_n`, `one` (single row or 404), `count` (row count only, no data). `app/schemas/query.py` is the single source of truth for the mode names, their companion fields and value ranges — keep any UI or doc copy in sync with it.
 
 ### SQL Definition System
 
-SQL definitions are stored in PostgreSQL (`api_hub_sql_definitions` table) as the primary source. At startup, `SqlRegistry` loads from DB; if the DB table is empty it falls back to YAML files in `app/sql_definitions/`. A one-time `POST /api/v1/queries/definitions/import-yaml` endpoint imports existing YAML definitions into the database. Full CRUD is available via API (`GET/POST/PUT/DELETE /api/v1/queries/definitions`) and the Admin UI. The in-memory registry is automatically refreshed after any CRUD operation.
+SQL definitions are stored in PostgreSQL (`api_hub_sql_definitions` table) as the primary source. At startup, `SqlRegistry` loads from DB; if the DB table is empty it falls back to YAML files in `app/sql_definitions/`. A one-time `POST /api/v1/queries/definitions/import-yaml` endpoint imports existing YAML definitions into the database. Full CRUD is available via API (`GET/POST/PUT/DELETE /{db}/queries/definitions`) and the Admin UI. The in-memory registry is automatically refreshed after any CRUD operation.
 
-### Audit Trail & API Usage Report
+Two things about the model (`app/models/sql_definition.py`) that are easy to miss:
 
-`AuditMiddleware` writes one `api_hub_audit_logs` row per request, best-effort (failures swallowed, never affecting the response). It runs *after* `call_next` and so cannot read the consumed request body — routers hand over the details by calling `app/middleware/audit.py::record_audit(request, action_type, action, params, result_rows)`, which stashes them on `request.state`. A new endpoint worth reporting on must call `record_audit` itself; nothing picks it up automatically.
+- **Definitions are scoped per data source**: unique constraint is `(name, db_alias)`, so the same name can exist with different SQL under two aliases. Every definition endpoint is under `/{db}/`, and the registry is keyed accordingly.
+- **`order_by`** is a JSONB list of `{column, direction}` applied by the Hub in its own wrapper (not baked into the definition's SQL), so ordering works uniformly across engines including MSSQL. Columns are validated against a strict identifier regex in `_build_order_by()`; never interpolate user input there.
 
-`/api/v1/audit/*` (`app/api/v1/audit.py` + `app/services/audit_report_service.py`) reports on that trail: `usage` aggregates by any combination of user / db / api / day, `logs` lists the individual requests, `logs/{id}` returns one with full params, `filters` feeds the UI dropdowns. **Superuser only** — the report exposes every caller's request parameters. Statistics are a live `GROUP BY`, not a pre-aggregated table.
+### Request Pipeline — Auth, Rate Limiting, Audit
 
-- **`params` is stored unmasked and untruncated** — a deliberate decision; do not add masking or truncation on the write path. Nothing bounds table growth except `AUDIT_RETENTION_DAYS` plus `python -m scripts.purge_audit_logs` (manual/scheduled, not a Celery beat job). `AUDIT_PARAMS_INLINE_LIMIT` only caps API response size, never what is stored.
-- **`action_type`** (`query` / `procedure` / `write` / `definition` / `report`) separates data-access volume from admin operations; `usage` and `logs` default to `query,procedure,write`.
+Middleware is registered in `app/main.py` with a deliberate order (`add_middleware` stacks last-added = outermost). Outer→inner: CORS → `AuditMiddleware` → `AuthContextMiddleware` → `RateLimiterMiddleware` → routers.
 
-Aggregation depends on PostgreSQL-only constructs (`JSONB`, `COUNT(*) FILTER`, `date()`) and `pytest` has no live Postgres, so `tests/test_audit_report_service.py` covers parsing/validation and compiled-SQL shape while the **numeric** correctness lives in `tests/e2e/usage-report.spec.js`.
+- **`AuthContextMiddleware`** resolves the caller **once per request** into `request.state.principal` (`app/services/auth_service.py::resolve_principal`). A `Principal` is either `type="user"` (JWT) or `type="api_key"` (service account), both carrying a `User` for RBAC. Accepted credentials: `X-API-Key: ahk_...`, `Authorization: Bearer ahk_...`, or `Authorization: Bearer <JWT>`. A present-but-invalid API key raises `ApiKeyError` and short-circuits with JSON; a missing/invalid JWT leaves `principal=None` for the dependency layer to reject.
+- **`RateLimiterMiddleware`** is an in-memory sliding window keyed per principal, with a per-API-key `rate_limit` override. It is **process-local** — it does not coordinate across API instances or workers.
+- **`AuditMiddleware`** writes one structured log line plus one `api_hub_audit_logs` row per request, best-effort (failures are swallowed, never affecting the response). Client IP honours `TRUSTED_PROXIES`. It runs *after* `call_next`, so it cannot read the consumed request body — routers hand over the details by calling `app/middleware/audit.py::record_audit(request, action_type, action, params, result_rows)`, which stashes them on `request.state`. When you add an endpoint worth reporting on, call `record_audit` there; nothing else picks it up automatically.
 
-### SSO (isap-auth)
+Routers still enforce authorization per endpoint via `PermissionChecker(resource, action)` — e.g. `query:<name>`, `procedure:<name>`, `table:<table>`.
 
 Two SSO entry points share `app/services/sso_service.py::resolve_sso_user`, so the provisioning policy (`SSO_AUTOCREATE`, with `MCP_BRIDGE_AUTOCREATE` kept as an alias) cannot drift between them: `POST /api/v1/auth/sso-token` (the MCP identity bridge, guarded by a shared secret) and `GET /api/v1/auth/sso/callback` (the Admin UI, guarded by a state cookie against login CSRF). The Admin UI pair 404s unless `ADMIN_SSO_ENABLED` is on, and hands the minted JWT to the SPA in a URL fragment — never a query parameter, which would reach nginx logs. `scripts/register_isap_app.py` registers this app's `redirect_uris` with isap-auth as a compose one-shot; its bootstrap token lives in `deploy/*/.env.isap`, never in `.env`.
+
+### API Usage Report
+
+`/api/v1/audit/*` (`app/api/v1/audit.py` + `app/services/audit_report_service.py`) reports on the audit trail: `usage` aggregates by any combination of user / db / api / day, `logs` lists the individual requests, `logs/{id}` returns one with full params, `filters` feeds the UI dropdowns. **Superuser only** — the report exposes every caller's request parameters. Statistics are a live `GROUP BY`, not a pre-aggregated table.
+
+Two things that are easy to get wrong here:
+
+- **`params` is stored unmasked and untruncated** — a deliberate decision, so do not add masking or truncation on the write path. Consequently nothing bounds table growth except `AUDIT_RETENTION_DAYS` plus `python -m scripts.purge_audit_logs`, which is manual/scheduled and not a Celery beat job. `AUDIT_PARAMS_INLINE_LIMIT` only caps API response size, never what is stored.
+- **`action_type`** (`query` / `procedure` / `write` / `definition` / `report`) is what separates data-access volume from admin operations; `usage` and `logs` default to `query,procedure,write`. A new endpoint without an `action_type` is invisible to the report.
+
+Aggregation depends on PostgreSQL-only constructs (`JSONB`, `COUNT(*) FILTER`, `date()`), and `pytest` has no live Postgres — so `tests/test_audit_report_service.py` covers parsing/validation and compiled-SQL shape, and the **numeric** correctness lives in `tests/e2e/usage-report.spec.js`.
+
+### Admin UI
+
+Vanilla-JS SPA at `app/admin/`, served at `/admin` with no build step. Conventions and its e2e coverage: see `app/admin/CLAUDE.md`.
+
+### Deployment Behind a Reverse Proxy
+
+`ROOT_PATH` (e.g. `/apihub`) makes FastAPI generate correct URLs and is injected into the Admin UI as `{{BASE_PATH}}`; `tests/test_root_path.py` guards this. `deploy/apihub/` is the ISAP gateway stack and `deploy/apihub-test/` the test/UAT stack, each with its own compose file and `.env`.
 
 ### Async Task Processing
 
@@ -116,8 +135,10 @@ Celery with Redis broker. Two dedicated queues: `write` and `procedure`. Tasks r
 
 ## Code Conventions
 
-- **Python**: 3.10+, line length 120, linted with ruff
+- **Python**: 3.10+, line length 120, linted and formatted with ruff (`[tool.ruff]` in `pyproject.toml`)
 - **Parameterized queries only**: All SQL definitions use Oracle-style bind variables (`:param_name`), never string interpolation. The dialect layer rewrites binds to `%(param_name)s` for PostgreSQL/MSSQL automatically — definitions stay engine-agnostic.
 - **Table name validation**: Strict regex in `write_service.py` (per-dialect) to prevent injection
 - **Auth**: JWT (HS256) with RBAC. Permission model is `resource:action` with wildcard support
-- **Config**: All settings via environment variables through Pydantic Settings (`app/core/config.py`)
+- **Config**: All settings via environment variables through Pydantic Settings (`app/core/config.py`). Add new settings there with a default rather than reading `os.environ` directly.
+- **Agent instruction files**: this file mirrors `CLAUDE.md`. When changing project-wide guidance in either, mirror it to the other.
+- **Docs**: `README.md` and `docs/system_specification.md` describe the shipped behaviour; update them when adding features.

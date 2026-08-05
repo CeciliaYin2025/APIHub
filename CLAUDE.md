@@ -9,6 +9,9 @@ Oracle API Hub is a FastAPI-based REST gateway that exposes **Oracle (11g+), Pos
 ## Commands
 
 ```bash
+# Install (dev mode — pulls pytest/ruff/flower from the [dev] extra)
+pip install -e ".[dev]"
+
 # Run the app
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 
@@ -21,11 +24,21 @@ pytest tests/mcp -v
 # Admin UI e2e (Playwright + throwaway Postgres container; needs Docker + Node 24+)
 cd tests/e2e && npm install && npx playwright install chromium && npm test
 
+# Lint / format (ruff; config in pyproject.toml)
+ruff check app/ tests/ mcp_server/
+ruff format app/ tests/ mcp_server/
+
 # Initialize DB tables and default admin user
 python -m scripts.init_db
 
 # Backfill db_alias on pre-existing SQL definition rows (one-time migration)
 python -m scripts.migrate_sql_def_db_alias
+
+# Trim the audit trail (nothing does this automatically; schedule it)
+python -m scripts.purge_audit_logs [--days N] [--dry-run]
+
+# Register this instance with isap-auth (no-op without a bootstrap token)
+python -m scripts.register_isap_app
 
 # Same init inside Docker
 docker-compose exec api python -m scripts.init_db
@@ -122,9 +135,10 @@ Celery with Redis broker. Two dedicated queues: `write` and `procedure`. Tasks r
 
 ## Code Conventions
 
+- **Python**: 3.10+, line length 120, linted and formatted with ruff (`[tool.ruff]` in `pyproject.toml`)
 - **Parameterized queries only**: All SQL definitions use Oracle-style bind variables (`:param_name`), never string interpolation. The dialect layer rewrites binds to `%(param_name)s` for PostgreSQL/MSSQL automatically — definitions stay engine-agnostic.
 - **Table name validation**: Strict regex in `write_service.py` (per-dialect) to prevent injection
 - **Auth**: JWT (HS256) with RBAC. Permission model is `resource:action` with wildcard support
 - **Config**: All settings via environment variables through Pydantic Settings (`app/core/config.py`). Add new settings there with a default rather than reading `os.environ` directly.
-- **Agent instruction files**: `AGENTS.md` (Codex) mirrors this file. When changing project-wide guidance here, mirror it there.
+- **Agent instruction files**: `AGENTS.md` (Codex) mirrors this file. When changing project-wide guidance in either, mirror it to the other.
 - **Docs**: `README.md` and `docs/system_specification.md` describe the shipped behaviour; update them when adding features (the `update-spec` skill does this).
