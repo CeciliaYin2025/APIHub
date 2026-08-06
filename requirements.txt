@@ -18,6 +18,10 @@ pyyaml>=6.0
 alembic>=1.13.0
 httpx>=0.27.0
 tenacity>=8.2.0
+# MCP server (mcp_server/ package; StreamableHTTPSessionManager requires >=1.8).
+# The Dockerfile installs THIS file, not pyproject.toml — anything pyproject
+# declares must be mirrored here or it is simply absent from the image.
+mcp>=1.8.0
 oracledb>=3.4.2
 psycopg2-binary>=2.9.9
 pymssql>=2.2.8
