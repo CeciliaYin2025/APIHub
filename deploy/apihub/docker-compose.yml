@@ -82,7 +82,13 @@ services:
     image: oracle-api-hub:latest
     container_name: apihub-app-register
     restart: "no"
-    env_file: [.env, .env.isap]
+    # .env.isap is optional: without it the script finds no ISAP_REGISTRATION_TOKEN
+    # and exits 0. Marking it required would break `docker compose up` for every
+    # deployment that does not use isap-auth SSO.
+    env_file:
+      - .env
+      - path: .env.isap
+        required: false
     networks: [gateway-net]
     command: ["python", "-m", "scripts.register_isap_app"]
     depends_on:
