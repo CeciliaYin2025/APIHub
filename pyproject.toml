@@ -29,8 +29,10 @@ dependencies = [
     "oracledb>=3.4.2",
     "psycopg2-binary>=2.9.9",
     "pymssql>=2.2.8",
-    # MCP server (mcp_server/ package; StreamableHTTPSessionManager requires >=1.8)
-    "mcp>=1.8.0",
+    # MCP server (mcp_server/ package; StreamableHTTPSessionManager requires >=1.8).
+    # Capped below 2.0: mcp 2.x drops the low-level Server.list_tools()/call_tool()
+    # decorators mcp_server/server.py is built on. Keep in sync with requirements.txt.
+    "mcp>=1.8.0,<2.0.0",
 ]
 
 [project.optional-dependencies]

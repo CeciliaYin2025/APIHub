@@ -21,7 +21,10 @@ tenacity>=8.2.0
 # MCP server (mcp_server/ package; StreamableHTTPSessionManager requires >=1.8).
 # The Dockerfile installs THIS file, not pyproject.toml — anything pyproject
 # declares must be mirrored here or it is simply absent from the image.
-mcp>=1.8.0
+# Capped below 2.0: mcp 2.x drops the low-level `Server.list_tools()` /
+# `call_tool()` decorators that mcp_server/server.py is built on, so an
+# uncapped install crash-loops with AttributeError on startup.
+mcp>=1.8.0,<2.0.0
 oracledb>=3.4.2
 psycopg2-binary>=2.9.9
 pymssql>=2.2.8
