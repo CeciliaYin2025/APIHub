@@ -131,17 +131,33 @@ Sign in to the Admin UI with an ISAP account instead of a local password, via is
 - Both endpoints return 404 while `ADMIN_SSO_ENABLED` is off, and the UI hides the button
 - `python -m scripts.register_isap_app` registers this instance's `redirect_uris` with isap-auth. It runs automatically as a compose one-shot (`apihub-app-register`), is idempotent, and exits 0 without calling out when no bootstrap token is configured
 
-### 7. Rate Limiting
+### 7. Bulk Extraction (`scripts/extract_query.py`)
+
+Stream any registered definition's full result set to a local file — the bulk counterpart to the MCP tools, which return rows into an LLM's context and so do not suit six-figure row counts.
+
+```bash
+export APIHUB_URL=https://<host>/apihub-test
+export APIHUB_API_KEY=ahk_...          # or APIHUB_TOKEN=<JWT>
+python -m scripts.extract_query --db DW --query eo_detail \
+    -p frozen_date=2026-08-01 --batch-size 10000 --out ./eo_detail.csv
+```
+
+- Walks `fetch_mode=batch` and writes CSV incrementally, so neither client nor server holds the whole set (`fetch_mode=all` would build one JSON document for every row first)
+- `--format` inferred from the `--out` suffix: `csv` (stdlib, streaming), `parquet` / `xlsx` (buffered; need `pandas` plus `pyarrow` / `openpyxl`, which are not installed by default)
+- The server recomputes `COUNT(*)` per batch, so per-request cost is nearly flat in batch size — prefer large batches. Measured: 139k rows × 89 columns in ~103 s at `--batch-size 10000`
+- Exit codes: `0` ok, `1` API error, `2` bad usage, `3` missing optional output library
+
+### 8. Rate Limiting
 - Per-client sliding window rate limiter (configurable)
 
-### 8. Database Connection Status (`/api/v1/databases/status`)
+### 9. Database Connection Status (`/api/v1/databases/status`)
 - Live per-database connectivity check — `Online` (with latency), `Offline` (with the raw driver error), or `Timeout`
 - Surfaced in the Admin dashboard's Databases card as a **Status** column with a **Refresh** button
 - Every alias is probed concurrently under a **single shared timeout budget**, so N unreachable databases still cost one `DB_HEALTH_CHECK_TIMEOUT`, not N of them
 - The probe SQL comes from the dialect layer (`SELECT 1 FROM DUAL` on Oracle, `SELECT 1` elsewhere)
 - **Superuser only** — it opens real connections and returns raw driver error text. Other users see the dashboard normally, with the column showing `—`
 
-### 9. API Usage Report (`/api/v1/audit`)
+### 10. API Usage Report (`/api/v1/audit`)
 
 Answers "who called which API, on which data source, how often" and "what exactly did they query", from the per-request audit trail in `api_hub_audit_logs`.
 

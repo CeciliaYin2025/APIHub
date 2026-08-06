@@ -37,6 +37,10 @@ python -m scripts.migrate_sql_def_db_alias
 # Trim the audit trail (nothing does this automatically; schedule it)
 python -m scripts.purge_audit_logs [--days N] [--dry-run]
 
+# Bulk-extract a definition to a local file (client-side; needs APIHUB_URL +
+# APIHUB_API_KEY or APIHUB_TOKEN)
+python -m scripts.extract_query --db DW --query eo_detail -p frozen_date=2026-08-01 --out out.csv
+
 # Register this instance with isap-auth (no-op without a bootstrap token)
 python -m scripts.register_isap_app
 
@@ -116,6 +120,12 @@ Two things that are easy to get wrong here:
 - **`action_type`** (`query` / `procedure` / `write` / `definition` / `report`) is what separates data-access volume from admin operations; `usage` and `logs` default to `query,procedure,write`. A new endpoint without an `action_type` is invisible to the report.
 
 Aggregation depends on PostgreSQL-only constructs (`JSONB`, `COUNT(*) FILTER`, `date()`), and `pytest` has no live Postgres — so `tests/test_audit_report_service.py` covers parsing/validation and compiled-SQL shape, and the **numeric** correctness lives in `tests/e2e/usage-report.spec.js`.
+
+### Bulk Extraction
+
+`scripts/extract_query.py` is the bulk counterpart to the MCP tools: MCP returns rows into an LLM's context, which does not fit a six-figure row count, so this walks the REST API's `batch` fetch mode and streams to CSV (or buffers to Parquet/XLSX). It is a **client-side** tool — it talks to the API over HTTP and is not part of the server image's runtime.
+
+Two things worth knowing before changing it: `batch` is used rather than `all` because `all` builds one JSON document for every row before the client sees anything (~105 MB for a 139k-row set), and `_fetch_batch` recomputes `COUNT(*)` on every batch, so per-request cost is nearly flat in batch size — larger batches are dramatically cheaper, which is why the default is 5000 of the allowed 10000.
 
 ### Admin UI
 
