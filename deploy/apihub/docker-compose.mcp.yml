@@ -60,7 +60,25 @@ services:
     container_name: apihub-mcp
     restart: unless-stopped
     env_file: [.env.mcp]
-    command: ["uvicorn", "mcp_server.http_app:app", "--host", "0.0.0.0", "--port", "8810"]
+    # --root-path: nginx strips /apihub/mcp before proxying, so the app sees a
+    # bare /mcp. Starlette answers /mcp (no trailing slash) with a 307 to /mcp/
+    # built from its own view of the path — without this the Location drops the
+    # gateway prefix and clients land on https://<host>/mcp/, which 404s.
+    # --proxy-headers + --forwarded-allow-ips: the gateway sets
+    # X-Forwarded-Proto, but uvicorn ignores it unless told to trust the peer;
+    # without them that same redirect also downgrades https to http.
+    command:
+      - uvicorn
+      - mcp_server.http_app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8810"
+      - --root-path
+      - /apihub/mcp
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
     # gateway-net only: reaches apihub-api (also on gateway-net) for the REST
     # proxy + identity bridge. No db-net/redis-net (thin HTTP proxy).
     networks: [gateway-net]
