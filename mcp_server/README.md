@@ -109,6 +109,39 @@ Set `MCP_WATCH_INTERVAL_SECONDS=0` to disable the poller; the `tools_changed`
 capability is then not advertised either, so a client is never told to expect
 notifications that will not arrive.
 
+The paging arguments are normally `page` / `page_size`. A definition that declares
+a bind parameter of its own by either name keeps it — the paging knob steps aside
+to `_page` / `_page_size` for that tool only, so check the tool's schema rather
+than assuming the plain names.
+
+`describe_table`'s `table` accepts `NAME` or `SCHEMA.NAME` over `[A-Za-z0-9_$#]`;
+anything else is rejected before a request goes out, so a model cannot steer the
+proxy at another REST endpoint.
+
+Every tool declares an `outputSchema` and returns `structuredContent` as well as
+the JSON text block, carries `annotations` (all read-only except
+`refresh_query_tools`, which rebuilds this process's catalog), and has a display
+`title`. Calling a name that is not registered answers with a JSON-RPC `-32602`
+protocol error rather than an `isError` result.
+
+Tool names are capped at 128 characters (the current spec's limit; it was 64,
+inherited from a superseded one, which is what used to truncate long names into
+collisions). Collisions are still resolved first-wins — see the Admin UI's
+**MCP Tools** page for which definitions lose.
+
+## Tool catalog caching
+
+The catalog is cached per caller, not once per process: `GET
+/queries/definitions` is RBAC-filtered, so one shared cache would serve
+whichever caller loaded it first to everyone else until the TTL expired. The
+cache key is a hash of the caller's credential, which means a caller whose token
+rotates reloads the catalog — one extra fetch, in exchange for never showing
+someone another caller's definitions.
+
+`refresh_query_tools` rebuilds only the calling caller's view and emits
+`notifications/tools/list_changed` when the set actually changed, so a client
+that cached `tools/list` learns about a newly registered definition.
+
 ## Transports & auth
 
 | Transport | Run | Auth |
@@ -148,3 +181,33 @@ the slowest definition being exposed: when it expires the client reports a
 failure and the model usually re-issues the same tool call, while the Hub is
 still executing the abandoned one — so a timeout below the real query time
 turns one slow query into a growing pile of duplicates on the API.
+
+isap-auth serves every app on the gateway, so "the token introspects as active"
+does not mean it was issued for this server. An incoming token must name us in an
+`aud` / `resource` / `resources` / `audience` claim — compared against
+`MCP_OAUTH_AUDIENCE`, or `MCP_PUBLIC_URL` when that is unset — or it is rejected
+with 401 before any credential is forwarded downstream. The check **fails
+closed**: a token carrying no audience claim at all is rejected, so confirm what
+isap-auth emits before turning OAuth on (see `deploy/apihub/.env.mcp.example`).
+
+The gate distinguishes its failures: **401** (no token, inactive, or not issued
+for us) carries the `WWW-Authenticate` challenge; **403** means the token was
+fine but the Hub would not mint a local identity for that person (bridge mode
+only); **503** means isap-auth or the identity bridge could not be reached, and
+deliberately carries no challenge — a 401 there would send the client round the
+whole authorization flow for an outage. Only the definitive verdicts are cached;
+an outage is retried.
+
+`MCP_OAUTH_SCOPES` (space- or comma-separated) is advertised as
+`scopes_supported` in the resource metadata and as `scope=` in the challenge, so
+clients request those instead of every scope the authorization server offers.
+When unset, a built-in default (`openid profile email`) is advertised instead:
+clients derive their authorize request from this list, and an empty one would
+stop them appending `offline_access` — the only scope that earns a refresh token
+from isap-auth.
+
+The HTTP transport validates `Origin` (403 on mismatch) and `Host` (421). Both
+allow-lists are derived from `MCP_PUBLIC_URL`, overridable with
+`MCP_ALLOWED_ORIGINS` / `MCP_ALLOWED_HOSTS`. With no public URL configured — local
+development — the checks stay off. A request with no `Origin` header is always
+allowed; that is every non-browser MCP client, and not the threat being addressed.

@@ -3,7 +3,15 @@
 import httpx
 import pytest
 
-from mcp_server.catalog import ToolCatalog, build_description, build_tool, param_schema, sanitize, tool_name
+from mcp_server.catalog import (
+    TOOL_NAME_MAX_LEN,
+    ToolCatalog,
+    build_description,
+    build_tool,
+    param_schema,
+    sanitize,
+    tool_name,
+)
 from mcp_server.client import ApiHubClient
 
 DEFINITION = {
@@ -22,7 +30,16 @@ DEFINITION = {
 def test_sanitize_and_tool_name():
     assert sanitize("HR.Employee Report!") == "hr_employee_report"
     assert tool_name("pg_test", "order_summary") == "query_pg_test_order_summary"
-    assert len(tool_name("a" * 40, "b" * 60)) <= 64
+
+
+def test_tool_names_may_use_the_full_128_characters_the_spec_allows():
+    """The old 64 cap came from a superseded limit and was the main source of
+    truncation-induced collisions; the current spec allows 1-128."""
+    from mcp_server.naming import TOOL_NAME_MAX_LEN
+
+    assert TOOL_NAME_MAX_LEN == 128
+    assert len(tool_name("a" * 40, "b" * 60)) == 107  # query_ + 40 + _ + 60, untruncated
+    assert len(tool_name("a" * 60, "b" * 90)) == 128  # still capped when genuinely over
 
 
 def test_build_tool_schema():
@@ -135,6 +152,61 @@ def test_build_tool_uses_the_description_builder():
 VERSION_PATH = "/api/v1/mcp/catalog-version"
 
 # ── per-caller isolation ───────────────────────────────────────────────────
+
+
+PAGING_COLLISION_DEFINITION = {
+    "name": "report_by_page",
+    "db_alias": "pg_test",
+    "description": "Report keyed by the source system's own page label",
+    "permission": "query:reports",
+    "params": {
+        "page": {"type": "string", "required": True, "description": "Source-system page label, e.g. P-01"},
+        "page_size": {"type": "number", "required": False, "description": "Rows per printed sheet"},
+    },
+}
+
+
+def test_declared_page_param_is_not_clobbered_by_pagination():
+    tool = build_tool("pg_test", PAGING_COLLISION_DEFINITION, page_size_max=100)
+    props = tool.inputSchema["properties"]
+    # the definition's own binds keep their declared schema
+    assert props["page"] == {"type": "string", "description": "Source-system page label, e.g. P-01"}
+    assert props["page_size"] == {"type": "number", "description": "Rows per printed sheet"}
+    # pagination moves aside instead of overwriting them
+    assert props["_page"]["type"] == "integer"
+    assert props["_page_size"]["maximum"] == 100
+    assert tool.inputSchema["required"] == ["page"]
+
+
+def test_pagination_keys_are_plain_when_no_collision():
+    tool = build_tool("pg_test", DEFINITION, page_size_max=100)
+    props = tool.inputSchema["properties"]
+    assert "_page" not in props and "_page_size" not in props
+    assert props["page"]["type"] == "integer"
+
+
+def test_build_tool_is_annotated_read_only_and_titled():
+    """Every query tool only reads. Without readOnlyHint a client has to treat
+    each call as potentially destructive and prompt the user every time."""
+    tool = build_tool("pg_test", DEFINITION, page_size_max=100)
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.destructiveHint is False
+    assert tool.annotations.idempotentHint is True
+    assert tool.annotations.openWorldHint is True
+    assert tool.title == "[pg_test] order_summary"
+
+
+def test_build_tool_declares_the_result_envelope_as_output_schema():
+    tool = build_tool("pg_test", DEFINITION, page_size_max=100)
+    props = tool.outputSchema["properties"]
+    assert props["total"]["type"] == "integer"
+    assert props["columns"] == {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Column names, in order",
+    }
+    assert props["data"]["type"] == "array"
+    assert set(tool.outputSchema["required"]) == {"success", "total", "columns", "data"}
 
 
 def _per_caller_client(header_provider, counter=None):
@@ -294,6 +366,17 @@ async def test_an_empty_catalog_is_not_an_error():
 
 
 @pytest.mark.asyncio
+async def test_target_records_the_pagination_keys_used_by_the_tool():
+    client = _mock_client({"pg_test": [DEFINITION, PAGING_COLLISION_DEFINITION]})
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
+    await catalog.tools()
+    assert catalog.target("query_pg_test_order_summary").page_key == "page"
+    assert catalog.target("query_pg_test_report_by_page").page_key == "_page"
+    assert catalog.target("query_pg_test_report_by_page").page_size_key == "_page_size"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_name_collision_first_wins():
     defs = [DEFINITION, DEFINITION | {"name": "order summary"}]  # sanitizes to same name
     client = _mock_client({"pg_test": defs})
@@ -331,7 +414,7 @@ async def test_collision_is_reported_and_logged(caplog):
 
 @pytest.mark.asyncio
 async def test_truncated_name_is_reported_but_still_exposed(caplog):
-    long_name = "x" * 80
+    long_name = "x" * 130  # untruncated name is 14 + 130 chars, past the 128 cap
     client = _mock_client({"pg_test": [DEFINITION | {"name": long_name}]})
     catalog = ToolCatalog(client, db_aliases=["pg_test"])
     with caplog.at_level("WARNING", logger="mcp_server.catalog"):
@@ -341,7 +424,7 @@ async def test_truncated_name_is_reported_but_still_exposed(caplog):
     assert len(tools) == 1  # truncation is not a drop — the tool still works
     assert diag["shadowed"] == []
     assert diag["truncated"] == [{"db_alias": "pg_test", "definition": long_name, "tool_name": tools[0].name}]
-    assert len(tools[0].name) == 64
+    assert len(tools[0].name) == TOOL_NAME_MAX_LEN
     assert "truncated" in caplog.text
     await client.aclose()
 
@@ -363,7 +446,7 @@ async def test_diagnostics_reset_on_reload():
     assert len((await catalog.refresh())["shadowed"]) == 1
 
     current["pg_test"] = fixed
-    assert await catalog.refresh() == {"query_tools": 1, "shadowed": [], "truncated": []}
+    assert await catalog.refresh() == {"query_tools": 1, "changed": False, "shadowed": [], "truncated": []}
     await client.aclose()
 
 
