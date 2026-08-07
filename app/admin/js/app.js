@@ -332,6 +332,11 @@ async function renderDashboard() {
   const area = document.getElementById('contentArea');
   area.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
 
+  // GET /databases redacts connection details for non-superusers (they would
+  // otherwise expose every data source's host, service name and DB user to any
+  // authenticated caller). Drop the columns rather than render blanks.
+  const dbConnCols = !!(currentUser && currentUser.is_superuser);
+
   try {
     const [users, roles, perms, defs] = await Promise.all([
       api('GET', '/auth/users').catch(() => []),
@@ -395,13 +400,13 @@ async function renderDashboard() {
           <button class="btn btn-sm" onclick="refreshDbStatus()">Refresh</button>
         </div>
         <div class="card-body no-pad">
-          <table class="data-table"><thead><tr><th>Alias</th><th>Type</th><th>Description</th><th>Connection</th><th>User</th><th>Status</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Alias</th><th>Type</th><th>Description</th>${dbConnCols ? '<th>Connection</th><th>User</th>' : ''}<th>Status</th></tr></thead>
           <tbody>${databases.map(d => `<tr>
             <td><strong>${esc(d.alias)}</strong>${d.alias === currentDb ? ' <span class="badge badge-blue">Active</span>' : ''}</td>
             <td><span class="badge ${d.db_type === 'oracle' ? 'badge-blue' : d.db_type === 'postgresql' ? 'badge-green' : 'badge-amber'}">${esc((d.db_type || 'oracle').toUpperCase())}</span></td>
             <td>${esc(d.description || '—')}</td>
-            <td><code>${esc(d.dsn || (d.host ? d.host + ':' + d.port + '/' + d.database : '—'))}</code></td>
-            <td>${esc(d.user)}</td>
+            ${dbConnCols ? `<td><code>${esc(d.dsn || (d.host ? d.host + ':' + d.port + '/' + d.database : '—'))}</code></td>
+            <td>${esc(d.user)}</td>` : ''}
             <td id="dbstat-${d.alias}">Checking…</td>
           </tr>`).join('')}</tbody></table>
         </div>

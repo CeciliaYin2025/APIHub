@@ -22,10 +22,29 @@ def get_db_alias(request: Request, db: str = Path(..., description="Database ali
     return db
 
 
+# What a caller needs to route a request: pick an alias, know its engine, see
+# whether the pool is up. Everything else the registry knows (dsn, host, port,
+# database, user, pool sizing) describes how the Hub connects, which is the
+# operator's business.
+_ROUTING_FIELDS = ("alias", "db_type", "description", "pool_active")
+
+
 @router.get("")
 def list_databases(current_user: User = Depends(get_current_user)):
-    """List all configured database connections."""
-    return db_registry.list_databases()
+    """List configured database connections.
+
+    Connection details are superuser-only. This endpoint requires nothing more
+    than a valid login, so without the split every API key — including a
+    permission-less service account, and every MCP caller through
+    ``list_databases`` — could read each data source's host, service name and
+    database username, production included.
+    """
+    rows = db_registry.list_databases()
+    if current_user.is_superuser:
+        return rows
+    # Build new dicts: the registry returns its own objects, and redacting in
+    # place would strip the fields for every later caller including superusers.
+    return [{k: row[k] for k in _ROUTING_FIELDS if k in row} for row in rows]
 
 
 @router.get("/status")
