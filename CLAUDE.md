@@ -61,6 +61,12 @@ celery -A app.tasks.celery_app flower --port=5555
   dynamic tools. Thin HTTP proxy over the REST API — it **never imports `app/`** or touches
   DBs directly. stdio (`python -m mcp_server`) + Streamable HTTP
   (`uvicorn mcp_server.http_app:app`). Settings: `MCP_*` env vars / `.env.mcp`.
+  Tool names come from `mcp_server/naming.py` — `query_<alias>_<definition>`, folded to
+  `[a-z0-9_-]` and capped at 64 chars. Collisions are resolved by **first-wins, silently**
+  (`catalog.py`), so a definition can be healthy over REST yet invisible to every LLM.
+  `GET /api/v1/mcp/tools` + the Admin UI **MCP Tools** page report that; both derive names
+  from `naming.py` rather than re-implementing the rules, and both are **read-only** — the
+  MCP server's own config lives in another process, so there is nothing to write to.
 
 ### Data Source Databases vs Platform Store
 

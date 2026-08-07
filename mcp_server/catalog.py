@@ -5,15 +5,13 @@ from the definition's declared bind parameters, so the LLM sees real,
 self-describing tools instead of a generic execute(name, params) black box.
 """
 
-import re
 import time
 from dataclasses import dataclass
 
 from mcp.types import Tool
 
 from mcp_server.client import ApiHubClient
-
-_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+from mcp_server.naming import sanitize, tool_name  # noqa: F401  (re-exported: long-standing import path)
 
 # SQL definition param types (app/services/sql_registry.py ParamDef) → JSON schema
 PARAM_TYPE_MAP = {
@@ -21,14 +19,6 @@ PARAM_TYPE_MAP = {
     "number": {"type": "number"},
     "date": {"type": "string", "format": "date", "description": "Date in YYYY-MM-DD format"},
 }
-
-
-def sanitize(text: str) -> str:
-    return _NAME_RE.sub("_", text).strip("_").lower()
-
-
-def tool_name(db_alias: str, definition_name: str) -> str:
-    return f"query_{sanitize(db_alias)}_{sanitize(definition_name)}"[:64]
 
 
 def build_tool(db_alias: str, definition: dict, page_size_max: int) -> Tool:

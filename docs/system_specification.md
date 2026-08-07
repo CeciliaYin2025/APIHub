@@ -3,10 +3,10 @@
 | 項目 | 內容 |
 |------|------|
 | 文件名稱 | Oracle RESTful API Hub 系統規格書 |
-| 版本 | 1.7.0 |
+| 版本 | 1.8.0 |
 | 目標資料庫 | Oracle Database 11g (11.1.0.4)（支援多資料庫） |
 | 框架 | FastAPI (Python 3.10+) |
-| 文件日期 | 2026-07-15 |
+| 文件日期 | 2026-08-07 |
 
 ---
 
@@ -591,6 +591,33 @@ DELETE FROM employees WHERE emp_id = :wh_emp_id
 **已知限制：** Python 無法安全砍掉執行中的 thread，逾時後只能放棄該 worker（`shutdown(wait=False, cancel_futures=True)`），它會存活到 driver 自身的網路逾時才結束。故此 timeout 限制的是「呼叫端等待的時間」，不是「thread 存活的時間」；`_MAX_WORKERS` 只限制單次檢查內的併發，executor 每次呼叫都重建，重複 Refresh 打向卡死的資料庫會累積被放棄的 thread。實務上受限於本端點僅開放 superuser。根治方式是在三個 adapter 各自設定 driver 層 connect timeout（未納入）。
 
 **注意：** 健康檢查會佔用一個真實的 pool 連線；當 alias 已達 `pool_max` 時，健康的資料庫也可能因等不到連線而顯示為 `timeout`。
+
+---
+
+### 4.12 MCP 工具目錄檢視服務 — `app/services/mcp_catalog_service.py`
+
+回報 **MCP server 實際會暴露哪些工具**。MCP server 是獨立行程，對每個 (db_alias, SQL 定義) 各衍生一個工具；當衍生出的名稱與既有者相同時，它保留先到者並**靜默丟棄**其餘（`mcp_server/catalog.py`）。丟棄行為發生在該行程內，沒有 log、REST API 也看不出痕跡 —— 一個定義因此可能在 Admin UI 正常、REST 呼叫正常，卻對所有 LLM 不存在。本服務即為讓此狀態浮上檯面，**唯讀，不設定任何東西**。
+
+**工具名稱衍生規則**（`mcp_server/naming.py`）：
+
+```
+query_{sanitize(db_alias)}_{sanitize(definition_name)}   →  截斷至 64 字元
+sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"，再去除頭尾 "_"
+```
+
+64 與字元集皆源自 MCP／Anthropic 對工具名稱的限制 `^[a-zA-Z0-9_-]{1,64}$`。扣掉固定前綴 `query_` 與中間的 `_`，alias 與定義名稱**合計僅餘 57 字元**。
+
+**三種撞名途徑：**
+
+| 途徑 | 範例 | 說明 |
+|------|------|------|
+| 大小寫／字元折疊 | `EO Detail`、`EO_DETAIL`、`eo_detail` → `query_dw_eo_detail` | `sanitize()` 轉小寫並把空白等字元換成 `_`。`-` 被保留，故 `eo-detail` 不會撞 |
+| 分隔符歧義 | (`pg_test`, `employees`) 與 (`pg`, `test_employees`) → `query_pg_test_employees` | alias 與定義名稱皆可含 `_`，兩者又以 `_` 相接，**可跨資料來源撞名** |
+| 長度截斷 | `..._region_v2` 與 `..._region_v3` → 同一個 64 字元名稱 | 版本號位於結尾者最易中招 |
+
+**忠實性依據：** 名稱一律由 `mcp_server/naming.py` 產生（與 `catalog.py` 同一份實作，`tests/test_mcp_catalog_service.py` 有守則測試防止兩份漂移）；迭代順序比照 `ToolCatalog._load` —— alias 依 `GET /databases` 順序，定義依 `GET /{db}/queries/definitions` 順序。**順序決定撞名時誰存活**，因此屬於答案的一部分。
+
+**已知落差：** MCP server 若設定 `MCP_DB_ALIASES`，實際只暴露此處所列的子集。該設定屬於 MCP 行程的環境變數，Hub 無從得知，故本服務一律涵蓋全部 alias。
 
 ---
 
@@ -1284,6 +1311,49 @@ Authorization: Bearer <token>
 
 ---
 
+### 5.9 MCP 工具目錄端點 (`/api/v1/mcp`)
+
+回答「哪些 SQL 定義真的變成了 MCP 工具、哪些被靜默丟棄」。衍生規則與撞名途徑見 §4.12。
+
+**唯讀端點，無對應的寫入操作** —— MCP server 是獨立行程，組態來自 `MCP_*` 環境變數，Admin UI 無處可寫。
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| `GET` | `/mcp/tools` | 列出每個 (資料來源, SQL 定義) 及其衍生的 MCP 工具名稱與暴露狀態 |
+
+**superuser only**（`Depends(get_current_active_superuser)`，非 superuser 回 `403`）—— 本端點跨全部 alias，否則呼叫者可藉此列舉自己並無 `query:<name>` 權限的定義。與 §5.8 同理，不置於 `/{db}/` 之下。
+
+稽核以 `action_type="report"`、`action="mcp_tools"` 記錄，故預設不計入 §5.8 的資料存取量。
+
+**回應範例：**
+
+```json
+{
+  "tool_name_max_len": 64,
+  "db_aliases": ["DW", "pg_test"],
+  "summary": { "definitions": 2, "exposed": 1, "shadowed": 1, "truncated": 0 },
+  "tools": [
+    { "tool_name": "query_dw_eo_detail", "db_alias": "DW", "definition": "eo_detail",
+      "description": "EO detail rows", "params": ["frozen_date"],
+      "truncated": false, "exposed": true, "shadowed_by": null,
+      "shadows": [ { "db_alias": "DW", "definition": "EO Detail" } ] },
+    { "tool_name": "query_dw_eo_detail", "db_alias": "DW", "definition": "EO Detail",
+      "description": "", "params": [],
+      "truncated": false, "exposed": false,
+      "shadowed_by": { "db_alias": "DW", "definition": "eo_detail" }, "shadows": [] }
+  ]
+}
+```
+
+| 欄位 | 說明 |
+|------|------|
+| `exposed` | 此定義是否真的成為 MCP 工具；`false` 代表名稱已被先到者佔用而遭丟棄 |
+| `shadowed_by` | `exposed=false` 時，佔用該名稱的 (資料來源, 定義)；否則為 `null` |
+| `shadows` | 此定義所排擠掉的其他定義，讓撞名從兩端都看得見 |
+| `truncated` | 衍生名稱是否曾超過 64 字元而被截斷 |
+
+---
+
 ## 6. 資料庫設計
 
 ### 6.1 系統內部表（由 SQLAlchemy ORM 管理）
@@ -1913,6 +1983,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 | **Data Maintenance** | — | 資料維護介面：讀取表結構 → 動態產生表單 → 支援單筆/批次交易寫入 |
 | **Async Tasks** | — | 查詢 Celery 任務狀態、連結至 Flower 監控面板 |
 | **API Usage Report** | — | API 使用統計（依日期區間／使用者／資料來源／API／類型篩選，可勾選 user／DW／API／日為分組依據，度量欄位可點擊排序），並可 drill-down 至個別請求明細，單筆展開檢視該次的請求參數 JSON 並複製。**僅 superuser**，非 superuser 連側邊欄項目都不顯示 |
+| **MCP Tools** | — | 唯讀檢視 MCP 工具目錄：每個 (資料來源, SQL 定義) 對應的工具名稱、是否真的暴露、撞名時被誰佔用、是否遭 64 字元截斷；可依名稱篩選或只看有問題者。**不含任何設定功能**（見 §4.12、§5.9）。**僅 superuser**，非 superuser 連側邊欄項目都不顯示 |
 
 ### 10.3 UI 元件
 
@@ -1967,7 +2038,8 @@ app/admin/
 │   └── style.css         # 完整樣式（佈局、元件、響應式）
 └── js/
     ├── app.js            # 應用邏輯（路由、共用 helper、多數頁面渲染）
-    └── usage_report.js   # API Usage Report 專屬（在 app.js 之後載入，沿用其全域 helper）
+    ├── usage_report.js   # API Usage Report 專屬（在 app.js 之後載入，沿用其全域 helper）
+    └── mcp_tools.js      # MCP Tools 專屬（同樣在 app.js 之後載入，沿用其全域 helper）
 ```
 
 `/admin/js` 是整個目錄掛載為 StaticFiles，新增 JS 檔只需在 `index.html` 加 `<script>` 標籤，不必改 `main.py`。
@@ -2281,7 +2353,8 @@ Oracle-api-hub/
 │   │   ├── procedure_service.py         # Oracle Procedure / Function 呼叫
 │   │   ├── write_service.py             # DML 操作（INSERT/UPDATE/DELETE + 批次交易）
 │   │   ├── schema_service.py            # 表結構探查（ALL_TAB_COLUMNS / 主鍵偵測）
-│   │   └── db_health_service.py         # 資料來源即時連線檢查（併發 + 共用 deadline）
+│   │   ├── db_health_service.py         # 資料來源即時連線檢查（併發 + 共用 deadline）
+│   │   └── mcp_catalog_service.py       # MCP 工具目錄唯讀投影（撞名 / 截斷偵測）
 │   ├── tasks/
 │   │   ├── __init__.py
 │   │   ├── celery_app.py                # Celery 組態 + 佇列路由
@@ -2301,20 +2374,27 @@ Oracle-api-hub/
 │   │       ├── queries.py               # 查詢端點（CRUD / 匯出 / 匯入 / 重載 / /{db}/執行）
 │   │       ├── procedures.py            # 程序端點（/{db}/同步 / 非同步）
 │   │       ├── writes.py                # 寫入端點（/{db}/單筆 / 批次 / 非同步 / 狀態查詢）
-│   │       └── schemas.py              # 表結構探查端點（/{db}/describe）
+│   │       ├── schemas.py              # 表結構探查端點（/{db}/describe）
+│   │       └── mcp.py                   # MCP 工具目錄唯讀端點（/mcp/tools，superuser only）
 │   ├── admin/                           # 管理介面 SPA
 │   │   ├── index.html                   # SPA 主頁面
 │   │   ├── css/
 │   │   │   └── style.css                # UI 樣式
 │   │   └── js/
 │   │       ├── app.js                   # 前端邏輯（路由、API、頁面渲染）
-│   │       └── usage_report.js          # API Usage Report 頁面（統計 + 明細）
+│   │       ├── usage_report.js          # API Usage Report 頁面（統計 + 明細）
+│   │       └── mcp_tools.js             # MCP Tools 頁面（唯讀工具目錄）
 │   ├── database_definitions/             # 多資料庫連線定義
 │   │   └── databases.yaml.example       # 資料庫定義範例
 │   └── sql_definitions/                 # SQL 查詢定義 YAML 備援檔（匯入至 DB 用）
 │       ├── employees.yaml               # 員工查詢範例
 │       ├── departments.yaml             # 部門查詢範例
 │       └── inventory_view.yaml          # 庫存 View 查詢範例
+├── mcp_server/                          # MCP server（獨立行程，僅透過 REST 代理，不 import app/）
+│   ├── catalog.py                       # 動態工具目錄（每個 (alias, 定義) 一個工具）
+│   ├── naming.py                        # 工具名稱衍生規則（sanitize / 64 字元上限，與 Hub 共用）
+│   ├── client.py                        # REST API HTTP client
+│   └── config.py                        # MCP_* 環境變數組態
 ├── scripts/
 │   ├── __init__.py
 │   ├── init_db.py                       # 資料庫初始化腳本（建表 + 欄位/索引補齊 + 種子資料）

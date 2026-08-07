@@ -83,6 +83,10 @@ async function showApp() {
   // only. The backend enforces it; this just avoids showing a link that 403s.
   const usageNav = document.getElementById('navUsageReport');
   if (usageNav) usageNav.classList.toggle('hidden', !(currentUser && currentUser.is_superuser));
+  // MCP Tools spans every alias, so it would let a non-superuser enumerate
+  // definitions they have no query:<name> permission for. Backend enforces it.
+  const mcpNav = document.getElementById('navMcpTools');
+  if (mcpNav) mcpNav.classList.toggle('hidden', !(currentUser && currentUser.is_superuser));
   await loadDatabases();
   navigateTo('dashboard');
 }
@@ -232,6 +236,7 @@ function navigateTo(page) {
     'query-console': 'Query Console', 'procedure-console': 'Procedure Console',
     'write-console': 'Write Console', 'data-maintenance': 'Data Maintenance',
     tasks: 'Async Tasks', 'usage-report': 'API Usage Report',
+    'mcp-tools': 'MCP Tools',
   };
   document.getElementById('pageTitle').textContent = titles[page] || page;
   const renderers = {
@@ -241,6 +246,7 @@ function navigateTo(page) {
     'query-console': renderQueryConsole, 'procedure-console': renderProcConsole,
     'write-console': renderWriteConsole, 'data-maintenance': renderDataMaintenance,
     tasks: renderTasks, 'usage-report': renderUsageReport,
+    'mcp-tools': renderMcpTools,
   };
   (renderers[page] || renderDashboard)();
 }
