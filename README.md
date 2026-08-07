@@ -173,6 +173,21 @@ Requests are tagged with an `action_type` so data access can be told apart from 
 
 > **Security note:** request parameters are recorded **unmasked and untruncated** by design. Any value a caller passes as a bind parameter lands in `api_hub_audit_logs.params`, and database backups carry it. The table is readable only by superusers, but treat backups accordingly. Table growth is bounded by `AUDIT_RETENTION_DAYS` plus `python -m scripts.purge_audit_logs` — nothing prunes it automatically.
 
+### 11. MCP Tool Catalog View (`/api/v1/mcp/tools`)
+
+Answers "which SQL definitions actually reach an LLM as MCP tools, and which quietly do not".
+
+The MCP server derives one tool per (data source, SQL definition) named `query_<alias>_<definition>` — lowercased, with anything outside `[a-zA-Z0-9_-]` folded to `_`, capped at 64 characters (the limit MCP tool names must satisfy). When two definitions derive the same name it **keeps the first and silently drops the rest**, in its own process, with no log line and no trace in the REST API. A dropped definition looks healthy in the Admin UI and serves fine over REST while being invisible to every LLM.
+
+- `GET /mcp/tools` — every (alias, definition) pair with its derived tool name, whether it is `exposed`, which definition `shadowed_by` it if not, what it `shadows`, and whether the name was `truncated`
+- Admin UI: **MCP Tools** under Operations — the same table with a filter box and a "problems only" toggle
+- **Superuser only** — it spans every alias, so it would otherwise let a caller enumerate definitions they hold no `query:<name>` permission for
+- **Read-only by design.** The MCP server is a separate process configured through `MCP_*` env vars, so there is nothing here to write to; this reports, it does not configure
+
+Three ways names collide: character folding (`EO Detail` = `EO_DETAIL` = `eo_detail`), the ambiguous `_` between alias and name (`pg_test`+`employees` = `pg`+`test_employees`), and truncation at 64 characters — which bites hardest when the distinguishing part is a suffix like `_v2` / `_v3`. Names come from `mcp_server/naming.py`, the same module the MCP server itself uses, so the view cannot drift from what is really served.
+
+> If the MCP server sets `MCP_DB_ALIASES` it exposes a subset of what this lists. That setting belongs to the MCP process and the Hub cannot read it.
+
 ## System-to-System Integration
 
 Oracle API Hub 設計為給其他系統（ERP、HR、BI 等）透過 REST API 存取 Oracle 資料的中繼平台。以下說明外部系統如何整合，以及權限設置方式。
@@ -455,7 +470,8 @@ app/
 │   ├── query_service.py     # Query execution with pagination
 │   ├── procedure_service.py # Oracle proc/func execution
 │   ├── write_service.py     # DML operations
-│   └── db_health_service.py # Live connectivity checks for data sources
+│   ├── db_health_service.py # Live connectivity checks for data sources
+│   └── mcp_catalog_service.py # Read-only projection of the MCP tool catalog
 ├── tasks/
 │   ├── celery_app.py        # Celery configuration
 │   ├── write_tasks.py       # Async write tasks
@@ -467,11 +483,18 @@ app/
 │   ├── queries.py           # Query endpoints (CRUD + execute)
 │   ├── procedures.py        # Procedure endpoints
 │   ├── writes.py            # Write endpoints
+│   ├── mcp.py               # MCP tool catalog view (superuser only)
 │   └── health.py            # Health check
 └── sql_definitions/         # YAML query definitions (fallback/import source)
     ├── employees.yaml
     ├── departments.yaml
     └── inventory_view.yaml
+
+mcp_server/                  # MCP server — separate process, proxies the REST API only
+├── catalog.py               # Dynamic tool catalog (one tool per alias × definition)
+├── naming.py                # Tool-name derivation, shared with the Hub's catalog view
+├── client.py                # REST API HTTP client
+└── config.py                # MCP_* settings
 
 examples/
 └── read_rd_tc_all.py        # Client example: auth + execute a query as a scoped reader account
