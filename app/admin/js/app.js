@@ -987,16 +987,19 @@ async function loadApiKeys() {
     }
     el.innerHTML = `
       <table class="data-table"><thead><tr>
-        <th>Name</th><th>Service Account</th><th>Prefix</th><th>Last Used</th><th>Expires</th><th>Status</th><th>Actions</th>
+        <th>Name</th><th>Service Account</th><th>Prefix</th><th>Last Used</th><th>Expires</th><th>IP Allowlist</th><th>Rate Limit</th><th>Status</th><th>Actions</th>
       </tr></thead>
       <tbody>${keys.map(k => `<tr>
         <td><strong>${esc(k.name)}</strong></td>
         <td>${esc(k.service_account)}</td>
         <td><code>${esc(k.key_prefix)}…</code></td>
         <td>${k.last_used_at ? esc(k.last_used_at) : '—'}</td>
-        <td>${k.expires_at ? esc(k.expires_at) : '—'}</td>
+        <td>${k.expires_at ? esc(k.expires_at) : '<span class="text-muted">never</span>'}</td>
+        <td>${(k.ip_allowlist && k.ip_allowlist.length) ? `<code>${esc(k.ip_allowlist.join(', '))}</code>` : '<span class="text-muted">any</span>'}</td>
+        <td>${k.rate_limit_per_minute ? esc(k.rate_limit_per_minute) + '/min' : '<span class="text-muted">default</span>'}</td>
         <td>${k.revoked_at ? '<span class="badge badge-red">Revoked</span>' : (k.enabled ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Disabled</span>')}</td>
-        <td>${(k.enabled && !k.revoked_at) ? `<button class="btn btn-xs btn-danger" onclick="revokeApiKey(${k.id}, '${esc(k.name)}')">Revoke</button>` : '—'}</td>
+        <td>${(k.enabled && !k.revoked_at) ? `<button class="btn btn-xs" onclick="openApiKeyEdit(${k.id})">Edit</button>
+             <button class="btn btn-xs btn-danger" onclick="revokeApiKey(${k.id}, '${esc(k.name)}')">Revoke</button>` : '—'}</td>
       </tr>`).join('')}</tbody></table>
     `;
   } catch (err) {
@@ -1072,6 +1075,57 @@ window.submitApiKey = async function() {
         </div>
       </div>
     `;
+    await loadApiKeys();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+window.openApiKeyEdit = async function(id) {
+  const keys = await api('GET', '/auth/api-keys');
+  const k = keys.find(x => x.id === id);
+  if (!k) { toast('API key not found', 'error'); return; }
+  // datetime-local wants "YYYY-MM-DDTHH:MM" with no zone or seconds.
+  const expires = k.expires_at ? String(k.expires_at).replace(' ', 'T').slice(0, 16) : '';
+  // openModal sets the title with textContent, so it must not be pre-escaped.
+  openModal(`Edit API Key — ${k.name}`, `
+    <form id="apiKeyEditForm">
+      <div class="form-group">
+        <label for="akExpires">Expires at</label>
+        <input type="datetime-local" id="akExpires" value="${esc(expires)}">
+        <small class="text-muted">Leave blank for no expiry.</small>
+      </div>
+      <div class="form-group">
+        <label for="akIps">IP allowlist</label>
+        <input type="text" id="akIps" placeholder="10.0.0.0/8, 192.168.1.5" value="${esc((k.ip_allowlist || []).join(', '))}">
+        <small class="text-muted">Comma-separated IPs or CIDRs. Blank = any. Note: only effective when the
+        caller's real IP reaches the Hub — requests proxied through the MCP server arrive with its own address.</small>
+      </div>
+      <div class="form-group">
+        <label for="akRate">Rate limit (requests/min)</label>
+        <input type="number" id="akRate" min="1" value="${k.rate_limit_per_minute || ''}">
+        <small class="text-muted">Blank = use the global default.</small>
+      </div>
+    </form>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-primary" onclick="submitApiKeyEdit(${k.id})">Save</button>`);
+};
+
+window.submitApiKeyEdit = async function(id) {
+  const expires = document.getElementById('akExpires').value.trim();
+  const ips = document.getElementById('akIps').value.trim();
+  const rate = document.getElementById('akRate').value.trim();
+  // Every field is sent explicitly: the endpoint treats an omitted key as
+  // "leave alone" and a null as "clear", so clearing a box must send null.
+  const body = {
+    expires_at: expires ? expires : null,
+    ip_allowlist: ips ? ips.split(',').map(s => s.trim()).filter(Boolean) : null,
+    rate_limit_per_minute: rate ? Number(rate) : null,
+  };
+  try {
+    await api('PATCH', `/auth/api-keys/${id}`, body);
+    closeModal();
+    toast('API key updated', 'success');
     await loadApiKeys();
   } catch (err) {
     toast(err.message, 'error');

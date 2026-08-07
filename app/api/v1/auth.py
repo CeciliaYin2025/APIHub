@@ -1,5 +1,6 @@
 """Authentication endpoints: login, user/role/permission CRUD."""
 
+import ipaddress
 import secrets
 from urllib.parse import urlencode
 
@@ -11,8 +12,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import create_access_token, get_password_hash
 from app.db.session import get_db
-from app.models.user import Permission, Role, User
-from app.schemas.api_key import ApiKeyCreate, ApiKeyCreated, ApiKeyOut
+from app.models.user import ApiKey, Permission, Role, User
+from app.schemas.api_key import ApiKeyCreate, ApiKeyCreated, ApiKeyOut, ApiKeyUpdate
 from app.schemas.auth import (
     PasswordReset,
     PermissionCreate,
@@ -282,6 +283,8 @@ def _key_to_out(row) -> dict:
         "expires_at": row.expires_at,
         "last_used_at": row.last_used_at,
         "revoked_at": row.revoked_at,
+        "ip_allowlist": row.ip_allowlist,
+        "rate_limit_per_minute": row.rate_limit_per_minute,
     }
 
 
@@ -312,6 +315,46 @@ def list_api_keys_endpoint(
     _admin: User = Depends(get_current_active_superuser),
 ):
     return [_key_to_out(r) for r in list_api_keys(db)]
+
+
+@router.patch("/api-keys/{key_id}", response_model=ApiKeyOut)
+def update_api_key_endpoint(
+    key_id: int,
+    payload: ApiKeyUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_active_superuser),
+):
+    """Change an existing key's restrictions (expiry, IP allowlist, rate limit).
+
+    Without this the only way to tighten a key already in use was to edit the
+    row by hand. Omitted fields are left alone; an explicit null clears the
+    restriction.
+    """
+    row = db.query(ApiKey).filter(ApiKey.id == key_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+    if row.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="API key is revoked; issue a new key instead")
+
+    fields = payload.model_fields_set
+    if "ip_allowlist" in fields and payload.ip_allowlist is not None:
+        for entry in payload.ip_allowlist:
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid IP or CIDR: {entry!r}")
+        row.ip_allowlist = payload.ip_allowlist
+    elif "ip_allowlist" in fields:
+        row.ip_allowlist = None
+
+    if "expires_at" in fields:
+        row.expires_at = payload.expires_at
+    if "rate_limit_per_minute" in fields:
+        row.rate_limit_per_minute = payload.rate_limit_per_minute
+
+    db.commit()
+    db.refresh(row)
+    return _key_to_out(row)
 
 
 @router.delete("/api-keys/{key_id}", status_code=200)
