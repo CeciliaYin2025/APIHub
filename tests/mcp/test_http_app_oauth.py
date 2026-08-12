@@ -62,6 +62,79 @@ async def test_valid_bearer_injects_local_jwt():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/mcp", "/mcp/", "/mcp/anything"])
+async def test_gate_fires_behind_a_root_path(path):
+    """Deployment runs with --root-path, and uvicorn prepends it to scope["path"].
+
+    A request for /mcp/ then arrives as /apihub/mcp/mcp/. Matching the raw path
+    against "/mcp" never fired, so the gate was skipped and every MCP call ran
+    unauthenticated (failing closed downstream, but wholly unusable).
+    """
+    root = "/apihub/mcp"
+    captured = {}
+    app = OAuthGateMiddleware(_inner_capture(captured), _FakeExchanger("jwt"))
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": root + path,
+            "root_path": root,
+            "headers": [],
+            "query_string": b"",
+        },
+        receive,
+        send,
+    )
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 401, "OAuth gate must still guard /mcp when mounted under a root_path"
+    headers = {k.decode().lower(): v.decode() for k, v in start["headers"]}
+    assert "resource_metadata=" in headers["www-authenticate"]
+    assert captured == {}, "request must never reach the inner app unauthenticated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/health", "/.well-known/oauth-protected-resource"])
+async def test_public_routes_stay_public_behind_a_root_path(path):
+    """Stripping root_path must not accidentally gate the unauthenticated routes."""
+    root = "/apihub/mcp"
+    captured = {}
+    app = OAuthGateMiddleware(_inner_capture(captured), _FakeExchanger("jwt"))
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": root + path,
+            "root_path": root,
+            "headers": [],
+            "query_string": b"",
+        },
+        receive,
+        send,
+    )
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 200
+    assert captured["headers"] == {}
+
+
+@pytest.mark.asyncio
 async def test_wellknown_route_is_public():
     app = create_http_app()
     transport = httpx.ASGITransport(app=app)

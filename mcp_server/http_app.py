@@ -57,6 +57,24 @@ class CredentialPassthroughMiddleware:
             _request_headers.reset(token)
 
 
+def _mounted_path(scope) -> str:
+    """The request path as this app sees it, with any ASGI root_path removed.
+
+    uvicorn builds ``scope["path"]`` as ``root_path + path`` (see its
+    ``httptools_impl``), so when the service runs behind the gateway with
+    ``--root-path /apihub/mcp`` a request for ``/mcp/`` arrives as
+    ``/apihub/mcp/mcp/``. Matching the raw path against ``/mcp`` therefore never
+    fires in deployment — which silently disabled the OAuth gate entirely, since
+    it is the only middleware installed when OAuth is on. Strip the prefix first
+    so the comparison is about the route, not about where it is mounted.
+    """
+    path = scope.get("path", "")
+    root = scope.get("root_path", "")
+    if root and path.startswith(root):
+        path = path[len(root) :] or "/"
+    return path
+
+
 class OAuthGateMiddleware:
     """OAuth 2.1 Resource Server gate for /mcp (Phase 2).
 
@@ -71,7 +89,7 @@ class OAuthGateMiddleware:
         self.exchanger = exchanger
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or not scope["path"].startswith("/mcp"):
+        if scope["type"] != "http" or not _mounted_path(scope).startswith("/mcp"):
             await self.app(scope, receive, send)
             return
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
