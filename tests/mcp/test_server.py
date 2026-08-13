@@ -72,7 +72,7 @@ async def test_dispatch_static_tools():
     desc = await dispatch_tool(client, catalog, "describe_table", {"db": "pg_test", "table": "orders"})
     assert desc["table"] == "orders"
     refreshed = await dispatch_tool(client, catalog, "refresh_query_tools", {})
-    assert refreshed == {"query_tools": 1}
+    assert refreshed == {"query_tools": 1, "shadowed": [], "truncated": []}
     await client.aclose()
 
 

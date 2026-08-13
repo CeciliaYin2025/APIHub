@@ -66,7 +66,11 @@ class ApiHubClient:
         return await self._request("GET", "/databases")
 
     async def list_definitions(self, db: str) -> list[dict]:
-        return await self._request("GET", f"/{db}/queries/definitions")
+        # permitted_only: the tool catalog is pushed into an LLM's context, so an
+        # unfiltered list would hand every caller the names, descriptions and
+        # parameters of definitions they hold no query:<name> permission for.
+        # Execution was always gated; discovery was not.
+        return await self._request("GET", f"/{db}/queries/definitions", params={"permitted_only": "true"})
 
     async def execute_query(
         self, db: str, query_name: str, params: dict, *, page: int = 1, page_size: int = 50

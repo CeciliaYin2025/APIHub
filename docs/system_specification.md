@@ -619,6 +619,10 @@ sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"
 
 **已知落差：** MCP server 若設定 `MCP_DB_ALIASES`，實際只暴露此處所列的子集。該設定屬於 MCP 行程的環境變數，Hub 無從得知，故本服務一律涵蓋全部 alias。
 
+同理，MCP server 抓取定義時帶 `?permitted_only=true`（見 5.4.0），因此**個別呼叫者看到的工具數量會少於本檢視**：本頁為超級管理員視角的全集，回答「這個定義有沒有被撞名吃掉」；`tools/list` 則是該呼叫者視角，回答「我能用哪些」。兩者不一致屬預期。
+
+**丟棄不再靜默：** `ToolCatalog._load()` 對每個撞名或截斷的定義各寫一筆 `WARNING`，並將明細留在 `catalog.diagnostics()`；`refresh_query_tools` 工具直接回傳該結構（`{"query_tools": N, "shadowed": [...], "truncated": [...]}`），故操作者從 MCP client 端亦可看見。本檢視仍是唯一能在 **Hub 側**看到全貌的地方。
+
 ---
 
 ## 5. API 端點規格
@@ -746,7 +750,7 @@ username=admin&password=changeme
 
 | 方法 | 路徑 | 認證 | 說明 |
 |------|------|------|------|
-| `GET` | `/queries/definitions` | Bearer Token | 列出所有可用查詢定義（僅 metadata，不含 SQL） |
+| `GET` | `/queries/definitions` | Bearer Token | 列出所有可用查詢定義（僅 metadata，不含 SQL）。`?permitted_only=true` 只回傳呼叫者確實有權執行者 |
 | `GET` | `/queries/definitions/{name}` | 超級管理員 | 取得單一定義完整資訊（含 SQL） |
 | `POST` | `/queries/definitions` | 超級管理員 | 新增 SQL 定義 |
 | `PUT` | `/queries/definitions/{name}` | 超級管理員 | 更新 SQL 定義 |

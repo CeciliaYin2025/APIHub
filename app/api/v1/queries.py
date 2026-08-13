@@ -19,7 +19,7 @@ from app.models.sql_definition import SqlDefinitionModel
 from app.models.user import User
 from app.schemas.query import QueryRequest, QueryResponse
 from app.schemas.sql_definition import SqlDefinitionCreate, SqlDefinitionOut, SqlDefinitionUpdate
-from app.services.auth_service import PermissionChecker, get_current_user
+from app.services.auth_service import PermissionChecker, get_current_user, has_permission
 from app.services.query_service import execute_query
 from app.services.sql_registry import sql_registry
 
@@ -58,10 +58,21 @@ def _row_to_out(row: SqlDefinitionModel) -> dict:
 @router.get("/{db}/queries/definitions")
 def list_definitions(
     db: str = Depends(get_db_alias),
+    permitted_only: bool = False,
     current_user: User = Depends(get_current_user),
 ):
-    """List SQL definitions for a specific database."""
+    """List SQL definitions for a specific database.
+
+    ``permitted_only=true`` drops the definitions the caller could not actually
+    execute (same rule as the ``PermissionChecker`` on ``/execute``). It is
+    opt-in because the Admin UI's management view must show every definition to
+    the superuser who maintains them; callers that *hand the list onward* —
+    the MCP tool catalog, the Query Console picker — should set it, or they
+    advertise names, descriptions and parameters the caller has no right to.
+    """
     definitions = sql_registry.list_all(db_alias=db)
+    if permitted_only:
+        definitions = [d for d in definitions if has_permission(current_user, d.permission, "read")]
     return [
         {
             "name": d.name,

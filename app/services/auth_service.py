@@ -230,6 +230,33 @@ def get_current_active_superuser(current_user: User = Depends(get_current_user))
     return current_user
 
 
+def has_permission(user: User, resource: str, action: str) -> bool:
+    """Whether *user* may perform *action* on *resource*.
+
+    The predicate behind ``PermissionChecker``, split out so callers that need
+    to *filter* a list (rather than gate a single request) can reuse the exact
+    matching rules instead of re-implementing them. Both must stay one
+    implementation: a listing that disagreed with the gate would either hide
+    definitions the caller can run or advertise ones they cannot.
+    """
+    if user.is_superuser:
+        return True
+
+    for role in user.roles:
+        for perm in role.permissions:
+            if perm.action != action:
+                continue
+            if perm.resource == resource:
+                return True
+            # Trailing-"*" wildcard: the part before "*" is a prefix the
+            # requested resource must start with. Covers full-category
+            # wildcards ("query:*") and partial prefixes ("query:RD_TC*").
+            if perm.resource.endswith("*") and resource.startswith(perm.resource[:-1]):
+                return True
+
+    return False
+
+
 class PermissionChecker:
     """Dependency that checks if the current user has a specific permission.
 
@@ -242,20 +269,8 @@ class PermissionChecker:
         self.action = action
 
     def __call__(self, current_user: User = Depends(get_current_user)):
-        if current_user.is_superuser:
+        if has_permission(current_user, self.resource, self.action):
             return current_user
-
-        for role in current_user.roles:
-            for perm in role.permissions:
-                if perm.action != self.action:
-                    continue
-                if perm.resource == self.resource:
-                    return current_user
-                # Trailing-"*" wildcard: the part before "*" is a prefix the
-                # requested resource must start with. Covers full-category
-                # wildcards ("query:*") and partial prefixes ("query:RD_TC*").
-                if perm.resource.endswith("*") and self.resource.startswith(perm.resource[:-1]):
-                    return current_user
 
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

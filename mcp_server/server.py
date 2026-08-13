@@ -38,7 +38,8 @@ STATIC_TOOLS = [
         name="refresh_query_tools",
         description=(
             "Re-read SQL definitions from the API Hub and rebuild the query tool list. "
-            "Call this when a definition was just added or changed."
+            "Call this when a definition was just added or changed. Reports any definition "
+            "dropped for a tool-name collision ('shadowed') or with a truncated name."
         ),
         inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
     ),
@@ -56,8 +57,8 @@ async def dispatch_tool(client: ApiHubClient, catalog: ToolCatalog, name: str, a
     if name == "describe_table":
         return await client.describe_table(args["db"], args["table"])
     if name == "refresh_query_tools":
-        tools = await catalog.tools(force=True)
-        return {"query_tools": len(tools)}
+        await catalog.tools(force=True)
+        return catalog.diagnostics()
 
     target = catalog.target(name)
     if target is None:

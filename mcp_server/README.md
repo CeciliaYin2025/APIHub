@@ -7,7 +7,13 @@ REST API — RBAC, audit, and rate limiting apply per caller, unchanged.
 
 - `query_<db>_<name>` — one per SQL definition (dynamic; paged, page_size ≤ MCP_PAGE_SIZE_MAX)
 - `list_databases` / `describe_table` — schema discovery
-- `refresh_query_tools` — rebuild the tool list after definition changes
+- `refresh_query_tools` — rebuild the tool list after definition changes; reports
+  definitions dropped for a name collision (`shadowed`) or with a truncated name
+
+The catalog is fetched with `?permitted_only=true`, so `tools/list` shows only
+the definitions the caller's own credential could execute — the list goes into
+an LLM's context, and an unfiltered one would leak the names, descriptions and
+parameters of everything else on the alias.
 
 ## Transports & auth
 

@@ -57,7 +57,9 @@ async def test_list_definitions_and_databases_paths():
     await client.describe_table("orcl", "HR.EMPLOYEES")
     assert calls == [
         "http://hub/api/v1/databases",
-        "http://hub/api/v1/orcl/queries/definitions",
+        # permitted_only keeps the tool catalog — which is fed straight into an
+        # LLM's context — down to what this credential could actually execute.
+        "http://hub/api/v1/orcl/queries/definitions?permitted_only=true",
         "http://hub/api/v1/orcl/schemas/describe/HR.EMPLOYEES",
     ]
     await client.aclose()

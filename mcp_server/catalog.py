@@ -5,13 +5,21 @@ from the definition's declared bind parameters, so the LLM sees real,
 self-describing tools instead of a generic execute(name, params) black box.
 """
 
+import logging
 import time
 from dataclasses import dataclass
 
 from mcp.types import Tool
 
 from mcp_server.client import ApiHubClient
-from mcp_server.naming import sanitize, tool_name  # noqa: F401  (re-exported: long-standing import path)
+from mcp_server.naming import (  # noqa: F401  (sanitize/tool_name re-exported: long-standing import path)
+    TOOL_NAME_MAX_LEN,
+    sanitize,
+    tool_name,
+    untruncated_tool_name,
+)
+
+logger = logging.getLogger(__name__)
 
 # SQL definition param types (app/services/sql_registry.py ParamDef) → JSON schema
 PARAM_TYPE_MAP = {
@@ -76,6 +84,8 @@ class ToolCatalog:
         self._loaded_at = 0.0
         self._tools: list[Tool] = []
         self._targets: dict[str, QueryTarget] = {}
+        self._shadowed: list[dict] = []
+        self._truncated: list[dict] = []
 
     @property
     def page_size_max(self) -> int:
@@ -83,6 +93,19 @@ class ToolCatalog:
 
     def target(self, name: str) -> QueryTarget | None:
         return self._targets.get(name)
+
+    def diagnostics(self) -> dict:
+        """What the last load dropped or mangled.
+
+        A shadowed definition is healthy over REST yet invisible to every LLM,
+        and nothing in the MCP protocol carries that fact to the operator — so
+        it rides out on ``refresh_query_tools`` and the log.
+        """
+        return {
+            "query_tools": len(self._tools),
+            "shadowed": list(self._shadowed),
+            "truncated": list(self._truncated),
+        }
 
     async def tools(self, force: bool = False) -> list[Tool]:
         stale = (time.monotonic() - self._loaded_at) > self._ttl
@@ -97,13 +120,45 @@ class ToolCatalog:
             aliases = [d["alias"] for d in await self._client.list_databases()]
         tools: list[Tool] = []
         targets: dict[str, QueryTarget] = {}
+        shadowed: list[dict] = []
+        truncated: list[dict] = []
         for alias in aliases:
             for definition in await self._client.list_definitions(alias):
                 tool = build_tool(alias, definition, self._page_size_max)
-                if tool.name in targets:
-                    continue  # sanitized-name collision — first definition wins
+                untruncated = untruncated_tool_name(alias, definition["name"])
+                if len(untruncated) > TOOL_NAME_MAX_LEN:
+                    truncated.append({"db_alias": alias, "definition": definition["name"], "tool_name": tool.name})
+                    logger.warning(
+                        "MCP tool name for %s/%s exceeds %d chars and was truncated to %r",
+                        alias,
+                        definition["name"],
+                        TOOL_NAME_MAX_LEN,
+                        tool.name,
+                    )
+                winner = targets.get(tool.name)
+                if winner is not None:
+                    # sanitized-name collision — first definition wins
+                    shadowed.append(
+                        {
+                            "db_alias": alias,
+                            "definition": definition["name"],
+                            "tool_name": tool.name,
+                            "shadowed_by": {"db_alias": winner.db_alias, "definition": winner.query_name},
+                        }
+                    )
+                    logger.warning(
+                        "MCP tool name %r for %s/%s collides with %s/%s — not exposed",
+                        tool.name,
+                        alias,
+                        definition["name"],
+                        winner.db_alias,
+                        winner.query_name,
+                    )
+                    continue
                 tools.append(tool)
                 targets[tool.name] = QueryTarget(db_alias=alias, query_name=definition["name"])
         self._tools = tools
         self._targets = targets
+        self._shadowed = shadowed
+        self._truncated = truncated
         self._loaded_at = time.monotonic()

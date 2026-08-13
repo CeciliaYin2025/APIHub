@@ -1789,9 +1789,12 @@ window.qcSetAuthMode = function(mode) {
 };
 
 // Load the current database's SQL definitions for the picker.
+// permitted_only: the picker exists to be run from, so offering a query the
+// caller has no query:<name> permission for only buys them a 403 on submit.
+// Superusers pass every check, so their picker is unchanged.
 async function qcLoadDefinitions() {
   try {
-    qcDefs = await api('GET', `${dbPrefix()}/queries/definitions`);
+    qcDefs = await api('GET', `${dbPrefix()}/queries/definitions?permitted_only=true`);
   } catch (e) {
     qcDefs = [];
     toast('Failed to load queries: ' + e.message, 'error');

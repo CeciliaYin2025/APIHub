@@ -106,3 +106,68 @@ async def test_name_collision_first_wins():
     assert len(tools) == 1
     assert catalog.target("query_pg_test_order_summary").query_name == "order_summary"
     await client.aclose()
+
+
+# ── diagnostics: what the load dropped or mangled ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_collision_is_reported_and_logged(caplog):
+    defs = [DEFINITION, DEFINITION | {"name": "order summary"}]
+    client = _mock_client({"pg_test": defs})
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
+    with caplog.at_level("WARNING", logger="mcp_server.catalog"):
+        await catalog.tools()
+
+    diag = catalog.diagnostics()
+    assert diag["query_tools"] == 1
+    assert diag["truncated"] == []
+    assert diag["shadowed"] == [
+        {
+            "db_alias": "pg_test",
+            "definition": "order summary",
+            "tool_name": "query_pg_test_order_summary",
+            "shadowed_by": {"db_alias": "pg_test", "definition": "order_summary"},
+        }
+    ]
+    # The drop is otherwise invisible: healthy over REST, absent from every LLM.
+    assert "collides" in caplog.text
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_truncated_name_is_reported_but_still_exposed(caplog):
+    long_name = "x" * 80
+    client = _mock_client({"pg_test": [DEFINITION | {"name": long_name}]})
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
+    with caplog.at_level("WARNING", logger="mcp_server.catalog"):
+        tools = await catalog.tools()
+
+    assert len(tools) == 1  # truncation is not a drop — the tool still works
+    diag = catalog.diagnostics()
+    assert diag["shadowed"] == []
+    assert diag["truncated"] == [{"db_alias": "pg_test", "definition": long_name, "tool_name": tools[0].name}]
+    assert len(tools[0].name) == 64
+    assert "truncated" in caplog.text
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_reset_on_reload():
+    """A collision fixed in the Hub must disappear from diagnostics, not linger."""
+    colliding = [DEFINITION, DEFINITION | {"name": "order summary"}]
+    fixed = [DEFINITION]
+    current = {"pg_test": colliding}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=current["pg_test"])
+
+    client = ApiHubClient("http://hub", transport=httpx.MockTransport(handler))
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
+    await catalog.tools()
+    assert len(catalog.diagnostics()["shadowed"]) == 1
+
+    current["pg_test"] = fixed
+    await catalog.tools(force=True)
+    assert catalog.diagnostics() == {"query_tools": 1, "shadowed": [], "truncated": []}
+    await client.aclose()
