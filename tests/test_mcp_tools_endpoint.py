@@ -25,14 +25,23 @@ class _Req:
 
 
 def _route():
-    return next(r for r in app.routes if isinstance(r, APIRoute) and r.path.endswith("/mcp/tools"))
+    """The APIRoute object, located by its endpoint rather than by its path.
+
+    ``app.routes`` is not a flat list of APIRoutes: FastAPI 0.14x keeps each
+    included router as a nested node, and the APIRoute underneath it carries the
+    router-relative path, not the mounted one. Matching on the endpoint function
+    is stable across both layouts; the mounted path is asserted via the OpenAPI
+    schema below, which is public API.
+    """
+    return next(r for r in mcp_api.router.routes if isinstance(r, APIRoute) and r.endpoint is mcp_api.list_mcp_tools)
 
 
 def test_route_is_registered_under_the_api_prefix():
     from app.core.config import settings
 
-    assert _route().path == f"{settings.api_prefix}/mcp/tools"
-    assert "GET" in _route().methods
+    path = f"{settings.api_prefix}/mcp/tools"
+    assert path in app.openapi()["paths"]
+    assert "get" in app.openapi()["paths"][path]
 
 
 def test_endpoint_requires_a_superuser():
