@@ -71,7 +71,7 @@ async def _run_once(client, catalog, tracker, ticks=1):
 async def test_notifies_the_client_when_the_catalog_changes():
     state = {"version": "v1", "defs": [DEFINITION]}
     client = _client(state)
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=3600)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
     await catalog.tools()
     tracker = SessionTracker()
     tracker.session = _FakeSession()
@@ -90,7 +90,7 @@ async def test_quiet_when_nothing_changed():
     state = {"version": "v1", "defs": [DEFINITION]}
     counter: list[str] = []
     client = _client(state, counter)
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=3600)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
     await catalog.tools()
     tracker = SessionTracker()
     tracker.session = _FakeSession()
@@ -108,7 +108,7 @@ async def test_quiet_when_nothing_changed():
 async def test_survives_an_unreachable_hub():
     state = {"version": "v1", "defs": [DEFINITION], "version_error": True}
     client = _client(state)
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=3600)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
     tracker = SessionTracker()
     tracker.session = _FakeSession()
 
@@ -127,7 +127,7 @@ async def test_survives_a_reload_failure_and_keeps_the_old_version():
     """A failed reload must not record the new version, or the change is lost forever."""
     state = {"version": "v1", "defs": [DEFINITION]}
     client = _client(state)
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=3600)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
     await catalog.tools()
     tracker = SessionTracker()
     tracker.session = _FakeSession()
@@ -148,7 +148,7 @@ async def test_survives_a_reload_failure_and_keeps_the_old_version():
 async def test_survives_a_dead_session():
     state = {"version": "v1", "defs": [DEFINITION]}
     client = _client(state)
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=3600)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
     await catalog.tools()
     tracker = SessionTracker()
     tracker.session = _FakeSession(fail=True)
@@ -163,7 +163,7 @@ async def test_reloads_even_before_a_session_exists():
     """A change before the first tools/list still updates the catalog silently."""
     state = {"version": "v1", "defs": [DEFINITION]}
     client = _client(state)
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=3600)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
     await catalog.tools()
     tracker = SessionTracker()  # no session captured yet
 

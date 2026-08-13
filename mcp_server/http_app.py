@@ -119,7 +119,6 @@ def create_http_app():
         client,
         db_aliases=aliases,
         page_size_max=mcp_settings.page_size_max,
-        ttl_seconds=mcp_settings.catalog_ttl_seconds,
     )
     server = create_server(client, catalog)
     session_manager = StreamableHTTPSessionManager(app=server, stateless=True)

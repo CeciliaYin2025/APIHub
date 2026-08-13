@@ -6,7 +6,6 @@ self-describing tools instead of a generic execute(name, params) black box.
 """
 
 import logging
-import time
 from dataclasses import dataclass
 
 from mcp.types import Tool
@@ -133,7 +132,29 @@ class QueryTarget:
 
 
 class ToolCatalog:
-    """Maps MCP tool names to (db_alias, query definition) targets, with TTL refresh."""
+    """Builds the MCP tool list and maps tool names to query targets.
+
+    Two kinds of state with deliberately different lifetimes:
+
+    - **The tool list is never held.** It is permission-filtered per caller
+      (``permitted_only``), and one process serves every caller on the HTTP
+      transport, so a cached copy would hand whichever caller populated it to
+      everyone else — the names, descriptions and parameters of tools they
+      cannot run. ``tools()` therefore fetches on every call and returns the
+      result without storing it; there is no field here for a later change to
+      accidentally start sharing.
+    - **The name → target map is shared and cumulative.** It is derived from
+      naming alone, discloses nothing, and executing a target the caller lacks
+      permission for still 403s at the REST layer. It must accumulate rather
+      than be replaced: a restricted caller's load would otherwise erase the
+      entries a privileged caller needs to dispatch.
+
+    Not caching the list costs one ``/databases`` plus one ``definitions`` fetch
+    per alias, per ``tools/list`` — a handful of requests to a service on the
+    same network, and clients ask about once per connection. The fingerprint
+    endpoint still earns its keep on the stdio watcher, which polls it rather
+    than refetching every definition to notice a change.
+    """
 
     def __init__(
         self,
@@ -141,17 +162,11 @@ class ToolCatalog:
         *,
         db_aliases: list[str] | None = None,
         page_size_max: int = 100,
-        ttl_seconds: int = 300,
     ):
         self._client = client
         self._db_aliases = db_aliases
         self._page_size_max = page_size_max
-        self._ttl = ttl_seconds
-        self._loaded_at = 0.0
-        self._tools: list[Tool] = []
         self._targets: dict[str, QueryTarget] = {}
-        self._shadowed: list[dict] = []
-        self._truncated: list[dict] = []
         self._version: str | None = None
 
     @property
@@ -166,51 +181,31 @@ class ToolCatalog:
     def target(self, name: str) -> QueryTarget | None:
         return self._targets.get(name)
 
-    def diagnostics(self) -> dict:
-        """What the last load dropped or mangled.
+    async def tools(self, force: bool = False) -> list[Tool]:
+        """The tool list for the *current* caller. Always fresh; never shared.
+
+        ``force`` is accepted for callers that mean "rebuild now"
+        (``refresh_query_tools``, the stdio watcher) and is a no-op: every call
+        already rebuilds.
+        """
+        tools, _ = await self._load()
+        return tools
+
+    async def refresh(self) -> dict:
+        """Rebuild for the current caller and report what the load dropped.
 
         A shadowed definition is healthy over REST yet invisible to every LLM,
         and nothing in the MCP protocol carries that fact to the operator — so
         it rides out on ``refresh_query_tools`` and the log.
+
+        Returned straight from this load rather than read back off the instance:
+        two callers loading concurrently would otherwise be able to read each
+        other's counts.
         """
-        return {
-            "query_tools": len(self._tools),
-            "shadowed": list(self._shadowed),
-            "truncated": list(self._truncated),
-        }
+        _, diagnostics = await self._load()
+        return diagnostics
 
-    async def tools(self, force: bool = False) -> list[Tool]:
-        if force or self._loaded_at == 0.0:
-            await self._load()
-            return self._tools
-
-        if (time.monotonic() - self._loaded_at) > self._ttl:
-            # Expiry means "check", not "rebuild". One small request usually
-            # ends it; the N-alias refetch happens only when the hash moved.
-            # That is what makes a short TTL affordable.
-            if await self._is_current():
-                self._loaded_at = time.monotonic()
-            else:
-                await self._load()
-        return self._tools
-
-    async def _is_current(self) -> bool:
-        """Whether the cached tool list still matches the Hub's fingerprint.
-
-        False on any doubt — an unknown local version, or a Hub that cannot
-        answer (older build without the endpoint, network blip). Falling back to
-        the full reload costs a few requests; wrongly answering True would serve
-        a stale tool list indefinitely.
-        """
-        if self._version is None:
-            return False
-        try:
-            return await self._client.catalog_version() == self._version
-        except ApiHubError as e:
-            logger.debug("catalog-version check failed (%s); falling back to a full reload", e)
-            return False
-
-    async def _load(self) -> None:
+    async def _load(self) -> tuple[list[Tool], dict]:
         # Read the fingerprint *before* the definitions: a change landing
         # mid-load then leaves a stale-looking version and costs one redundant
         # reload later. The other order would record a version newer than the
@@ -264,9 +259,10 @@ class ToolCatalog:
                     continue
                 tools.append(tool)
                 targets[tool.name] = QueryTarget(db_alias=alias, query_name=definition["name"])
-        self._tools = tools
-        self._targets = targets
-        self._shadowed = shadowed
-        self._truncated = truncated
+
+        # Collisions are detected against *this* load's names only — matching
+        # against the accumulated map would report every tool as colliding with
+        # its own entry from a previous load.
+        self._targets.update(targets)
         self._version = version
-        self._loaded_at = time.monotonic()
+        return tools, {"query_tools": len(tools), "shadowed": shadowed, "truncated": truncated}

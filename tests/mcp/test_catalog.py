@@ -1,4 +1,4 @@
-"""Dynamic tool catalog: definition → MCP Tool mapping, naming, TTL refresh."""
+"""Dynamic tool catalog: definition → MCP Tool mapping, naming, per-caller isolation."""
 
 import httpx
 import pytest
@@ -134,6 +134,93 @@ def test_build_tool_uses_the_description_builder():
 
 VERSION_PATH = "/api/v1/mcp/catalog-version"
 
+# ── per-caller isolation ───────────────────────────────────────────────────
+
+
+def _per_caller_client(header_provider, counter=None):
+    """A Hub that filters definitions by credential, as permitted_only does."""
+    everything = [
+        DEFINITION,
+        DEFINITION | {"name": "salary_detail", "permission": "query:salary_detail"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if counter is not None:
+            counter.append(request.url.path)
+        if request.url.path == VERSION_PATH:
+            return httpx.Response(200, json={"version": "v1"})
+        if request.headers.get("X-API-Key") == "admin":
+            return httpx.Response(200, json=everything)
+        return httpx.Response(200, json=everything[:1])
+
+    return ApiHubClient("http://hub", headers_provider=header_provider, transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_one_callers_tool_list_never_reaches_another():
+    """The HTTP transport shares one catalog across every caller.
+
+    The tool list is permission-filtered, so caching it process-wide would serve
+    whichever caller happened to populate it to everyone else — handing a
+    restricted user the names, descriptions and parameters of tools they cannot
+    run, which is precisely what permitted_only exists to prevent. Execution
+    stays gated either way, so this is disclosure, not escalation.
+    """
+    creds: dict = {}
+    client = _per_caller_client(lambda: creds)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])  # one instance, as create_http_app() builds it
+
+    creds["X-API-Key"] = "admin"
+    admin = {t.name for t in await catalog.tools()}
+
+    creds["X-API-Key"] = "limited"
+    limited = {t.name for t in await catalog.tools()}
+
+    assert "query_pg_test_salary_detail" in admin
+    assert "query_pg_test_salary_detail" not in limited
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_refresh_reports_the_current_callers_load_only():
+    """refresh_query_tools rebuilds too, so it leaks by the same route if shared.
+
+    Its counts come straight from its own load rather than being read back off
+    the instance, so two callers refreshing concurrently cannot see each other's.
+    """
+    creds: dict = {}
+    client = _per_caller_client(lambda: creds)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
+
+    creds["X-API-Key"] = "admin"
+    assert (await catalog.refresh())["query_tools"] == 2
+
+    creds["X-API-Key"] = "limited"
+    assert (await catalog.refresh())["query_tools"] == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_target_stays_resolvable_for_the_caller_who_can_see_it():
+    """The name→target map is shared on purpose and must accumulate, not reset.
+
+    It is derived from naming alone and discloses nothing, and executing a
+    target without permission still 403s at the REST layer. But if a restricted
+    caller's load *replaced* the map, a privileged caller's next tools/call
+    would answer "Unknown tool" for a tool they legitimately hold.
+    """
+    creds: dict = {}
+    client = _per_caller_client(lambda: creds)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
+
+    creds["X-API-Key"] = "admin"
+    await catalog.tools()
+    creds["X-API-Key"] = "limited"
+    await catalog.tools()
+
+    assert catalog.target("query_pg_test_salary_detail") is not None
+    await client.aclose()
+
 
 def _mock_client(definitions_by_db, databases=None, counter=None, version=None):
     """version=None leaves /mcp/catalog-version 404ing, as an older Hub would."""
@@ -170,28 +257,39 @@ async def test_catalog_loads_all_databases_when_aliases_empty():
 
 
 @pytest.mark.asyncio
-async def test_catalog_respects_explicit_aliases_and_ttl_cache():
+async def test_explicit_aliases_skip_the_databases_call():
     counter: list[str] = []
     client = _mock_client({"pg_test": [DEFINITION]}, counter=counter)
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=3600)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
     await catalog.tools()
-    await catalog.tools()  # within TTL — no extra fetch
-    assert counter.count("/api/v1/pg_test/queries/definitions") == 1
-    await catalog.tools(force=True)  # forced refresh fetches again
-    assert counter.count("/api/v1/pg_test/queries/definitions") == 2
-    # explicit aliases → /databases is never called
     assert "/api/v1/databases" not in counter
     await client.aclose()
 
 
 @pytest.mark.asyncio
-async def test_empty_catalog_respects_ttl():
+async def test_every_call_refetches_for_the_current_caller():
+    """No cache by design — see the ToolCatalog docstring.
+
+    The list is permission-filtered, so holding one copy in a process that
+    serves every caller is what leaked it. The cost is a handful of requests on
+    the local network, once per connection.
+    """
     counter: list[str] = []
-    client = _mock_client({"pg_test": []}, counter=counter)
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=3600)
+    client = _mock_client({"pg_test": [DEFINITION]}, counter=counter)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
+    await catalog.tools()
+    await catalog.tools()
+    await catalog.tools(force=True)  # force is a no-op: every call already reloads
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 3
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_catalog_is_not_an_error():
+    client = _mock_client({"pg_test": []})
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
     assert await catalog.tools() == []
-    assert await catalog.tools() == []  # within TTL — served from cache
-    assert counter.count("/api/v1/pg_test/queries/definitions") == 1
+    assert (await catalog.refresh())["query_tools"] == 0
     await client.aclose()
 
 
@@ -215,9 +313,7 @@ async def test_collision_is_reported_and_logged(caplog):
     client = _mock_client({"pg_test": defs})
     catalog = ToolCatalog(client, db_aliases=["pg_test"])
     with caplog.at_level("WARNING", logger="mcp_server.catalog"):
-        await catalog.tools()
-
-    diag = catalog.diagnostics()
+        diag = await catalog.refresh()
     assert diag["query_tools"] == 1
     assert diag["truncated"] == []
     assert diag["shadowed"] == [
@@ -240,9 +336,9 @@ async def test_truncated_name_is_reported_but_still_exposed(caplog):
     catalog = ToolCatalog(client, db_aliases=["pg_test"])
     with caplog.at_level("WARNING", logger="mcp_server.catalog"):
         tools = await catalog.tools()
+        diag = await catalog.refresh()
 
     assert len(tools) == 1  # truncation is not a drop — the tool still works
-    diag = catalog.diagnostics()
     assert diag["shadowed"] == []
     assert diag["truncated"] == [{"db_alias": "pg_test", "definition": long_name, "tool_name": tools[0].name}]
     assert len(tools[0].name) == 64
@@ -264,63 +360,14 @@ async def test_diagnostics_reset_on_reload():
 
     client = ApiHubClient("http://hub", transport=httpx.MockTransport(handler))
     catalog = ToolCatalog(client, db_aliases=["pg_test"])
-    await catalog.tools()
-    assert len(catalog.diagnostics()["shadowed"]) == 1
+    assert len((await catalog.refresh())["shadowed"]) == 1
 
     current["pg_test"] = fixed
-    await catalog.tools(force=True)
-    assert catalog.diagnostics() == {"query_tools": 1, "shadowed": [], "truncated": []}
+    assert await catalog.refresh() == {"query_tools": 1, "shadowed": [], "truncated": []}
     await client.aclose()
 
 
-# ── TTL expiry checks the fingerprint before paying for a refetch ──────────
-
-
-@pytest.mark.asyncio
-async def test_expired_ttl_with_an_unchanged_version_skips_the_refetch():
-    """The point of the fingerprint: expiry means "check", not "rebuild".
-
-    Without this, a short TTL costs one request per alias per interval, which is
-    why the TTL was long and the catalog stale.
-    """
-    counter: list[str] = []
-    client = _mock_client({"pg_test": [DEFINITION]}, counter=counter, version="v1")
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=0)  # always expired
-
-    await catalog.tools()
-    assert counter.count("/api/v1/pg_test/queries/definitions") == 1
-    assert catalog.version == "v1"
-
-    await catalog.tools()
-    await catalog.tools()
-    # Two more version checks, no further definition fetches.
-    assert counter.count(VERSION_PATH) == 3
-    assert counter.count("/api/v1/pg_test/queries/definitions") == 1
-    await client.aclose()
-
-
-@pytest.mark.asyncio
-async def test_expired_ttl_with_a_changed_version_reloads():
-    counter: list[str] = []
-    state = {"version": "v1", "defs": [DEFINITION]}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        counter.append(request.url.path)
-        if request.url.path == VERSION_PATH:
-            return httpx.Response(200, json={"version": state["version"]})
-        return httpx.Response(200, json=state["defs"])
-
-    client = ApiHubClient("http://hub", transport=httpx.MockTransport(handler))
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=0)
-
-    assert len(await catalog.tools()) == 1
-    state["version"] = "v2"
-    state["defs"] = [DEFINITION, DEFINITION | {"name": "other"}]
-
-    assert len(await catalog.tools()) == 2
-    assert catalog.version == "v2"
-    assert counter.count("/api/v1/pg_test/queries/definitions") == 2
-    await client.aclose()
+# ── the fingerprint is still recorded, for the stdio watcher to compare ────
 
 
 @pytest.mark.asyncio
@@ -328,7 +375,7 @@ async def test_a_hub_without_the_version_endpoint_still_works():
     """Degrades to the old always-refetch behaviour rather than serving a stale list."""
     counter: list[str] = []
     client = _mock_client({"pg_test": [DEFINITION]}, counter=counter, version=None)
-    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=0)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
 
     await catalog.tools()
     assert catalog.version is None

@@ -52,7 +52,7 @@ Three different answers, and conflating them wastes a lot of debugging time:
 |---|---|---|
 | Editing a definition's **SQL** | **Immediately** — tool calls are proxied live to `POST /{db}/queries/execute`, which reads the Hub's registry. No catalog is involved. | same |
 | **Adding, renaming or deleting** a definition, or changing its **description / result_description / group_name / params** | **Within `MCP_WATCH_INTERVAL_SECONDS`** (default 30) — pushed as `notifications/tools/list_changed`. | **Not until the client reconnects.** |
-| Editing a **role** so a caller may see more or fewer definitions | Next TTL lapse or reconnect | Next reconnect |
+| Editing a **role** so a caller may see more or fewer definitions | Next `tools/list` | Next reconnect |
 
 ### How the fingerprint works
 
@@ -62,10 +62,29 @@ result_description, permission and parameter declarations. **Not the SQL**: an
 SQL edit changes results, not tools, and is already live, so hashing it would
 force pointless rebuilds.
 
-That one small request replaces the refetch-everything check, which is what
-makes a short TTL affordable: on expiry `ToolCatalog` asks for the fingerprint
-and only reloads every alias when it moved. A Hub too old to answer degrades to
-the previous always-refetch behaviour rather than serving a stale list.
+The stdio watcher polls it instead of refetching every definition to notice a
+change, which is what makes a 30-second interval affordable. A Hub too old to
+answer simply never matches, so the watcher reloads each tick rather than going
+silent.
+
+### The tool list is not cached
+
+`ToolCatalog` fetches on every `tools/list` and returns the result without
+holding it. The list is permission-filtered per caller (`permitted_only`) and
+one process serves every HTTP caller, so a process-wide copy served whichever
+caller populated it to everyone else — handing a restricted user the names,
+descriptions and parameters of tools they cannot run. Execution was gated
+throughout, so that was disclosure rather than escalation, but it defeated
+`permitted_only` on the transport that has more than one user.
+
+The cost is one `/databases` plus one `definitions` fetch per alias, per
+`tools/list` — a few requests on the local network, and clients ask about once
+per connection. There is no `MCP_CATALOG_TTL_SECONDS` any more.
+
+The name → target map *is* shared and accumulates across callers. It is derived
+from naming alone, discloses nothing, and dispatching a target without
+permission still 403s at the REST layer; it has to accumulate, or a restricted
+caller's load would erase entries a privileged caller needs.
 
 ### Why stdio can push and HTTP cannot
 
@@ -77,11 +96,11 @@ The session is latched by `SessionTracker` on the first handler call, because
 The HTTP transport runs `stateless=True` (see the module docstring in
 `http_app.py`): each request gets its own short-lived session, so there is
 nothing to push to later, and the `tools_changed` capability is correctly never
-declared there. Most clients call `tools/list` once per connection, so
-**lowering the TTL does nothing for an HTTP client** — it will not ask again.
-For HTTP, reconnect (`/mcp` in Claude Code), or call `refresh_query_tools`,
-which rebuilds the server-side catalog and reports what it dropped — though the
-client still shows its cached list until it issues another `tools/list`.
+declared there. Most clients call `tools/list` once per connection, so an
+HTTP client sees a new definition only when it reconnects (`/mcp` in Claude
+Code) — the server always has the current list ready; the client just does not
+ask. `refresh_query_tools` reports what a rebuild dropped, but likewise cannot
+make the client re-list.
 
 Making HTTP live too needs stateful sessions with per-session credential
 binding, which the current passthrough design deliberately rules out.
@@ -122,5 +141,4 @@ length of the outage. It is for monitoring.
 
 All via `MCP_*` env vars or `.env.mcp` — see `mcp_server/config.py`.
 Phase 2 (OAuth 2.1 Resource Server, isap-auth) is toggled by `MCP_OAUTH_ENABLED`.
-`MCP_CATALOG_TTL_SECONDS` and `MCP_WATCH_INTERVAL_SECONDS` are covered under
-Freshness above.
+`MCP_WATCH_INTERVAL_SECONDS` is covered under Freshness above.

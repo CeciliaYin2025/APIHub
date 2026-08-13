@@ -637,15 +637,21 @@ sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"
 |---------|-------|-----------------|
 | 修改定義的 **SQL** | **立即** —— 工具呼叫即時代理到 `POST /{db}/queries/execute`，讀 Hub 的 registry，完全不經過 catalog | 同左 |
 | **新增／改名／刪除**定義，或修改 `description`／`result_description`／`group_name`／`params` | **`MCP_WATCH_INTERVAL_SECONDS` 內**（預設 30 秒），以 `notifications/tools/list_changed` 推播 | **要等 client 重新連線** |
-| 修改**角色權限**，使某人可見的定義增減 | 下次 TTL 到期或重連 | 下次重連 |
+| 修改**角色權限**，使某人可見的定義增減 | 下次 `tools/list` | 下次重連 |
 
 **指紋機制。** `GET /api/v1/mcp/catalog-version`（`app/services/mcp_catalog_version.py`）回傳一個雜湊，涵蓋 alias 清單與每個定義的 name／group_name／description／result_description／permission／params —— **不含 SQL**。SQL 改動影響的是查詢結果而非工具本身，且本來就即時生效，納入雜湊只會在每次調整 SQL 時觸發無謂的全量重建。
 
-`ToolCatalog` 在 TTL 到期時先問這一個小請求，雜湊未變就只重設計時器，變了才重抓所有 alias 的定義 —— 這正是讓短 TTL 變得划算的原因。若 Hub 版本較舊沒有此端點，行為退回「每次全量重抓」，而非誤判為未變動而供應過期清單。
+stdio 的背景輪詢用它來判斷是否有變動，而不必每 30 秒重抓所有定義 —— 這正是讓短輪詢間隔變得划算的原因。若 Hub 版本較舊沒有此端點，雜湊永遠對不上，輪詢會每次都重載，而非靜默失效。
+
+**工具清單不做快取。** `ToolCatalog` 每次 `tools/list` 都重新抓取並直接回傳，不留在實例上。清單是**按呼叫者過濾**的（`permitted_only`），而 HTTP transport 下整個 process 共用一個 catalog —— 快取一份等於把「先填快取那個人」的清單發給所有人，讓低權限使用者看到自己無法執行的工具名稱、描述與參數。執行端始終有 `PermissionChecker` 把關，所以那是**資訊揭露而非越權**，但它讓 `permitted_only` 在唯一有多使用者的那條路上失效。
+
+代價是每次 `tools/list` 多一次 `/databases` 加每個 alias 一次 `definitions` —— 都是同網段的小請求，而 client 大約每次連線才問一次。`MCP_CATALOG_TTL_SECONDS` 已移除。
+
+name → target 對照表**則是共用且累積的**：它純粹由命名衍生、不揭露任何資訊，且派送到無權限的 target 仍會在 REST 層 403。它必須累積而非覆寫，否則低權限呼叫者的載入會抹掉高權限呼叫者派送所需的項目。
 
 **為何 stdio 能推播、HTTP 不能。** stdio 持有單一長生命週期的 `ServerSession`，因此背景輪詢（`mcp_server/__main__.py::watch_catalog`）可以比對指紋並呼叫 `send_tool_list_changed()`。該 session 由 `SessionTracker` 在第一次 handler 呼叫時擷取 —— `Server.run()` 在內部建立 session 且從不回傳，只能從 per-message context 取得。
 
-HTTP transport 為 `stateless=True`（理由見 `http_app.py` 模組 docstring），每個請求各自建立短命 session，事後無對象可推播，因此該側**正確地從不宣告** `tools_changed` capability。多數 client 每次連線只呼叫一次 `tools/list`，**所以調低 TTL 對 HTTP client 依然毫無幫助** —— 它不會再問。HTTP 要更新只能重連（Claude Code 用 `/mcp`），或呼叫 `refresh_query_tools` 重建 server 端 catalog（但 client 仍顯示自己快取的清單，直到它主動再發一次 `tools/list`）。
+HTTP transport 為 `stateless=True`（理由見 `http_app.py` 模組 docstring），每個請求各自建立短命 session，事後無對象可推播，因此該側**正確地從不宣告** `tools_changed` capability。多數 client 每次連線只呼叫一次 `tools/list`，因此 HTTP client 要看到新定義只能**重連**（Claude Code 用 `/mcp`）—— server 端隨時都是最新的，是 client 不再問。`refresh_query_tools` 會回報重建時丟棄了什麼，但同樣無法讓 client 重新列表。
 
 要讓 HTTP 也即時，需改為 stateful session 並綁定 per-session 憑證，而這正是目前憑證 passthrough 設計刻意排除的（`mcp_server/http_app.py`）。
 

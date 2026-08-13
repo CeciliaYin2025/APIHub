@@ -57,10 +57,15 @@ async def dispatch_tool(client: ApiHubClient, catalog: ToolCatalog, name: str, a
     if name == "describe_table":
         return await client.describe_table(args["db"], args["table"])
     if name == "refresh_query_tools":
-        await catalog.tools(force=True)
-        return catalog.diagnostics()
+        return await catalog.refresh()
 
     target = catalog.target(name)
+    if target is None:
+        # The map only fills as callers list tools, so a client working from a
+        # tool list it cached across a server restart can arrive here first.
+        # Load once before giving up.
+        await catalog.tools()
+        target = catalog.target(name)
     if target is None:
         raise ApiHubError(404, f"Unknown tool: {name}")
     page = int(args.pop("page", 1) or 1)

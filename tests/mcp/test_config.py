@@ -7,8 +7,13 @@ def test_defaults():
     s = McpSettings(_env_file=None)
     assert s.api_hub_url == "http://localhost:8000"
     assert s.page_size_max == 100
-    assert s.catalog_ttl_seconds == 300
+    assert s.watch_interval_seconds == 30
     assert s.oauth_enabled is False
+
+
+def test_there_is_no_catalog_ttl():
+    """Removed with the shared tool-list cache — a knob that did nothing would mislead."""
+    assert not hasattr(McpSettings(_env_file=None), "catalog_ttl_seconds")
 
 
 def test_env_prefix(monkeypatch):
