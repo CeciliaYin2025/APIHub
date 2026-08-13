@@ -7,6 +7,13 @@ Admin UI in headless chromium.
 - `smoke.spec.js` — the login page renders.
 - `query-console.spec.js` — definition picker, param autofill, Parameter Reference.
 - `raw-json-copy.spec.js` — the Copy buttons on the console result blocks.
+- `sql-definition-groups.spec.js` — the SQL Definitions list grouped by
+  `group_name`: group ordering and per-group counts, the pane switch, the
+  selection surviving a detail round-trip, and the create form deriving Name
+  (`<group>_`) and Permission (`query:<name>`) from the Group while leaving
+  hand-edited values alone. It seeds its own `ZZ_*` definitions because the
+  global fixture predates the field — those ungrouped fixtures are what the
+  `(ungrouped)` assertion covers.
 - `usage-report.spec.js` — the API Usage Report. Seeds audited query executions
   (deliberately failing: there is no Oracle here, and failed calls are audited
   too), then asserts the aggregated call/success/failure counts, the drill-down
