@@ -1636,6 +1636,12 @@ window.viewSqlDef = async function(name) {
           <div class="detail-item detail-wide"><span class="detail-label">Returns</span><span class="detail-value">${esc(d.result_description || '—')}</span></div>
         </div>
 
+        <p class="text-muted text-sm mt-4">
+          <strong>MCP:</strong> editing the SQL takes effect immediately — every call is proxied live.
+          A new, renamed or deleted definition, or a change to its description, Returns, group or parameters,
+          only reaches an LLM after its MCP client reconnects (the tool list is fetched once per connection).
+        </p>
+
         <div class="form-group mt-4">
           <label>SQL</label>
           ${d.sql

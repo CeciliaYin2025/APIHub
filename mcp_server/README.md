@@ -40,6 +40,40 @@ the description because models follow stated formats far more reliably than the
 JSON Schema `format` keyword, and the binds reach the database as strings, so a
 wrong shape is a runtime error the dialect layer cannot rescue.
 
+## Freshness — when a definition change reaches the LLM
+
+Two different answers, and conflating them wastes a lot of debugging time:
+
+| Change | Visible to a connected client |
+|---|---|
+| Editing a definition's **SQL** | **Immediately.** Tool calls are proxied live to `POST /{db}/queries/execute`, which reads the Hub's registry — no MCP-side cache is involved. |
+| **Adding, renaming or deleting** a definition, or changing its **description / result_description / group_name / params** | **Not until the client reconnects.** |
+
+Three things stack up to produce that second row:
+
+1. `ToolCatalog` caches the tool list for `MCP_CATALOG_TTL_SECONDS` (default 300).
+2. An expired TTL only means the *next* `tools/list` refetches — nothing refreshes on its own.
+3. The server never sends `notifications/tools/list_changed`, and does not
+   declare the capability: `create_initialization_options()` is called with the
+   SDK's default `NotificationOptions` (`tools_changed=False`). The HTTP
+   transport also runs `stateless=True` (see the module docstring in
+   `http_app.py`), so there is no persistent session to push over.
+
+Most clients — Claude Code and Claude Desktop included — call `tools/list` once
+when the connection is established. **Lowering the TTL therefore does not help
+an HTTP client**: it will not ask again regardless.
+
+To pick up a new definition:
+
+- reconnect the MCP client (`/mcp` in Claude Code), or
+- call `refresh_query_tools`, which rebuilds the server-side catalog — the
+  client still shows its cached list until it issues another `tools/list`.
+
+Making this live for stdio needs `NotificationOptions(tools_changed=True)` plus
+a poller calling `session.send_tool_list_changed()`. Making it live for HTTP
+additionally needs stateful sessions with per-session credential binding, which
+the current passthrough design deliberately rules out.
+
 ## Transports & auth
 
 | Transport | Run | Auth |

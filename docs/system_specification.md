@@ -627,6 +627,29 @@ sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"
 
 **丟棄不再靜默：** `ToolCatalog._load()` 對每個撞名或截斷的定義各寫一筆 `WARNING`，並將明細留在 `catalog.diagnostics()`；`refresh_query_tools` 工具直接回傳該結構（`{"query_tools": N, "shadowed": [...], "truncated": [...]}`），故操作者從 MCP client 端亦可看見。本檢視仍是唯一能在 **Hub 側**看到全貌的地方。
 
+#### 4.12.1 定義變更何時對 LLM 生效
+
+**兩種答案，混為一談會浪費大量除錯時間：**
+
+| 變更內容 | 已連線的 client 何時看到 |
+|---------|----------------------|
+| 修改定義的 **SQL** | **立即。** 工具呼叫是即時代理到 `POST /{db}/queries/execute`，該端點讀 Hub 的 registry，完全不經過 MCP 端任何快取 |
+| **新增／改名／刪除**定義，或修改 `description`／`result_description`／`group_name`／`params` | **要等 client 重新連線** |
+
+第二列由三層原因疊加而成：
+
+1. `ToolCatalog` 以 `MCP_CATALOG_TTL_SECONDS`（預設 300 秒）快取工具清單。
+2. TTL 過期只代表**下一次** `tools/list` 會重抓 —— 沒有任何機制會自行刷新。
+3. Server 從不送 `notifications/tools/list_changed`，也未宣告該 capability：`create_initialization_options()` 使用 SDK 預設的 `NotificationOptions`（`tools_changed=False`）。HTTP transport 另有 `stateless=True`（理由見 `http_app.py` 模組 docstring），沒有持久 session 可推播。
+
+多數 client（含 Claude Code / Claude Desktop）只在建立連線時呼叫一次 `tools/list`。**因此調低 TTL 對 HTTP client 毫無幫助** —— 它根本不會再問。
+
+要讓新定義出現，只能：**重連 MCP client**（Claude Code 用 `/mcp`），或呼叫 `refresh_query_tools` 重建 server 端 catalog —— 但後者只更新 server 端，client 仍顯示自己快取的清單，直到它主動再發一次 `tools/list`。
+
+若要做到真正即時：stdio 需要 `NotificationOptions(tools_changed=True)` 加上輪詢並呼叫 `session.send_tool_list_changed()`；HTTP 還額外需要 stateful session 與 per-session 憑證綁定，而這正是目前憑證 passthrough 設計刻意排除的（`mcp_server/http_app.py`）。
+
+Admin UI 的 SQL 定義詳細頁在中段以一行灰字說明本節規則，因為填完 Returns 後發現 LLM 仍讀到舊描述，是最容易誤判為 bug 的情境。
+
 ---
 
 ## 5. API 端點規格
