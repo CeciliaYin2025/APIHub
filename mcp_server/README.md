@@ -92,6 +92,16 @@ the current passthrough design deliberately rules out.
     claude mcp add apihub-http --transport http http://localhost:8810/mcp/ \
       --header "X-API-Key: <key>"
 
+## Health
+
+`GET /health` (HTTP transport) reports this process **and** whether the REST API
+answers, returning 503 when it does not — a pure proxy that is alive but cut off
+is not healthy, and used to report `{"status": "ok"}` regardless.
+
+Do **not** wire it to a compose `healthcheck:` with restart semantics: restarting
+the proxy cannot fix an unreachable API, it only adds a restart loop for the
+length of the outage. It is for monitoring.
+
 ## Settings
 
 All via `MCP_*` env vars or `.env.mcp` — see `mcp_server/config.py`.

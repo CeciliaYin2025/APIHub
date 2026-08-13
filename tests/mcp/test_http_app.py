@@ -6,17 +6,56 @@ import contextlib
 import httpx
 import pytest
 
-from mcp_server.http_app import CredentialPassthroughMiddleware, create_http_app, passthrough_headers
+from mcp_server.http_app import CredentialPassthroughMiddleware, passthrough_headers
+
+
+def _app_with_backend(monkeypatch, backend):
+    """create_http_app() wired to a mock REST backend instead of a live one.
+
+    The health route now reaches upstream, so leaving the real client in place
+    would make this suite pass or fail depending on whether something happens to
+    be listening on localhost:8000.
+    """
+    import mcp_server.http_app as http_app_mod
+    from mcp_server.client import ApiHubClient
+
+    def patched_client(base_url, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(backend)
+        return ApiHubClient(base_url, **kwargs)
+
+    monkeypatch.setattr(http_app_mod, "ApiHubClient", patched_client)
+    return http_app_mod.create_http_app()
 
 
 @pytest.mark.asyncio
-async def test_health_endpoint():
-    app = create_http_app()
+async def test_health_reports_ok_when_the_api_hub_answers(monkeypatch):
+    def backend(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/health"
+        return httpx.Response(200, json={"status": "ok"})
+
+    app = _app_with_backend(monkeypatch, backend)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://mcp") as client:
         resp = await client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.json()["status"] == "ok"
+    assert resp.json()["api_hub"]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_health_is_503_when_the_api_hub_is_unreachable(monkeypatch):
+    """The whole point: this process is a proxy, so alive-but-cut-off is not healthy."""
+
+    def backend(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    app = _app_with_backend(monkeypatch, backend)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp") as client:
+        resp = await client.get("/health")
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "degraded"
+    assert "unreachable" in resp.json()["api_hub"]["error"].lower()
 
 
 @pytest.mark.asyncio

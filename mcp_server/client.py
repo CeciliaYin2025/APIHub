@@ -49,6 +49,15 @@ class ApiHubClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    async def ping(self, timeout: float = 3.0) -> None:
+        """Raise ApiHubError if the REST API is not answering.
+
+        Deliberately short-timeout and unauthenticated: the Hub's ``/health``
+        needs no credential, and a health probe must not inherit the 30 s
+        request timeout — a hung upstream would hang the probe with it.
+        """
+        await self._request("GET", "/health", timeout=timeout)
+
     async def _request(self, method: str, url: str, **kwargs) -> dict | list:
         try:
             resp = await self._http.request(method, url, headers=self._headers_provider(), **kwargs)

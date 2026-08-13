@@ -21,7 +21,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from mcp_server.catalog import ToolCatalog
-from mcp_server.client import ApiHubClient
+from mcp_server.client import ApiHubClient, ApiHubError
 from mcp_server.config import mcp_settings
 from mcp_server.oauth import TokenExchanger, challenge_header, protected_resource_metadata
 from mcp_server.server import create_server
@@ -128,7 +128,24 @@ def create_http_app():
         await session_manager.handle_request(scope, receive, send)
 
     async def health(request):
-        return JSONResponse({"status": "ok"})
+        """Liveness *and* upstream reachability.
+
+        This process is a pure proxy: alive-but-cut-off from the REST API is
+        indistinguishable from healthy at the container level, and used to be
+        indistinguishable here too. 503 when the Hub cannot be reached.
+
+        Do NOT wire this to a compose ``healthcheck:`` with restart semantics —
+        restarting the proxy does not fix an unreachable API, it just adds a
+        restart loop for the duration of the outage. It is for monitoring.
+        """
+        try:
+            await client.ping()
+        except ApiHubError as e:
+            return JSONResponse(
+                {"status": "degraded", "api_hub": {"url": mcp_settings.api_hub_url, "error": e.detail}},
+                status_code=503,
+            )
+        return JSONResponse({"status": "ok", "api_hub": {"url": mcp_settings.api_hub_url, "status": "ok"}})
 
     async def oauth_metadata(request):
         return JSONResponse(protected_resource_metadata())

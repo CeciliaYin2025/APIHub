@@ -91,6 +91,25 @@ async def test_connection_error_maps_to_apihub_error():
     await client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_ping_hits_health_and_raises_when_unreachable():
+    def ok(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/health"
+        return httpx.Response(200, json={"status": "ok"})
+
+    client = make_client(ok)
+    await client.ping()  # does not raise
+    await client.aclose()
+
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    client = make_client(down)
+    with pytest.raises(ApiHubError):
+        await client.ping()
+    await client.aclose()
+
+
 def test_static_headers_empty_key_yields_no_header():
     assert static_headers("")() == {}
     assert static_headers("sk-x")() == {"X-API-Key": "sk-x"}
