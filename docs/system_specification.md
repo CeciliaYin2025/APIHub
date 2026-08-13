@@ -619,6 +619,8 @@ sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"
 
 **參數描述組成**（`mcp_server/catalog.py::param_schema`）：型別提示以 ` — ` **接在**定義自身的參數描述之後，不是取代它。`date` 參數得到 `<描述> — Format: YYYY-MM-DD (e.g. 2026-08-01).`；`string`/`number` 無提示，維持原描述。提示放在 description 而非只靠 JSON Schema 的 `format` 關鍵字，是因為模型對後者的遵守度偏低，而綁定值是以字串送進資料庫的 —— 格式錯誤會是執行期錯誤，dialect 層救不回來。
 
+**可用的 fetch_mode**（`mcp_server/catalog.py::FETCH_MODES`）：工具只開放 `page`／`count`／`one` 三種。`all` 與 `batch` **刻意不開放** —— 兩者都回傳全部符合的列，六位數的結果集不該進入模型的 context（那是 `scripts/extract_query.py` 的職責）；`top_n` 則相對於 `page` + `page_size` 沒有增益。此白名單同時實作在工具的 `enum` **與** `dispatch_tool` 中：前者是給模型的建議，後者才是邊界。
+
 **忠實性依據：** 名稱一律由 `mcp_server/naming.py` 產生（與 `catalog.py` 同一份實作，`tests/test_mcp_catalog_service.py` 有守則測試防止兩份漂移）；迭代順序比照 `ToolCatalog._load` —— alias 依 `GET /databases` 順序，定義依 `GET /{db}/queries/definitions` 順序。**順序決定撞名時誰存活**，因此屬於答案的一部分。
 
 **已知落差：** MCP server 若設定 `MCP_DB_ALIASES`，實際只暴露此處所列的子集。該設定屬於 MCP 行程的環境變數，Hub 無從得知，故本服務一律涵蓋全部 alias。

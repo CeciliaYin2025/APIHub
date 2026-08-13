@@ -42,6 +42,15 @@ def test_build_tool_schema():
     assert tool.inputSchema["additionalProperties"] is False
 
 
+def test_fetch_mode_offers_only_the_context_safe_modes():
+    """`all` and `batch` return every matching row — never offer them to a model."""
+    props = build_tool("pg_test", DEFINITION, page_size_max=100).inputSchema["properties"]
+    assert props["fetch_mode"]["enum"] == ["page", "count", "one"]
+    assert props["fetch_mode"]["default"] == "page"
+    assert "all" not in props["fetch_mode"]["enum"]
+    assert "batch" not in props["fetch_mode"]["enum"]
+
+
 # ── param schema: type hint and operator description are joined, not swapped ──
 
 DATE_HINT = "Format: YYYY-MM-DD (e.g. 2026-08-01)."

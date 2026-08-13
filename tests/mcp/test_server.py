@@ -76,6 +76,52 @@ async def test_dispatch_static_tools():
     await client.aclose()
 
 
+async def _dispatch_body(seen):
+    import json
+
+    return json.loads([c for c in seen if c[1].endswith("/execute")][-1][2])
+
+
+@pytest.mark.asyncio
+async def test_fetch_mode_defaults_to_page_and_is_not_sent_as_a_bind():
+    seen = []
+    client, catalog = _fixture(seen)
+    await catalog.tools()
+    await dispatch_tool(client, catalog, "query_pg_test_order_summary", {"status": "OPEN"})
+    body = await _dispatch_body(seen)
+    assert body["fetch_mode"] == "page"
+    assert body["params"] == {"status": "OPEN"}
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_count_and_one_are_forwarded():
+    seen = []
+    client, catalog = _fixture(seen)
+    await catalog.tools()
+    for mode in ("count", "one"):
+        await dispatch_tool(client, catalog, "query_pg_test_order_summary", {"status": "OPEN", "fetch_mode": mode})
+        body = await _dispatch_body(seen)
+        assert body["fetch_mode"] == mode
+        assert "fetch_mode" not in body["params"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["all", "batch", "top_n", "nonsense"])
+async def test_context_flooding_fetch_modes_are_refused(mode):
+    """The enum is advice to the model; this is the boundary that enforces it."""
+    seen = []
+    client, catalog = _fixture(seen)
+    await catalog.tools()
+    with pytest.raises(ApiHubError) as exc:
+        await dispatch_tool(client, catalog, "query_pg_test_order_summary", {"fetch_mode": mode})
+    assert exc.value.status_code == 400
+    # Rejected before any REST call — the API never sees the request.
+    assert not [c for c in seen if c[1].endswith("/execute")]
+    await client.aclose()
+
+
 @pytest.mark.asyncio
 async def test_dispatch_unknown_tool_raises():
     client, catalog = _fixture()

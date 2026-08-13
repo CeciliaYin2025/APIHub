@@ -5,7 +5,11 @@ REST API — RBAC, audit, and rate limiting apply per caller, unchanged.
 
 ## Tools
 
-- `query_<db>_<name>` — one per SQL definition (dynamic; paged, page_size ≤ MCP_PAGE_SIZE_MAX)
+- `query_<db>_<name>` — one per SQL definition (dynamic; `fetch_mode` of
+  `page` / `count` / `one`, page_size ≤ MCP_PAGE_SIZE_MAX). `all` and `batch`
+  are withheld: both return every matching row, and a six-figure result set does
+  not belong in a model's context — that is what `scripts/extract_query.py` is
+  for. The allowlist is enforced in `dispatch_tool`, not only in the tool's enum.
 - `list_databases` / `describe_table` — schema discovery
 - `refresh_query_tools` — rebuild the tool list after definition changes; reports
   definitions dropped for a name collision (`shadowed`) or with a truncated name

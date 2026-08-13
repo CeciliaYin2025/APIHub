@@ -37,6 +37,12 @@ PARAM_TYPE_HINT = {
     "date": "Format: YYYY-MM-DD (e.g. 2026-08-01).",
 }
 
+# The REST fetch modes an LLM may choose. "all" and "batch" are withheld on
+# purpose: both return every matching row, and a six-figure result set does not
+# belong in a model's context (that is what scripts/extract_query.py is for).
+# "top_n" adds nothing over "page" with a page_size.
+FETCH_MODES = ("page", "count", "one")
+
 
 def param_schema(pdef: dict) -> dict:
     """JSON schema for one declared bind parameter.
@@ -89,6 +95,17 @@ def build_tool(db_alias: str, definition: dict, page_size_max: int) -> Tool:
         properties[pname] = param_schema(pdef)
         if pdef.get("required"):
             required.append(pname)
+    properties["fetch_mode"] = {
+        "type": "string",
+        "enum": list(FETCH_MODES),
+        "default": "page",
+        "description": (
+            "page: one page of rows (use page/page_size). "
+            "count: the matching row count only, no rows returned — use this to size a result "
+            "set instead of fetching a page and reading its 'total'. "
+            "one: the first row only; errors if the query matches nothing."
+        ),
+    }
     properties["page"] = {"type": "integer", "minimum": 1, "default": 1, "description": "Result page number"}
     properties["page_size"] = {
         "type": "integer",

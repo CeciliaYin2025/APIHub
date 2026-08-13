@@ -9,7 +9,7 @@ import json
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
-from mcp_server.catalog import ToolCatalog
+from mcp_server.catalog import FETCH_MODES, ToolCatalog
 from mcp_server.client import ApiHubClient, ApiHubError
 
 STATIC_TOOLS = [
@@ -65,7 +65,20 @@ async def dispatch_tool(client: ApiHubClient, catalog: ToolCatalog, name: str, a
         raise ApiHubError(404, f"Unknown tool: {name}")
     page = int(args.pop("page", 1) or 1)
     page_size = min(int(args.pop("page_size", 50) or 50), catalog.page_size_max)
-    return await client.execute_query(target.db_alias, target.query_name, args, page=page, page_size=page_size)
+    # Enforced here as well as in the tool's enum: the schema is advice to the
+    # model, this is the boundary. Anything outside FETCH_MODES — notably "all"
+    # and "batch" — must never reach the REST API from a tool call.
+    fetch_mode = str(args.pop("fetch_mode", "page") or "page")
+    if fetch_mode not in FETCH_MODES:
+        raise ApiHubError(400, f"Unsupported fetch_mode '{fetch_mode}'; allowed: {', '.join(FETCH_MODES)}")
+    return await client.execute_query(
+        target.db_alias,
+        target.query_name,
+        args,
+        fetch_mode=fetch_mode,
+        page=page,
+        page_size=page_size,
+    )
 
 
 def create_server(client: ApiHubClient, catalog: ToolCatalog) -> Server:

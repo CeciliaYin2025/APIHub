@@ -92,6 +92,22 @@ async def test_connection_error_maps_to_apihub_error():
 
 
 @pytest.mark.asyncio
+async def test_execute_query_forwards_a_non_default_fetch_mode():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content
+        return httpx.Response(200, json={"success": True, "total": 7, "columns": [], "data": []})
+
+    client = make_client(handler)
+    await client.execute_query("pg_test", "order_summary", {}, fetch_mode="count")
+    import json
+
+    assert json.loads(seen["body"])["fetch_mode"] == "count"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_ping_hits_health_and_raises_when_unreachable():
     def ok(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/health"

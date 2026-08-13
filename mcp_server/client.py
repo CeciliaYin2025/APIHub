@@ -82,12 +82,21 @@ class ApiHubClient:
         return await self._request("GET", f"/{db}/queries/definitions", params={"permitted_only": "true"})
 
     async def execute_query(
-        self, db: str, query_name: str, params: dict, *, page: int = 1, page_size: int = 50
+        self,
+        db: str,
+        query_name: str,
+        params: dict,
+        *,
+        fetch_mode: str = "page",
+        page: int = 1,
+        page_size: int = 50,
     ) -> dict:
+        # page/page_size are always sent: the REST schema carries them for every
+        # mode and ignores them outside "page", so there is nothing to branch on.
         payload = {
             "query_name": query_name,
             "params": params,
-            "fetch_mode": "page",
+            "fetch_mode": fetch_mode,
             "page": page,
             "page_size": page_size,
         }
