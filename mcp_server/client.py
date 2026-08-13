@@ -74,6 +74,11 @@ class ApiHubClient:
     async def list_databases(self) -> list[dict]:
         return await self._request("GET", "/databases")
 
+    async def catalog_version(self) -> str:
+        """Opaque hash of everything that shapes the tool catalog (see app/api/v1/mcp.py)."""
+        result = await self._request("GET", "/mcp/catalog-version")
+        return str(result.get("version", ""))
+
     async def list_definitions(self, db: str) -> list[dict]:
         # permitted_only: the tool catalog is pushed into an LLM's context, so an
         # unfiltered list would hand every caller the names, descriptions and

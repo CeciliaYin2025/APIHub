@@ -631,24 +631,25 @@ sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"
 
 #### 4.12.1 定義變更何時對 LLM 生效
 
-**兩種答案，混為一談會浪費大量除錯時間：**
+**三種答案，混為一談會浪費大量除錯時間：**
 
-| 變更內容 | 已連線的 client 何時看到 |
-|---------|----------------------|
-| 修改定義的 **SQL** | **立即。** 工具呼叫是即時代理到 `POST /{db}/queries/execute`，該端點讀 Hub 的 registry，完全不經過 MCP 端任何快取 |
-| **新增／改名／刪除**定義，或修改 `description`／`result_description`／`group_name`／`params` | **要等 client 重新連線** |
+| 變更內容 | stdio | Streamable HTTP |
+|---------|-------|-----------------|
+| 修改定義的 **SQL** | **立即** —— 工具呼叫即時代理到 `POST /{db}/queries/execute`，讀 Hub 的 registry，完全不經過 catalog | 同左 |
+| **新增／改名／刪除**定義，或修改 `description`／`result_description`／`group_name`／`params` | **`MCP_WATCH_INTERVAL_SECONDS` 內**（預設 30 秒），以 `notifications/tools/list_changed` 推播 | **要等 client 重新連線** |
+| 修改**角色權限**，使某人可見的定義增減 | 下次 TTL 到期或重連 | 下次重連 |
 
-第二列由三層原因疊加而成：
+**指紋機制。** `GET /api/v1/mcp/catalog-version`（`app/services/mcp_catalog_version.py`）回傳一個雜湊，涵蓋 alias 清單與每個定義的 name／group_name／description／result_description／permission／params —— **不含 SQL**。SQL 改動影響的是查詢結果而非工具本身，且本來就即時生效，納入雜湊只會在每次調整 SQL 時觸發無謂的全量重建。
 
-1. `ToolCatalog` 以 `MCP_CATALOG_TTL_SECONDS`（預設 300 秒）快取工具清單。
-2. TTL 過期只代表**下一次** `tools/list` 會重抓 —— 沒有任何機制會自行刷新。
-3. Server 從不送 `notifications/tools/list_changed`，也未宣告該 capability：`create_initialization_options()` 使用 SDK 預設的 `NotificationOptions`（`tools_changed=False`）。HTTP transport 另有 `stateless=True`（理由見 `http_app.py` 模組 docstring），沒有持久 session 可推播。
+`ToolCatalog` 在 TTL 到期時先問這一個小請求，雜湊未變就只重設計時器，變了才重抓所有 alias 的定義 —— 這正是讓短 TTL 變得划算的原因。若 Hub 版本較舊沒有此端點，行為退回「每次全量重抓」，而非誤判為未變動而供應過期清單。
 
-多數 client（含 Claude Code / Claude Desktop）只在建立連線時呼叫一次 `tools/list`。**因此調低 TTL 對 HTTP client 毫無幫助** —— 它根本不會再問。
+**為何 stdio 能推播、HTTP 不能。** stdio 持有單一長生命週期的 `ServerSession`，因此背景輪詢（`mcp_server/__main__.py::watch_catalog`）可以比對指紋並呼叫 `send_tool_list_changed()`。該 session 由 `SessionTracker` 在第一次 handler 呼叫時擷取 —— `Server.run()` 在內部建立 session 且從不回傳，只能從 per-message context 取得。
 
-要讓新定義出現，只能：**重連 MCP client**（Claude Code 用 `/mcp`），或呼叫 `refresh_query_tools` 重建 server 端 catalog —— 但後者只更新 server 端，client 仍顯示自己快取的清單，直到它主動再發一次 `tools/list`。
+HTTP transport 為 `stateless=True`（理由見 `http_app.py` 模組 docstring），每個請求各自建立短命 session，事後無對象可推播，因此該側**正確地從不宣告** `tools_changed` capability。多數 client 每次連線只呼叫一次 `tools/list`，**所以調低 TTL 對 HTTP client 依然毫無幫助** —— 它不會再問。HTTP 要更新只能重連（Claude Code 用 `/mcp`），或呼叫 `refresh_query_tools` 重建 server 端 catalog（但 client 仍顯示自己快取的清單，直到它主動再發一次 `tools/list`）。
 
-若要做到真正即時：stdio 需要 `NotificationOptions(tools_changed=True)` 加上輪詢並呼叫 `session.send_tool_list_changed()`；HTTP 還額外需要 stateful session 與 per-session 憑證綁定，而這正是目前憑證 passthrough 設計刻意排除的（`mcp_server/http_app.py`）。
+要讓 HTTP 也即時，需改為 stateful session 並綁定 per-session 憑證，而這正是目前憑證 passthrough 設計刻意排除的（`mcp_server/http_app.py`）。
+
+`MCP_WATCH_INTERVAL_SECONDS=0` 可關閉輪詢，此時 `tools_changed` capability 亦不宣告 —— 不會讓 client 以為有推播卻等不到。
 
 Admin UI 的 SQL 定義詳細頁在中段以一行灰字說明本節規則，因為填完 Returns 後發現 LLM 仍讀到舊描述，是最容易誤判為 bug 的情境。
 
@@ -1355,8 +1356,11 @@ Authorization: Bearer <token>
 | 方法 | 路徑 | 說明 |
 |------|------|------|
 | `GET` | `/mcp/tools` | 列出每個 (資料來源, SQL 定義) 及其衍生的 MCP 工具名稱與暴露狀態 |
+| `GET` | `/mcp/catalog-version` | 工具目錄指紋，供 MCP server 以單一小請求判斷快取是否過期（見 §4.12.1） |
 
-**superuser only**（`Depends(get_current_active_superuser)`，非 superuser 回 `403`）—— 本端點跨全部 alias，否則呼叫者可藉此列舉自己並無 `query:<name>` 權限的定義。與 §5.8 同理，不置於 `/{db}/` 之下。
+`/mcp/tools` 為 **superuser only**（`Depends(get_current_active_superuser)`，非 superuser 回 `403`）—— 本端點跨全部 alias，否則呼叫者可藉此列舉自己並無 `query:<name>` 權限的定義。與 §5.8 同理，不置於 `/{db}/` 之下。
+
+`/mcp/catalog-version` 則**開放給任何已認證的呼叫者**：OAuth 模式下 MCP server 是以呼叫者身分代理的，superuser 閘門會讓這個端點對它唯一的使用者失效。開放是安全的 —— 回應只有一個摘要字串，不含任何定義名稱，也不透露數量。該端點刻意**不寫稽核**：它是計時輪詢的，記錄下來只會淹沒稽核軌跡。
 
 稽核以 `action_type="report"`、`action="mcp_tools"` 記錄，故預設不計入 §5.8 的資料存取量。
 

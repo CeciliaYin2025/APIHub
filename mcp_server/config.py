@@ -16,8 +16,15 @@ class McpSettings(BaseSettings):
     db_aliases: str = ""
     # Hard cap for the page_size argument on query tools (REST itself allows up to 1000)
     page_size_max: int = 100
-    # Tool catalog is re-fetched on the next tools/list after this many seconds
+    # Tool catalog staleness check on the next tools/list after this many seconds.
+    # Cheap: the check asks GET /mcp/catalog-version first and only refetches every
+    # definition when that moved.
     catalog_ttl_seconds: int = 300
+    # stdio only: poll the catalog fingerprint this often and push
+    # notifications/tools/list_changed when it moves. 0 disables the poller, and
+    # with it the tools_changed capability. Has no effect on the HTTP transport,
+    # which is stateless and has no session to push to.
+    watch_interval_seconds: int = 30
 
     # Phase 2 — OAuth 2.1 Resource Server (isap-auth)
     oauth_enabled: bool = False

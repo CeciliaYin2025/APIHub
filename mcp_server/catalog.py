@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from mcp.types import Tool
 
-from mcp_server.client import ApiHubClient
+from mcp_server.client import ApiHubClient, ApiHubError
 from mcp_server.naming import (  # noqa: F401  (sanitize/tool_name re-exported: long-standing import path)
     TOOL_NAME_MAX_LEN,
     sanitize,
@@ -152,10 +152,16 @@ class ToolCatalog:
         self._targets: dict[str, QueryTarget] = {}
         self._shadowed: list[dict] = []
         self._truncated: list[dict] = []
+        self._version: str | None = None
 
     @property
     def page_size_max(self) -> int:
         return self._page_size_max
+
+    @property
+    def version(self) -> str | None:
+        """Catalog fingerprint as of the last load; None if never loaded."""
+        return self._version
 
     def target(self, name: str) -> QueryTarget | None:
         return self._targets.get(name)
@@ -174,12 +180,47 @@ class ToolCatalog:
         }
 
     async def tools(self, force: bool = False) -> list[Tool]:
-        stale = (time.monotonic() - self._loaded_at) > self._ttl
-        if force or self._loaded_at == 0.0 or stale:
+        if force or self._loaded_at == 0.0:
             await self._load()
+            return self._tools
+
+        if (time.monotonic() - self._loaded_at) > self._ttl:
+            # Expiry means "check", not "rebuild". One small request usually
+            # ends it; the N-alias refetch happens only when the hash moved.
+            # That is what makes a short TTL affordable.
+            if await self._is_current():
+                self._loaded_at = time.monotonic()
+            else:
+                await self._load()
         return self._tools
 
+    async def _is_current(self) -> bool:
+        """Whether the cached tool list still matches the Hub's fingerprint.
+
+        False on any doubt — an unknown local version, or a Hub that cannot
+        answer (older build without the endpoint, network blip). Falling back to
+        the full reload costs a few requests; wrongly answering True would serve
+        a stale tool list indefinitely.
+        """
+        if self._version is None:
+            return False
+        try:
+            return await self._client.catalog_version() == self._version
+        except ApiHubError as e:
+            logger.debug("catalog-version check failed (%s); falling back to a full reload", e)
+            return False
+
     async def _load(self) -> None:
+        # Read the fingerprint *before* the definitions: a change landing
+        # mid-load then leaves a stale-looking version and costs one redundant
+        # reload later. The other order would record a version newer than the
+        # data and skip that reload entirely.
+        try:
+            version = await self._client.catalog_version()
+        except ApiHubError as e:
+            logger.debug("catalog-version unavailable (%s); catalog will always fully reload", e)
+            version = None
+
         if self._db_aliases:
             aliases = self._db_aliases
         else:
@@ -227,4 +268,5 @@ class ToolCatalog:
         self._targets = targets
         self._shadowed = shadowed
         self._truncated = truncated
+        self._version = version
         self._loaded_at = time.monotonic()

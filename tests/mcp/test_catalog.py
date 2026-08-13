@@ -132,10 +132,17 @@ def test_build_tool_uses_the_description_builder():
     assert build_tool("pg_test", defn, page_size_max=100).description == build_description("pg_test", defn)
 
 
-def _mock_client(definitions_by_db, databases=None, counter=None):
+VERSION_PATH = "/api/v1/mcp/catalog-version"
+
+
+def _mock_client(definitions_by_db, databases=None, counter=None, version=None):
+    """version=None leaves /mcp/catalog-version 404ing, as an older Hub would."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         if counter is not None:
             counter.append(request.url.path)
+        if request.url.path == VERSION_PATH and version is not None:
+            return httpx.Response(200, json={"version": version})
         if request.url.path == "/api/v1/databases":
             return httpx.Response(200, json=databases or [])
         for db, defs in definitions_by_db.items():
@@ -251,6 +258,8 @@ async def test_diagnostics_reset_on_reload():
     current = {"pg_test": colliding}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == VERSION_PATH:
+            return httpx.Response(404, json={"detail": "not found"})
         return httpx.Response(200, json=current["pg_test"])
 
     client = ApiHubClient("http://hub", transport=httpx.MockTransport(handler))
@@ -261,4 +270,79 @@ async def test_diagnostics_reset_on_reload():
     current["pg_test"] = fixed
     await catalog.tools(force=True)
     assert catalog.diagnostics() == {"query_tools": 1, "shadowed": [], "truncated": []}
+    await client.aclose()
+
+
+# ── TTL expiry checks the fingerprint before paying for a refetch ──────────
+
+
+@pytest.mark.asyncio
+async def test_expired_ttl_with_an_unchanged_version_skips_the_refetch():
+    """The point of the fingerprint: expiry means "check", not "rebuild".
+
+    Without this, a short TTL costs one request per alias per interval, which is
+    why the TTL was long and the catalog stale.
+    """
+    counter: list[str] = []
+    client = _mock_client({"pg_test": [DEFINITION]}, counter=counter, version="v1")
+    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=0)  # always expired
+
+    await catalog.tools()
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 1
+    assert catalog.version == "v1"
+
+    await catalog.tools()
+    await catalog.tools()
+    # Two more version checks, no further definition fetches.
+    assert counter.count(VERSION_PATH) == 3
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_expired_ttl_with_a_changed_version_reloads():
+    counter: list[str] = []
+    state = {"version": "v1", "defs": [DEFINITION]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        counter.append(request.url.path)
+        if request.url.path == VERSION_PATH:
+            return httpx.Response(200, json={"version": state["version"]})
+        return httpx.Response(200, json=state["defs"])
+
+    client = ApiHubClient("http://hub", transport=httpx.MockTransport(handler))
+    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=0)
+
+    assert len(await catalog.tools()) == 1
+    state["version"] = "v2"
+    state["defs"] = [DEFINITION, DEFINITION | {"name": "other"}]
+
+    assert len(await catalog.tools()) == 2
+    assert catalog.version == "v2"
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_hub_without_the_version_endpoint_still_works():
+    """Degrades to the old always-refetch behaviour rather than serving a stale list."""
+    counter: list[str] = []
+    client = _mock_client({"pg_test": [DEFINITION]}, counter=counter, version=None)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=0)
+
+    await catalog.tools()
+    assert catalog.version is None
+    await catalog.tools()
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_version_is_read_before_the_definitions():
+    """Order matters: a change landing mid-load must cost a redundant reload, not a missed one."""
+    counter: list[str] = []
+    client = _mock_client({"pg_test": [DEFINITION]}, counter=counter, version="v1")
+    catalog = ToolCatalog(client, db_aliases=["pg_test"])
+    await catalog.tools()
+    assert counter.index(VERSION_PATH) < counter.index("/api/v1/pg_test/queries/definitions")
     await client.aclose()

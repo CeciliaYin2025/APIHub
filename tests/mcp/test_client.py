@@ -44,6 +44,52 @@ async def test_execute_query_posts_payload_with_api_key():
 
 
 @pytest.mark.asyncio
+async def test_execute_query_forwards_a_non_default_fetch_mode():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content
+        return httpx.Response(200, json={"success": True, "total": 7, "columns": [], "data": []})
+
+    client = make_client(handler)
+    await client.execute_query("pg_test", "order_summary", {}, fetch_mode="count")
+    import json
+
+    assert json.loads(seen["body"])["fetch_mode"] == "count"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_catalog_version_unwraps_the_payload():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/mcp/catalog-version"
+        return httpx.Response(200, json={"version": "abc123"})
+
+    client = make_client(handler)
+    assert await client.catalog_version() == "abc123"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ping_hits_health_and_raises_when_unreachable():
+    def ok(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/health"
+        return httpx.Response(200, json={"status": "ok"})
+
+    client = make_client(ok)
+    await client.ping()  # does not raise
+    await client.aclose()
+
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    client = make_client(down)
+    with pytest.raises(ApiHubError):
+        await client.ping()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_list_definitions_and_databases_paths():
     calls = []
 
@@ -88,41 +134,6 @@ async def test_connection_error_maps_to_apihub_error():
         await client.list_databases()
     assert exc.value.status_code == 0
     assert "unreachable" in exc.value.detail.lower()
-    await client.aclose()
-
-
-@pytest.mark.asyncio
-async def test_execute_query_forwards_a_non_default_fetch_mode():
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["body"] = request.content
-        return httpx.Response(200, json={"success": True, "total": 7, "columns": [], "data": []})
-
-    client = make_client(handler)
-    await client.execute_query("pg_test", "order_summary", {}, fetch_mode="count")
-    import json
-
-    assert json.loads(seen["body"])["fetch_mode"] == "count"
-    await client.aclose()
-
-
-@pytest.mark.asyncio
-async def test_ping_hits_health_and_raises_when_unreachable():
-    def ok(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/health"
-        return httpx.Response(200, json={"status": "ok"})
-
-    client = make_client(ok)
-    await client.ping()  # does not raise
-    await client.aclose()
-
-    def down(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("refused")
-
-    client = make_client(down)
-    with pytest.raises(ApiHubError):
-        await client.ping()
     await client.aclose()
 
 

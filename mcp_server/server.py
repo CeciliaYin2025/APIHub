@@ -81,15 +81,45 @@ async def dispatch_tool(client: ApiHubClient, catalog: ToolCatalog, name: str, a
     )
 
 
-def create_server(client: ApiHubClient, catalog: ToolCatalog) -> Server:
+class SessionTracker:
+    """Latches the live ``ServerSession`` so a background task can notify it.
+
+    ``Server.run()`` builds the session inside its own exit stack and never
+    hands it back, but every handler can reach it through the per-message
+    context — so grab it there on the first call and keep it. Needed because
+    ``notifications/tools/list_changed`` originates from a poller, not from a
+    request.
+
+    Stays empty under the stateless HTTP transport, where each request gets its
+    own short-lived session and there is nothing to notify later. That is
+    correct rather than merely tolerated: the HTTP side never declares the
+    ``tools_changed`` capability.
+    """
+
+    def __init__(self) -> None:
+        self.session = None
+
+    def capture(self, server: Server) -> None:
+        try:
+            self.session = server.request_context.session
+        except LookupError:
+            # No request in flight (direct handler call in tests) — nothing to latch.
+            pass
+
+
+def create_server(client: ApiHubClient, catalog: ToolCatalog, tracker: SessionTracker | None = None) -> Server:
     server = Server("oracle-api-hub")
 
     @server.list_tools()
     async def _list_tools() -> list[Tool]:
+        if tracker is not None:
+            tracker.capture(server)
         return await list_all_tools(catalog)
 
     @server.call_tool()
     async def _call_tool(name: str, arguments: dict) -> list[TextContent]:
+        if tracker is not None:
+            tracker.capture(server)
         # Exceptions raised here are converted by the SDK into isError results.
         result = await dispatch_tool(client, catalog, name, arguments)
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, default=str))]

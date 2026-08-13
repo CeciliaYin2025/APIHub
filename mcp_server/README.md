@@ -46,37 +46,49 @@ wrong shape is a runtime error the dialect layer cannot rescue.
 
 ## Freshness — when a definition change reaches the LLM
 
-Two different answers, and conflating them wastes a lot of debugging time:
+Three different answers, and conflating them wastes a lot of debugging time:
 
-| Change | Visible to a connected client |
-|---|---|
-| Editing a definition's **SQL** | **Immediately.** Tool calls are proxied live to `POST /{db}/queries/execute`, which reads the Hub's registry — no MCP-side cache is involved. |
-| **Adding, renaming or deleting** a definition, or changing its **description / result_description / group_name / params** | **Not until the client reconnects.** |
+| Change | stdio | Streamable HTTP |
+|---|---|---|
+| Editing a definition's **SQL** | **Immediately** — tool calls are proxied live to `POST /{db}/queries/execute`, which reads the Hub's registry. No catalog is involved. | same |
+| **Adding, renaming or deleting** a definition, or changing its **description / result_description / group_name / params** | **Within `MCP_WATCH_INTERVAL_SECONDS`** (default 30) — pushed as `notifications/tools/list_changed`. | **Not until the client reconnects.** |
+| Editing a **role** so a caller may see more or fewer definitions | Next TTL lapse or reconnect | Next reconnect |
 
-Three things stack up to produce that second row:
+### How the fingerprint works
 
-1. `ToolCatalog` caches the tool list for `MCP_CATALOG_TTL_SECONDS` (default 300).
-2. An expired TTL only means the *next* `tools/list` refetches — nothing refreshes on its own.
-3. The server never sends `notifications/tools/list_changed`, and does not
-   declare the capability: `create_initialization_options()` is called with the
-   SDK's default `NotificationOptions` (`tools_changed=False`). The HTTP
-   transport also runs `stateless=True` (see the module docstring in
-   `http_app.py`), so there is no persistent session to push over.
+`GET /api/v1/mcp/catalog-version` returns a hash of everything that shapes the
+catalog — the alias list plus each definition's name, group, description,
+result_description, permission and parameter declarations. **Not the SQL**: an
+SQL edit changes results, not tools, and is already live, so hashing it would
+force pointless rebuilds.
 
-Most clients — Claude Code and Claude Desktop included — call `tools/list` once
-when the connection is established. **Lowering the TTL therefore does not help
-an HTTP client**: it will not ask again regardless.
+That one small request replaces the refetch-everything check, which is what
+makes a short TTL affordable: on expiry `ToolCatalog` asks for the fingerprint
+and only reloads every alias when it moved. A Hub too old to answer degrades to
+the previous always-refetch behaviour rather than serving a stale list.
 
-To pick up a new definition:
+### Why stdio can push and HTTP cannot
 
-- reconnect the MCP client (`/mcp` in Claude Code), or
-- call `refresh_query_tools`, which rebuilds the server-side catalog — the
-  client still shows its cached list until it issues another `tools/list`.
+stdio holds one long-lived `ServerSession`, so a background poller
+(`watch_catalog`) can compare fingerprints and call `send_tool_list_changed()`.
+The session is latched by `SessionTracker` on the first handler call, because
+`Server.run()` builds it internally and never hands it back.
 
-Making this live for stdio needs `NotificationOptions(tools_changed=True)` plus
-a poller calling `session.send_tool_list_changed()`. Making it live for HTTP
-additionally needs stateful sessions with per-session credential binding, which
-the current passthrough design deliberately rules out.
+The HTTP transport runs `stateless=True` (see the module docstring in
+`http_app.py`): each request gets its own short-lived session, so there is
+nothing to push to later, and the `tools_changed` capability is correctly never
+declared there. Most clients call `tools/list` once per connection, so
+**lowering the TTL does nothing for an HTTP client** — it will not ask again.
+For HTTP, reconnect (`/mcp` in Claude Code), or call `refresh_query_tools`,
+which rebuilds the server-side catalog and reports what it dropped — though the
+client still shows its cached list until it issues another `tools/list`.
+
+Making HTTP live too needs stateful sessions with per-session credential
+binding, which the current passthrough design deliberately rules out.
+
+Set `MCP_WATCH_INTERVAL_SECONDS=0` to disable the poller; the `tools_changed`
+capability is then not advertised either, so a client is never told to expect
+notifications that will not arrive.
 
 ## Transports & auth
 
@@ -110,3 +122,5 @@ length of the outage. It is for monitoring.
 
 All via `MCP_*` env vars or `.env.mcp` — see `mcp_server/config.py`.
 Phase 2 (OAuth 2.1 Resource Server, isap-auth) is toggled by `MCP_OAUTH_ENABLED`.
+`MCP_CATALOG_TTL_SECONDS` and `MCP_WATCH_INTERVAL_SECONDS` are covered under
+Freshness above.
