@@ -160,6 +160,41 @@ a:hover { text-decoration: underline; }
 .data-table tbody tr:hover { background: var(--gray-50); }
 .data-table tbody tr:last-child td { border-bottom: none; }
 
+/* ── Split list (group picker on the left, its rows on the right) ─────── */
+.split-list { display: grid; grid-template-columns: minmax(200px, 260px) 1fr; align-items: stretch; }
+.split-list-aside {
+  border-right: 1px solid var(--gray-200); background: var(--gray-50);
+  max-height: 70vh; overflow-y: auto; padding-bottom: 8px;
+}
+.split-list-main { min-width: 0; overflow-x: auto; max-height: 70vh; overflow-y: auto; }
+.split-list-title {
+  padding: 10px 16px; color: var(--gray-600); font-weight: 600; font-size: .8rem;
+  text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--gray-200);
+  position: sticky; top: 0; background: var(--gray-50);
+}
+.split-list-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; padding: 9px 16px; border: none; border-bottom: 1px solid var(--gray-100);
+  border-left: 3px solid transparent; background: none; cursor: pointer; text-align: left;
+  font-family: var(--font); font-size: .88rem; color: var(--gray-700);
+}
+.split-list-item:hover { background: var(--gray-100); }
+.split-list-item.active {
+  background: #fff; border-left-color: var(--primary); color: var(--primary); font-weight: 600;
+}
+.split-list-item-name { word-break: break-all; }
+.split-list-item-count {
+  flex-shrink: 0; padding: 1px 7px; border-radius: 10px;
+  background: var(--gray-200); color: var(--gray-600); font-size: .75rem; font-weight: 600;
+}
+.split-list-item.active .split-list-item-count { background: var(--primary-light); color: var(--primary); }
+.split-list-empty { padding: 24px 16px; color: var(--gray-500); font-size: .88rem; }
+
+@media (max-width: 900px) {
+  .split-list { grid-template-columns: 1fr; }
+  .split-list-aside { border-right: none; border-bottom: 1px solid var(--gray-200); max-height: 220px; }
+}
+
 /* ── Forms ─────────────────────────────────────────────────────────────── */
 .form-group { margin-bottom: 16px; }
 .form-group label { display: block; font-weight: 600; margin-bottom: 4px; font-size: .9rem; color: var(--gray-700); }

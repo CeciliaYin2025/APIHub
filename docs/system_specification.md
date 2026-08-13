@@ -1804,9 +1804,11 @@ SQL 定義以 **PostgreSQL** 為主要儲存（`api_hub_sql_definitions` 表）�
 
 #### 透過 Admin UI
 
-1. 進入 **SQL Definitions** 頁面
+1. 進入 **SQL Definitions** 頁面；左欄選擇群組（`group_name`，依名稱排序），右欄即列出該群組底下的定義（依名稱排序）
 2. 點擊 **+ New Definition** 新增、**Edit** 編輯、**Delete** 刪除
-3. 表單包含：名稱、描述、權限、SQL 編輯區（monospace）、參數 JSON 編輯器
+3. 表單包含：**群組**、名稱、描述、權限、SQL 編輯區（monospace）、參數 JSON 編輯器
+   - 新增時填入群組後，**名稱**自動帶入 `<群組>_` 開頭、**權限**自動帶入 `query:<名稱>`；手動改過的欄位不會再被覆寫
+   - 群組是純標籤，不參與授權；留空會歸到 `(ungrouped)`
 4. 所有操作即時生效（自動刷新記憶體 Registry）
 
 #### 透過 API
@@ -1976,7 +1978,7 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 | **Users** | — | 使用者清單 + 新增使用者（帳號、密碼、角色指派、超級管理員設定） |
 | **Roles** | — | 角色清單 + 新增角色（名稱、描述、權限指派） |
 | **Permissions** | — | 權限清單 + 新增權限（resource、action、描述） |
-| **SQL Definitions** | — | SQL 定義完整 CRUD：新增、編輯、刪除、檢視詳情（含 SQL）、YAML 匯出下載、YAML 檔案上傳匯入、伺服器端 YAML 匯入、熱重載 |
+| **SQL Definitions** | — | 左右兩欄清單（左：**群組**依名稱排序並顯示定義數；右：該群組的定義依名稱排序）+ SQL 定義完整 CRUD：新增、編輯、刪除、檢視詳情（含 SQL）、YAML 匯出下載、YAML 檔案上傳匯入、伺服器端 YAML 匯入、熱重載 |
 | **Query Console** | — | 互動式查詢測試台（選擇 fetch mode、填入參數、即時查看結果表格） |
 | **Procedure Console** | — | 執行 Procedure / Function（支援 OUT 參數、非同步模式） |
 | **Write Console** | — | 執行 INSERT / UPDATE / DELETE（支援非同步佇列模式） |

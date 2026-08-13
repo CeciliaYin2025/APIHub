@@ -1150,6 +1150,14 @@ window.revokeApiKey = async function(id, name) {
 };
 
 /* ── SQL Definitions ──────────────────────────────────────────────────── */
+// The list is a two-pane view: groups on the left sorted by name, the
+// definitions in the selected group on the right, also sorted by name. The API
+// returns registry order, which is neither, so both orderings are imposed here.
+// Selection survives navigating to a detail page and back; it is reset when the
+// selected group is absent from the current database.
+let sqlDefGroups = [];
+let sqlDefGroup = null;
+
 async function renderSqlDefs() {
   // Reached both from the sidebar and from Back/Cancel on the detail and form
   // pages, so it restores the section header itself.
@@ -1160,6 +1168,12 @@ async function renderSqlDefs() {
 
   try {
     const defs = await api('GET', `${dbPrefix()}/queries/definitions`);
+    defs.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    window._cachedDefs = defs;
+
+    sqlDefGroups = [...new Set(defs.map(sqlDefGroupOf))].sort((a, b) => a.localeCompare(b));
+    if (!sqlDefGroups.includes(sqlDefGroup)) sqlDefGroup = sqlDefGroups[0] || null;
+
     area.innerHTML = `
       <div class="card">
         <div class="card-header">
@@ -1175,36 +1189,87 @@ async function renderSqlDefs() {
           </div>
         </div>
         <div class="card-body no-pad">
-          <table class="data-table"><thead><tr>
-            <th>Name</th><th>Description</th><th>Permission</th><th>Parameters</th><th>Actions</th>
-          </tr></thead>
-          <tbody>${defs.map(d => `<tr>
-            <td><strong>${esc(d.name)}</strong></td>
-            <td class="text-sm">${esc(d.description || '—')}</td>
-            <td><span class="tag">${esc(d.permission)}</span></td>
-            <td>${Object.keys(d.params || {}).map(k => {
-              const p = d.params[k];
-              return `<span class="tag">${esc(k)}${p.required ? '*' : ''}</span>`;
-            }).join(' ') || '—'}</td>
-            <td>
-              <div class="btn-group">
-                <button class="btn btn-sm btn-outline" onclick="viewSqlDef('${esc(d.name)}')">Detail</button>
-                ${isSuperuser ? `
-                  <button class="btn btn-sm btn-primary" onclick="openSqlDefForm('edit','${esc(d.name)}')">Edit</button>
-                  <button class="btn btn-sm btn-info" onclick="openSqlDefForm('copy','${esc(d.name)}')">Copy</button>
-                  <button class="btn btn-sm btn-danger" onclick="deleteSqlDef('${esc(d.name)}')">Delete</button>
-                ` : ''}
-              </div>
-            </td>
-          </tr>`).join('')}</tbody></table>
+          <div class="split-list">
+            <aside class="split-list-aside" id="sqlDefGroupList"></aside>
+            <div class="split-list-main" id="sqlDefTable"></div>
+          </div>
         </div>
       </div>
     `;
-    window._cachedDefs = defs;
+    paintSqlDefGroups();
+    paintSqlDefTable();
   } catch (err) {
     area.innerHTML = `<div class="card"><div class="card-body"><p>Error: ${esc(err.message)}</p></div></div>`;
   }
 }
+
+// group_name is free text and may be empty (it is a label, not a permission),
+// so unclassified definitions get a visible bucket rather than a blank row.
+const SQL_DEF_UNGROUPED = '(ungrouped)';
+function sqlDefGroupOf(d) {
+  return d.group_name || SQL_DEF_UNGROUPED;
+}
+
+function paintSqlDefGroups() {
+  const host = document.getElementById('sqlDefGroupList');
+  if (!host) return;
+  const defs = window._cachedDefs || [];
+  // Index rather than the group string: esc() leaves single quotes intact, so
+  // interpolating a name into an onclick attribute would break on one.
+  host.innerHTML = `
+    <div class="split-list-title">Groups (${sqlDefGroups.length})</div>
+    ${sqlDefGroups.map((g, i) => `
+      <button type="button" class="split-list-item${g === sqlDefGroup ? ' active' : ''}"
+              onclick="selectSqlDefGroup(${i})">
+        <span class="split-list-item-name">${esc(g)}</span>
+        <span class="split-list-item-count">${defs.filter(d => sqlDefGroupOf(d) === g).length}</span>
+      </button>`).join('')
+      || '<div class="split-list-empty">No definitions in this database.</div>'}
+  `;
+}
+
+function paintSqlDefTable() {
+  const host = document.getElementById('sqlDefTable');
+  if (!host) return;
+  const isSuperuser = currentUser && currentUser.is_superuser;
+  const rows = (window._cachedDefs || []).filter(d => sqlDefGroupOf(d) === sqlDefGroup);
+  if (!rows.length) {
+    host.innerHTML = '<div class="split-list-empty">Select a group to see its definitions.</div>';
+    return;
+  }
+  host.innerHTML = `
+    <table class="data-table"><thead><tr>
+      <th>Name</th><th>Description</th><th>Permission</th><th>Parameters</th><th>Actions</th>
+    </tr></thead>
+    <tbody>${rows.map(d => `<tr>
+      <td><strong>${esc(d.name)}</strong></td>
+      <td class="text-sm">${esc(d.description || '—')}</td>
+      <td><span class="tag">${esc(d.permission)}</span></td>
+      <td>${Object.keys(d.params || {}).map(k => {
+        const p = d.params[k];
+        return `<span class="tag">${esc(k)}${p.required ? '*' : ''}</span>`;
+      }).join(' ') || '—'}</td>
+      <td>
+        <div class="btn-group">
+          <button class="btn btn-sm btn-outline" onclick="viewSqlDef('${esc(d.name)}')">Detail</button>
+          ${isSuperuser ? `
+            <button class="btn btn-sm btn-primary" onclick="openSqlDefForm('edit','${esc(d.name)}')">Edit</button>
+            <button class="btn btn-sm btn-info" onclick="openSqlDefForm('copy','${esc(d.name)}')">Copy</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteSqlDef('${esc(d.name)}')">Delete</button>
+          ` : ''}
+        </div>
+      </td>
+    </tr>`).join('')}</tbody></table>
+  `;
+}
+
+window.selectSqlDefGroup = function(index) {
+  const group = sqlDefGroups[index];
+  if (group === undefined || group === sqlDefGroup) return;
+  sqlDefGroup = group;
+  paintSqlDefGroups();
+  paintSqlDefTable();
+};
 
 window.reloadDefs = async function() {
   try {
@@ -1308,7 +1373,7 @@ async function fetchSqlDef(name) {
 }
 
 window.openSqlDefForm = async function(mode, name) {
-  let data = { name: '', description: '', sql: '', permission: '', params: {} };
+  let data = { name: '', group_name: '', description: '', sql: '', permission: '', params: {} };
   if ((mode === 'edit' || mode === 'copy') && name) {
     try {
       data = await api('GET', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`);
@@ -1320,6 +1385,9 @@ window.openSqlDefForm = async function(mode, name) {
 
   const isEdit = mode === 'edit';
   const isCopy = mode === 'copy';
+  if (mode === 'create' && !data.group_name && sqlDefGroup && sqlDefGroup !== SQL_DEF_UNGROUPED) {
+    data.group_name = sqlDefGroup;
+  }
   if (isCopy) {
     // Copy: prefill source content but force a new, editable name and clear the
     // permission so the create flow auto-generates query:<newname>.
@@ -1343,10 +1411,22 @@ window.openSqlDefForm = async function(mode, name) {
     <div class="card">
       <div class="card-header"><h2>${esc(title)}</h2></div>
       <div class="card-body">
+        <div class="form-group">
+          <label>Group</label>
+          <input type="text" id="sdGroup" value="${esc(data.group_name || '')}" list="sdGroupOptions"
+                 placeholder="e.g. HR" oninput="applySqlDefGroupPrefix()">
+          <datalist id="sdGroupOptions">
+            ${(sqlDefGroups || []).filter(g => g !== SQL_DEF_UNGROUPED)
+              .map(g => `<option value="${esc(g)}"></option>`).join('')}
+          </datalist>
+          <div class="hint">Categorises the definition in the list. Free text — pick an existing group or type a new one.
+            ${isEdit ? '' : ' Name and Permission are prefilled from it.'}</div>
+        </div>
         <div class="form-row">
           <div class="form-group">
             <label>Name</label>
-            <input type="text" id="sdName" value="${esc(data.name)}" ${isEdit ? 'disabled' : ''} placeholder="e.g. employees">
+            <input type="text" id="sdName" value="${esc(data.name)}" ${isEdit ? 'disabled' : ''}
+                   placeholder="e.g. employees" oninput="syncSqlDefPermission()">
             ${isEdit ? '' : '<div class="hint">Unique identifier, cannot be changed later</div>'}
           </div>
           <div class="form-group">
@@ -1383,6 +1463,48 @@ window.openSqlDefForm = async function(mode, name) {
     </div>
   `;
   (data.order_by || []).forEach(o => addOrderByRow(o.column, o.direction));
+  if (mode === 'create') {
+    // Start from no prefix so the preselected group is applied to the empty
+    // Name/Permission on this first call; edit/copy keep what they loaded.
+    sqlDefPrefix = '';
+    applySqlDefGroupPrefix();
+  } else {
+    sqlDefPrefix = data.group_name ? `${data.group_name}_` : '';
+  }
+};
+
+// While creating, the Group prefills Name with "<group>_" and Permission tracks
+// the Name as "query:<name>" — the same value the backend would generate for an
+// empty permission, just visible in the form.
+//
+// Both hand-offs are one-way: `sqlDefPrefix` is the prefix this code last put in
+// the Name and `sqlDefAutoPerm` the Permission it last wrote, so a Name that
+// deliberately drops the prefix, or a Permission typed by hand, is never
+// rewritten afterwards.
+let sqlDefPrefix = '';
+let sqlDefAutoPerm = '';
+
+window.applySqlDefGroupPrefix = function() {
+  const groupEl = document.getElementById('sdGroup');
+  const nameEl = document.getElementById('sdName');
+  if (!groupEl || !nameEl || nameEl.disabled) return;
+
+  const prefix = groupEl.value ? `${groupEl.value}_` : '';
+  if (nameEl.value.startsWith(sqlDefPrefix)) {
+    nameEl.value = prefix + nameEl.value.slice(sqlDefPrefix.length);
+  }
+  sqlDefPrefix = prefix;
+  syncSqlDefPermission();
+};
+
+window.syncSqlDefPermission = function() {
+  const nameEl = document.getElementById('sdName');
+  const permEl = document.getElementById('sdPerm');
+  if (!nameEl || !permEl || nameEl.disabled) return;
+  // Anything other than our own last value means the user has taken it over.
+  if (permEl.value !== '' && permEl.value !== sqlDefAutoPerm) return;
+  sqlDefAutoPerm = nameEl.value ? `query:${nameEl.value}` : '';
+  permEl.value = sqlDefAutoPerm;
 };
 
 // Order By row helpers for the SQL Definition create/edit form.
@@ -1426,21 +1548,23 @@ window.submitSqlDef = async function(mode, name) {
     return;
   }
 
+  const groupName = (document.getElementById('sdGroup')?.value || '').trim();
   const orderBy = collectOrderBy();
 
   try {
     let saved;
     if (mode === 'create' || mode === 'copy') {
-      await api('POST', `${dbPrefix()}/queries/definitions`, { name: nameVal, description: desc, sql, permission: perm, params, order_by: orderBy });
+      await api('POST', `${dbPrefix()}/queries/definitions`, { name: nameVal, group_name: groupName, description: desc, sql, permission: perm, params, order_by: orderBy });
       toast(`Definition '${nameVal}' created`, 'success');
       saved = nameVal;
     } else {
-      const body = { description: desc, sql, permission: perm, params, order_by: orderBy };
+      const body = { group_name: groupName, description: desc, sql, permission: perm, params, order_by: orderBy };
       await api('PUT', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`, body);
       toast(`Definition '${name}' updated`, 'success');
       saved = name;
     }
     window._cachedDefs = null;  // list cache is stale after a write
+    sqlDefGroup = groupName || SQL_DEF_UNGROUPED;  // so Back lands on the group holding what was just saved
     viewSqlDef(saved);          // land on the detail page so the result is visible
   } catch (err) {
     toast(err.message, 'error');
@@ -1500,6 +1624,7 @@ window.viewSqlDef = async function(name) {
         <div class="detail-grid">
           <div class="detail-item"><span class="detail-label">Name</span><span class="detail-value"><code>${esc(d.name)}</code></span></div>
           <div class="detail-item"><span class="detail-label">Permission</span><span class="detail-value"><span class="tag">${esc(d.permission)}</span></span></div>
+          <div class="detail-item"><span class="detail-label">Group</span><span class="detail-value">${d.group_name ? `<span class="tag">${esc(d.group_name)}</span>` : '—'}</span></div>
           <div class="detail-item detail-wide"><span class="detail-label">Description</span><span class="detail-value">${esc(d.description || '—')}</span></div>
         </div>
 

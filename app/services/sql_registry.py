@@ -35,6 +35,7 @@ class SqlDefinition:
     sql: str
     permission: str  # e.g. "query:employees"
     db_alias: str = "default"
+    group_name: str = ""  # free-text category, used to group the Admin UI list
     params: dict[str, ParamDef] = field(default_factory=dict)
     order_by: list[dict] = field(default_factory=list)
 
@@ -122,6 +123,7 @@ class SqlRegistry:
                         sql=row.sql.strip(),
                         permission=row.permission or f"query:{row.name}",
                         db_alias=row.db_alias or "default",
+                        group_name=row.group_name or "",
                         params=params,
                         order_by=row.order_by or [],
                     )
@@ -178,6 +180,7 @@ class SqlRegistry:
             sql=raw["sql"].strip(),
             permission=raw.get("permission", f"query:{raw['name']}"),
             db_alias=db_alias,
+            group_name=raw.get("group_name", ""),
             params=params,
             order_by=raw.get("order_by") or [],
         )

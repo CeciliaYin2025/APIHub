@@ -361,9 +361,9 @@ lives in [`deploy/apihub-test/`](deploy/apihub-test/README.md) (route
 ### Via Admin UI (Recommended)
 
 1. Open `http://localhost:8000/admin` and log in as a superuser
-2. Navigate to **SQL Definitions** page
+2. Navigate to **SQL Definitions** page — groups are listed on the left (sorted by name), the definitions in the selected group on the right (also sorted by name)
 3. Click **+ New Definition**
-4. Fill in name, description, SQL, permission, and parameters (JSON)
+4. Fill in the group, then name, description, SQL, permission, and parameters (JSON). Name is prefilled as `<group>_` and permission as `query:<name>`; edit either and it stops being derived.
 5. Click **Create** — the definition is immediately available for queries
 
 ### Via API

@@ -40,6 +40,7 @@ def _row_to_out(row: SqlDefinitionModel) -> dict:
         "id": row.id,
         "name": row.name,
         "db_alias": row.db_alias or "default",
+        "group_name": row.group_name or "",
         "description": row.description or "",
         "sql": row.sql,
         "permission": row.permission,
@@ -65,6 +66,7 @@ def list_definitions(
         {
             "name": d.name,
             "db_alias": d.db_alias,
+            "group_name": d.group_name,
             "description": d.description,
             "permission": d.permission,
             "params": {
@@ -138,6 +140,7 @@ def import_yaml_definitions(
             row = SqlDefinitionModel(
                 name=name,
                 db_alias=db,
+                group_name=raw.get("group_name", ""),
                 description=raw.get("description", ""),
                 sql=raw["sql"].strip(),
                 permission=raw.get("permission", f"query:{name}"),
@@ -176,6 +179,7 @@ def export_definitions_yaml(
     for row in rows:
         entry = {
             "name": row.name,
+            "group_name": row.group_name or "",
             "description": row.description or "",
             "sql": row.sql,
             "permission": row.permission,
@@ -237,6 +241,7 @@ async def import_yaml_file(
             row = SqlDefinitionModel(
                 name=name,
                 db_alias=db,
+                group_name=raw.get("group_name", ""),
                 description=raw.get("description", ""),
                 sql=raw["sql"].strip(),
                 permission=raw.get("permission", f"query:{name}"),
@@ -280,6 +285,7 @@ def create_definition(
     row = SqlDefinitionModel(
         name=body.name,
         db_alias=db,
+        group_name=body.group_name,
         description=body.description,
         sql=body.sql.strip(),
         permission=permission,
@@ -334,6 +340,8 @@ def update_definition(
     if not row:
         raise HTTPException(status_code=404, detail=f"Definition '{name}' not found for database '{db}'")
 
+    if body.group_name is not None:
+        row.group_name = body.group_name
     if body.description is not None:
         row.description = body.description
     if body.sql is not None:

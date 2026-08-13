@@ -13,6 +13,9 @@ class SqlDefinitionModel(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), nullable=False, index=True)
     db_alias = Column(String(64), nullable=False, server_default="default", index=True)
+    # Free-text category used to group definitions in the Admin UI. Named
+    # group_name rather than group because GROUP is a reserved SQL keyword.
+    group_name = Column(String(100), nullable=False, server_default="", index=True)
     description = Column(Text, default="")
     sql = Column(Text, nullable=False)
     permission = Column(String(200), nullable=False)

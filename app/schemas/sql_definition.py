@@ -20,6 +20,9 @@ class OrderBySchema(BaseModel):
 class SqlDefinitionCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     db_alias: str = Field("default", min_length=1, max_length=64)
+    # Free-text category. Empty is allowed and groups under "(ungrouped)" in the
+    # Admin UI; it is a label only and carries no authorization meaning.
+    group_name: str = Field("", max_length=100)
     description: str = ""
     sql: str = Field(..., min_length=1)
     permission: str = ""
@@ -28,6 +31,7 @@ class SqlDefinitionCreate(BaseModel):
 
 
 class SqlDefinitionUpdate(BaseModel):
+    group_name: str | None = Field(None, max_length=100)
     description: str | None = None
     sql: str | None = None
     permission: str | None = None
@@ -39,6 +43,7 @@ class SqlDefinitionOut(BaseModel):
     id: int
     name: str
     db_alias: str
+    group_name: str = ""
     description: str
     sql: str
     permission: str

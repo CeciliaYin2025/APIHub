@@ -36,6 +36,18 @@ def main():
     print("Ensured api_hub_sql_definitions.order_by column.")
 
     with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE api_hub_sql_definitions "
+                "ADD COLUMN IF NOT EXISTS group_name varchar(100) DEFAULT '' NOT NULL"
+            )
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_sql_def_group_name ON api_hub_sql_definitions (group_name)")
+        )
+    print("Ensured api_hub_sql_definitions.group_name column.")
+
+    with engine.begin() as conn:
         conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS action_type varchar(20)"))
         conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS params jsonb"))
         conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS result_rows integer"))
