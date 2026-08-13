@@ -1441,6 +1441,12 @@ window.openSqlDefForm = async function(mode, name) {
           <div class="hint">Shown in the list, the detail page and every Query Console example.</div>
         </div>
         <div class="form-group">
+          <label>Returns</label>
+          <textarea id="sdResultDesc" rows="2" placeholder="e.g. EMP_NO, NAME, DEPT, HIRE_DATE">${esc(data.result_description || '')}</textarea>
+          <div class="hint">What the query gives back, usually the column list. Read by LLMs via the MCP tool description —
+            without it a model has to run the query just to learn its shape.</div>
+        </div>
+        <div class="form-group">
           <label>SQL</label>
           <textarea id="sdSql" class="monospace" rows="16" placeholder="SELECT ... FROM ... WHERE ...">${esc(data.sql || '')}</textarea>
         </div>
@@ -1533,6 +1539,7 @@ function collectOrderBy() {
 window.submitSqlDef = async function(mode, name) {
   const nameVal = document.getElementById('sdName').value.trim();
   const desc = document.getElementById('sdDesc').value.trim();
+  const resultDesc = document.getElementById('sdResultDesc').value.trim();
   const perm = document.getElementById('sdPerm').value.trim();
   const sql = document.getElementById('sdSql').value;
   const paramsRaw = document.getElementById('sdParams').value.trim();
@@ -1554,11 +1561,11 @@ window.submitSqlDef = async function(mode, name) {
   try {
     let saved;
     if (mode === 'create' || mode === 'copy') {
-      await api('POST', `${dbPrefix()}/queries/definitions`, { name: nameVal, group_name: groupName, description: desc, sql, permission: perm, params, order_by: orderBy });
+      await api('POST', `${dbPrefix()}/queries/definitions`, { name: nameVal, group_name: groupName, description: desc, result_description: resultDesc, sql, permission: perm, params, order_by: orderBy });
       toast(`Definition '${nameVal}' created`, 'success');
       saved = nameVal;
     } else {
-      const body = { group_name: groupName, description: desc, sql, permission: perm, params, order_by: orderBy };
+      const body = { group_name: groupName, description: desc, result_description: resultDesc, sql, permission: perm, params, order_by: orderBy };
       await api('PUT', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`, body);
       toast(`Definition '${name}' updated`, 'success');
       saved = name;
@@ -1626,6 +1633,7 @@ window.viewSqlDef = async function(name) {
           <div class="detail-item"><span class="detail-label">Permission</span><span class="detail-value"><span class="tag">${esc(d.permission)}</span></span></div>
           <div class="detail-item"><span class="detail-label">Group</span><span class="detail-value">${d.group_name ? `<span class="tag">${esc(d.group_name)}</span>` : '—'}</span></div>
           <div class="detail-item detail-wide"><span class="detail-label">Description</span><span class="detail-value">${esc(d.description || '—')}</span></div>
+          <div class="detail-item detail-wide"><span class="detail-label">Returns</span><span class="detail-value">${esc(d.result_description || '—')}</span></div>
         </div>
 
         <div class="form-group mt-4">

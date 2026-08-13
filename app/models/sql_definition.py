@@ -17,6 +17,10 @@ class SqlDefinitionModel(Base):
     # group_name rather than group because GROUP is a reserved SQL keyword.
     group_name = Column(String(100), nullable=False, server_default="", index=True)
     description = Column(Text, default="")
+    # Free-text summary of the result set (typically the column list). Read by
+    # LLMs through the MCP tool description; without it a caller has to run the
+    # query once just to learn what comes back.
+    result_description = Column(Text, nullable=False, server_default="")
     sql = Column(Text, nullable=False)
     permission = Column(String(200), nullable=False)
     params = Column(JSONB, default=dict)

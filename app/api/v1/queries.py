@@ -42,6 +42,7 @@ def _row_to_out(row: SqlDefinitionModel) -> dict:
         "db_alias": row.db_alias or "default",
         "group_name": row.group_name or "",
         "description": row.description or "",
+        "result_description": row.result_description or "",
         "sql": row.sql,
         "permission": row.permission,
         "params": row.params or {},
@@ -79,6 +80,7 @@ def list_definitions(
             "db_alias": d.db_alias,
             "group_name": d.group_name,
             "description": d.description,
+            "result_description": d.result_description,
             "permission": d.permission,
             "params": {
                 k: {"type": v.type, "required": v.required, "description": v.description} for k, v in d.params.items()
@@ -153,6 +155,7 @@ def import_yaml_definitions(
                 db_alias=db,
                 group_name=raw.get("group_name", ""),
                 description=raw.get("description", ""),
+                result_description=raw.get("result_description", ""),
                 sql=raw["sql"].strip(),
                 permission=raw.get("permission", f"query:{name}"),
                 params=params,
@@ -192,6 +195,7 @@ def export_definitions_yaml(
             "name": row.name,
             "group_name": row.group_name or "",
             "description": row.description or "",
+            "result_description": row.result_description or "",
             "sql": row.sql,
             "permission": row.permission,
             "params": row.params or {},
@@ -254,6 +258,7 @@ async def import_yaml_file(
                 db_alias=db,
                 group_name=raw.get("group_name", ""),
                 description=raw.get("description", ""),
+                result_description=raw.get("result_description", ""),
                 sql=raw["sql"].strip(),
                 permission=raw.get("permission", f"query:{name}"),
                 params=params,
@@ -298,6 +303,7 @@ def create_definition(
         db_alias=db,
         group_name=body.group_name,
         description=body.description,
+        result_description=body.result_description,
         sql=body.sql.strip(),
         permission=permission,
         params=params,
@@ -353,6 +359,8 @@ def update_definition(
 
     if body.group_name is not None:
         row.group_name = body.group_name
+    if body.result_description is not None:
+        row.result_description = body.result_description
     if body.description is not None:
         row.description = body.description
     if body.sql is not None:

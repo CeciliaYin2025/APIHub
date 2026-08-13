@@ -615,6 +615,10 @@ sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"
 | 分隔符歧義 | (`pg_test`, `employees`) 與 (`pg`, `test_employees`) → `query_pg_test_employees` | alias 與定義名稱皆可含 `_`，兩者又以 `_` 相接，**可跨資料來源撞名** |
 | 長度截斷 | `..._region_v2` 與 `..._region_v3` → 同一個 64 字元名稱 | 版本號位於結尾者最易中招 |
 
+**工具描述組成**（`mcp_server/catalog.py::build_description`，本檢視不涵蓋）：標頭為 `[alias · group_name]`（`group_name` 為空時退為 `[alias]`），其後接 `description`（為空時退為 `Run registered query '<name>'`），最後若 `result_description` 非空則另起一行 `Returns: ...`。`group_name` 讓模型拿到維運者自己的分類而非從名稱猜測；`result_description` 說明查詢回傳什麼（通常是欄位清單），**無任何驗證機制**，純粹是寫給 LLM 看的文件 —— 不寫的話，模型只能先跑一次查詢才知道結果長什麼樣。
+
+**參數描述組成**（`mcp_server/catalog.py::param_schema`）：型別提示以 ` — ` **接在**定義自身的參數描述之後，不是取代它。`date` 參數得到 `<描述> — Format: YYYY-MM-DD (e.g. 2026-08-01).`；`string`/`number` 無提示，維持原描述。提示放在 description 而非只靠 JSON Schema 的 `format` 關鍵字，是因為模型對後者的遵守度偏低，而綁定值是以字串送進資料庫的 —— 格式錯誤會是執行期錯誤，dialect 層救不回來。
+
 **忠實性依據：** 名稱一律由 `mcp_server/naming.py` 產生（與 `catalog.py` 同一份實作，`tests/test_mcp_catalog_service.py` 有守則測試防止兩份漂移）；迭代順序比照 `ToolCatalog._load` —— alias 依 `GET /databases` 順序，定義依 `GET /{db}/queries/definitions` 順序。**順序決定撞名時誰存活**，因此屬於答案的一部分。
 
 **已知落差：** MCP server 若設定 `MCP_DB_ALIASES`，實際只暴露此處所列的子集。該設定屬於 MCP 行程的環境變數，Hub 無從得知，故本服務一律涵蓋全部 alias。
@@ -768,7 +772,9 @@ username=admin&password=changeme
 POST /api/v1/queries/definitions
 {
   "name": "my_report",
+  "group_name": "Sales",
   "description": "Monthly sales report",
+  "result_description": "REGION, PRODUCT, TOTAL_AMOUNT",
   "sql": "SELECT region, product, SUM(amount) total_amount\nFROM sales\nWHERE sale_date BETWEEN :start_date AND :end_date\nGROUP BY region, product",
   "permission": "query:my_report",
   "params": {
@@ -1797,10 +1803,13 @@ SQL 定義以 **PostgreSQL** 為主要儲存（`api_hub_sql_definitions` 表）�
 | 欄位 | 型態 | 必填 | 說明 |
 |------|------|------|------|
 | `name` | string | 是 | 唯一識別名稱（用於 API 請求的 `query_name`） |
+| `group_name` | string | 否 | 自由文字分類，Admin UI 列表的分群依據；亦進入 MCP 工具描述標頭。留空歸為 `(ungrouped)`，不參與授權 |
 | `description` | string | 否 | 人類可讀說明 |
+| `result_description` | string | 否 | 回傳內容說明（通常為欄位清單），進入 MCP 工具描述的 `Returns:` 一行。**不做任何驗證** |
 | `sql` | string | 是 | SQL SELECT 語句（支援 `:param` 綁定變數） |
 | `permission` | string | 否 | 權限名稱（預設自動生成 `query:{name}`） |
 | `params` | JSON object | 否 | 參數定義，每個參數含 `type`/`required`/`description` |
+| `order_by` | JSON array | 否 | 排序欄位 `[{column, direction}]`，由 Hub 於外層套用（見 5.4） |
 
 **參數 `type` 允許值：** `string`（預設）、`number`、`date`
 
@@ -1810,9 +1819,10 @@ SQL 定義以 **PostgreSQL** 為主要儲存（`api_hub_sql_definitions` 表）�
 
 1. 進入 **SQL Definitions** 頁面；左欄選擇群組（`group_name`，依名稱排序），右欄即列出該群組底下的定義（依名稱排序）
 2. 點擊 **+ New Definition** 新增、**Edit** 編輯、**Delete** 刪除
-3. 表單包含：**群組**、名稱、描述、權限、SQL 編輯區（monospace）、參數 JSON 編輯器
+3. 表單包含：**群組**、名稱、描述、**Returns**、權限、SQL 編輯區（monospace）、參數 JSON 編輯器
    - 新增時填入群組後，**名稱**自動帶入 `<群組>_` 開頭、**權限**自動帶入 `query:<名稱>`；手動改過的欄位不會再被覆寫
    - 群組是純標籤，不參與授權；留空會歸到 `(ungrouped)`
+   - **Returns**（`result_description`）填該查詢回傳哪些欄位。Hub 本身不使用此欄位，它的唯一消費者是 MCP 工具描述 —— 留空的定義，LLM 只能先跑一次才知道結果長什麼樣
 4. 所有操作即時生效（自動刷新記憶體 Registry）
 
 #### 透過 API

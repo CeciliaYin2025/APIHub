@@ -36,6 +36,7 @@ class SqlDefinition:
     permission: str  # e.g. "query:employees"
     db_alias: str = "default"
     group_name: str = ""  # free-text category, used to group the Admin UI list
+    result_description: str = ""  # what the query returns; read by LLMs via MCP
     params: dict[str, ParamDef] = field(default_factory=dict)
     order_by: list[dict] = field(default_factory=list)
 
@@ -124,6 +125,7 @@ class SqlRegistry:
                         permission=row.permission or f"query:{row.name}",
                         db_alias=row.db_alias or "default",
                         group_name=row.group_name or "",
+                        result_description=row.result_description or "",
                         params=params,
                         order_by=row.order_by or [],
                     )
@@ -181,6 +183,7 @@ class SqlRegistry:
             permission=raw.get("permission", f"query:{raw['name']}"),
             db_alias=db_alias,
             group_name=raw.get("group_name", ""),
+            result_description=raw.get("result_description", ""),
             params=params,
             order_by=raw.get("order_by") or [],
         )

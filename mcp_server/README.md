@@ -15,6 +15,31 @@ the definitions the caller's own credential could execute — the list goes into
 an LLM's context, and an unfiltered one would leak the names, descriptions and
 parameters of everything else on the alias.
 
+## Tool descriptions
+
+`catalog.py::build_description` composes what the model reads when choosing
+between tools:
+
+    [dw · HR] Headcount by department as of a frozen date.
+    Returns: EMP_NO, NAME, DEPT, HIRE_DATE
+
+- the header carries the alias and the definition's `group_name` — the same
+  taxonomy the Admin UI groups by, so a model picking among forty similar
+  tools gets the operator's categories instead of guessing from names;
+- the body is `description`, falling back to `Run registered query '<name>'`;
+- `Returns:` is `result_description`, omitted when empty. Nothing validates it
+  against the real result set — it is documentation, and worth writing: without
+  it the only way to learn a query's shape is to run it.
+
+Both fields are optional and editable in the Admin UI's definition form.
+
+Parameter schemas come from `param_schema`, which **appends** a per-type hint to
+the operator's own description rather than replacing it — a `date` param reads
+`<your description> — Format: YYYY-MM-DD (e.g. 2026-08-01).` The hint lives in
+the description because models follow stated formats far more reliably than the
+JSON Schema `format` keyword, and the binds reach the database as strings, so a
+wrong shape is a runtime error the dialect layer cannot rescue.
+
 ## Transports & auth
 
 | Transport | Run | Auth |

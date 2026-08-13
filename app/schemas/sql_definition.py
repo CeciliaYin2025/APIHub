@@ -24,6 +24,9 @@ class SqlDefinitionCreate(BaseModel):
     # Admin UI; it is a label only and carries no authorization meaning.
     group_name: str = Field("", max_length=100)
     description: str = ""
+    # What the query returns — usually the column list. Surfaced to LLMs in the
+    # MCP tool description, so it is worth writing even though nothing enforces it.
+    result_description: str = ""
     sql: str = Field(..., min_length=1)
     permission: str = ""
     params: dict[str, ParamDefSchema] = Field(default_factory=dict)
@@ -33,6 +36,7 @@ class SqlDefinitionCreate(BaseModel):
 class SqlDefinitionUpdate(BaseModel):
     group_name: str | None = Field(None, max_length=100)
     description: str | None = None
+    result_description: str | None = None
     sql: str | None = None
     permission: str | None = None
     params: dict[str, ParamDefSchema] | None = None
@@ -45,6 +49,7 @@ class SqlDefinitionOut(BaseModel):
     db_alias: str
     group_name: str = ""
     description: str
+    result_description: str = ""
     sql: str
     permission: str
     params: dict[str, ParamDefSchema]

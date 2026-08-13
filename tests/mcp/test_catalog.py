@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from mcp_server.catalog import ToolCatalog, build_tool, sanitize, tool_name
+from mcp_server.catalog import ToolCatalog, build_description, build_tool, param_schema, sanitize, tool_name
 from mcp_server.client import ApiHubClient
 
 DEFINITION = {
@@ -35,10 +35,92 @@ def test_build_tool_schema():
     assert props["min_amount"] == {"type": "number"}
     assert props["since"]["type"] == "string"
     assert props["since"]["format"] == "date"
+    assert props["since"]["description"] == "Earliest order date — Format: YYYY-MM-DD (e.g. 2026-08-01)."
     assert props["page"]["type"] == "integer"
     assert props["page_size"]["maximum"] == 100
     assert tool.inputSchema["required"] == ["status"]
     assert tool.inputSchema["additionalProperties"] is False
+
+
+# ── param schema: type hint and operator description are joined, not swapped ──
+
+DATE_HINT = "Format: YYYY-MM-DD (e.g. 2026-08-01)."
+
+
+def test_date_param_keeps_both_the_hint_and_the_operator_description():
+    """The regression this guards: assigning the description dropped the hint.
+
+    A documented date param used to end up with *less* format guidance than an
+    undocumented one, which is exactly backwards.
+    """
+    schema = param_schema({"type": "date", "description": "Earliest order date"})
+    assert schema == {
+        "type": "string",
+        "format": "date",
+        "description": f"Earliest order date — {DATE_HINT}",
+    }
+
+
+def test_date_param_without_a_description_still_gets_the_hint():
+    assert param_schema({"type": "date"}) == {"type": "string", "format": "date", "description": DATE_HINT}
+    assert param_schema({"type": "date", "description": "  "})["description"] == DATE_HINT
+
+
+def test_non_date_params_carry_only_the_operator_description():
+    # No hint exists for string/number, so nothing is appended and a param with
+    # no description keeps no description key at all.
+    assert param_schema({"type": "string", "description": "Order status code"}) == {
+        "type": "string",
+        "description": "Order status code",
+    }
+    assert param_schema({"type": "number"}) == {"type": "number"}
+    assert param_schema({}) == {"type": "string"}
+
+
+def test_unknown_param_type_falls_back_to_string():
+    assert param_schema({"type": "timestamp", "description": "d"}) == {"type": "string", "description": "d"}
+
+
+def test_param_type_map_is_not_mutated_across_calls():
+    """schema is a copy — a shared dict would leak one param's description into every other."""
+    param_schema({"type": "date", "description": "first"})
+    assert param_schema({"type": "date"})["description"] == DATE_HINT
+
+
+# ── tool description: what the LLM reads to pick the right tool ────────────
+
+
+def test_description_without_group_or_returns():
+    assert build_description("pg_test", DEFINITION) == "[pg_test] Open orders grouped by customer"
+
+
+def test_description_includes_group_and_returns():
+    defn = DEFINITION | {"group_name": "HR", "result_description": "EMP_NO, NAME, DEPT"}
+    assert build_description("dw", defn) == "[dw · HR] Open orders grouped by customer\nReturns: EMP_NO, NAME, DEPT"
+
+
+def test_description_falls_back_when_description_is_empty():
+    # Better a generic sentence than a bare "[dw]" the model cannot act on.
+    assert build_description("dw", DEFINITION | {"description": ""}) == "[dw] Run registered query 'order_summary'"
+    assert build_description("dw", DEFINITION | {"description": "   "}) == "[dw] Run registered query 'order_summary'"
+
+
+def test_description_ignores_blank_group_and_returns():
+    """Whitespace-only values must not produce '[dw · ]' or a dangling 'Returns:'."""
+    defn = DEFINITION | {"group_name": "  ", "result_description": "\n "}
+    assert build_description("dw", defn) == "[dw] Open orders grouped by customer"
+
+
+def test_description_tolerates_a_definition_missing_the_new_fields():
+    # Definitions loaded from YAML predate both fields; the REST payload simply
+    # omits them rather than sending "".
+    bare = {"name": "x", "description": "d", "params": {}}
+    assert build_description("dw", bare) == "[dw] d"
+
+
+def test_build_tool_uses_the_description_builder():
+    defn = DEFINITION | {"group_name": "Sales", "result_description": "ORDER_ID, TOTAL"}
+    assert build_tool("pg_test", defn, page_size_max=100).description == build_description("pg_test", defn)
 
 
 def _mock_client(definitions_by_db, databases=None, counter=None):

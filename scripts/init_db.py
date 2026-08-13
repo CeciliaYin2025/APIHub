@@ -47,6 +47,18 @@ def main():
         )
     print("Ensured api_hub_sql_definitions.group_name column.")
 
+    # text, not varchar: a column list for a wide view outruns any cap worth
+    # picking, and truncating one would mislead an LLM rather than merely fail.
+    # No index either — nobody filters or groups on it; it exists to be read.
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE api_hub_sql_definitions "
+                "ADD COLUMN IF NOT EXISTS result_description text DEFAULT '' NOT NULL"
+            )
+        )
+    print("Ensured api_hub_sql_definitions.result_description column.")
+
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS action_type varchar(20)"))
         conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS params jsonb"))
