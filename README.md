@@ -419,6 +419,26 @@ curl -X POST http://localhost:8000/api/v1/queries/definitions \
   }'
 ```
 
+### Enabling and disabling a definition
+
+Every definition carries an `enabled` flag so one can be taken out of service without deleting it — useful for a query that is misbehaving, or one that is too slow or too verbose to belong in an LLM's tool list.
+
+Disabled means off everywhere: execution answers `404 ... is disabled` (worded distinctly from `not found`, so an operator sees the reason), the definition drops out of `GET /{db}/queries/definitions`, and it therefore disappears from the MCP tool catalog, which is built from that list.
+
+```bash
+curl -X PUT "$APIHUB_URL/api/v1/DW/queries/definitions/eo_detail" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+
+# still visible to whoever manages them
+curl "$APIHUB_URL/api/v1/DW/queries/definitions?include_disabled=true" -H "..."
+```
+
+- Admin UI: an Enable/Disable button on both the list and the detail page; disabled rows stay listed but dimmed, so they can be switched back on
+- `GET /api/v1/mcp/tools` keeps reporting them with `enabled: false` and `exposed: false` — that view exists to explain why a definition is not reaching an LLM, and "switched off" is one of those reasons
+- A disabled definition does not claim its MCP tool name, so it cannot shadow another definition competing for the same one
+- Defaults to enabled, including for rows that predate the column — disabling is always explicit
+
 ### Migrating from YAML
 
 If you have existing YAML definitions in `app/sql_definitions/`, import them into the database:

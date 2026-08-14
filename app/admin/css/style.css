@@ -438,3 +438,8 @@ textarea.monospace,
   height: 1px;
   background: var(--gray-200);
 }
+
+/* A disabled SQL definition still lists, so it is dimmed rather than hidden —
+   it must stay reachable to be switched back on. */
+.data-table tr.row-disabled { opacity: .55; }
+.data-table tr.row-disabled:hover { opacity: 1; }

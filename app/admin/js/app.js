@@ -1167,7 +1167,9 @@ async function renderSqlDefs() {
   const isSuperuser = currentUser && currentUser.is_superuser;
 
   try {
-    const defs = await api('GET', `${dbPrefix()}/queries/definitions`);
+    // include_disabled: this is the management view, so a disabled definition
+    // must stay visible — otherwise there is no way to switch it back on.
+    const defs = await api('GET', `${dbPrefix()}/queries/definitions?include_disabled=true`);
     defs.sort((a, b) => String(a.name).localeCompare(String(b.name)));
     window._cachedDefs = defs;
 
@@ -1239,10 +1241,13 @@ function paintSqlDefTable() {
   }
   host.innerHTML = `
     <table class="data-table"><thead><tr>
-      <th>Name</th><th>Description</th><th>Permission</th><th>Parameters</th><th>Actions</th>
+      <th>Name</th><th>Status</th><th>Description</th><th>Permission</th><th>Parameters</th><th>Actions</th>
     </tr></thead>
-    <tbody>${rows.map(d => `<tr>
+    <tbody>${rows.map(d => `<tr${d.enabled === false ? ' class="row-disabled"' : ''}>
       <td><strong>${esc(d.name)}</strong></td>
+      <td>${d.enabled === false
+            ? '<span class="badge badge-red">Disabled</span>'
+            : '<span class="badge badge-green">Enabled</span>'}</td>
       <td class="text-sm">${esc(d.description || '—')}</td>
       <td><span class="tag">${esc(d.permission)}</span></td>
       <td>${Object.keys(d.params || {}).map(k => {
@@ -1253,6 +1258,8 @@ function paintSqlDefTable() {
         <div class="btn-group">
           <button class="btn btn-sm btn-outline" onclick="viewSqlDef('${esc(d.name)}')">Detail</button>
           ${isSuperuser ? `
+            <button class="btn btn-sm ${d.enabled === false ? 'btn-success' : 'btn-secondary'}"
+                    onclick="toggleSqlDef('${esc(d.name)}', ${d.enabled === false})">${d.enabled === false ? 'Enable' : 'Disable'}</button>
             <button class="btn btn-sm btn-primary" onclick="openSqlDefForm('edit','${esc(d.name)}')">Edit</button>
             <button class="btn btn-sm btn-info" onclick="openSqlDefForm('copy','${esc(d.name)}')">Copy</button>
             <button class="btn btn-sm btn-danger" onclick="deleteSqlDef('${esc(d.name)}')">Delete</button>
@@ -1262,6 +1269,23 @@ function paintSqlDefTable() {
     </tr>`).join('')}</tbody></table>
   `;
 }
+
+window.toggleSqlDef = async function(name, enable) {
+  // Disabling removes the definition from every caller at once — the REST list,
+  // and through it the MCP tool catalog — so it is confirmed rather than a
+  // single misclick.
+  const verb = enable ? 'Enable' : 'Disable';
+  if (!enable && !confirm(
+        `Disable "${name}"?\n\nIt will stop executing over REST and disappear from the MCP tool ` +
+        `catalog. Nothing is deleted — you can enable it again here.`)) return;
+  try {
+    await api('PUT', `${dbPrefix()}/queries/definitions/${encodeURIComponent(name)}`, { enabled: enable });
+    toast(`${verb}d ${name}`, 'success');
+    renderSqlDefs();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
 
 window.selectSqlDefGroup = function(index) {
   const group = sqlDefGroups[index];
@@ -1621,6 +1645,8 @@ window.viewSqlDef = async function(name) {
         <div class="btn-group">
           <button class="btn btn-sm btn-success" onclick="prefillQuery('${esc(d.name)}')">&#9654; Open in Query Console</button>
           ${isSuperuser ? `
+            <button class="btn btn-sm ${d.enabled === false ? 'btn-success' : 'btn-secondary'}"
+                    onclick="toggleSqlDef('${esc(d.name)}', ${d.enabled === false})">${d.enabled === false ? 'Enable' : 'Disable'}</button>
             <button class="btn btn-sm btn-primary" onclick="openSqlDefForm('edit','${esc(d.name)}')">Edit</button>
             <button class="btn btn-sm btn-info" onclick="openSqlDefForm('copy','${esc(d.name)}')">Copy</button>
             <button class="btn btn-sm btn-danger" onclick="deleteSqlDef('${esc(d.name)}')">Delete</button>
@@ -1630,6 +1656,10 @@ window.viewSqlDef = async function(name) {
       <div class="card-body">
         <div class="detail-grid">
           <div class="detail-item"><span class="detail-label">Name</span><span class="detail-value"><code>${esc(d.name)}</code></span></div>
+          <div class="detail-item"><span class="detail-label">Status</span><span class="detail-value">${
+            d.enabled === false
+              ? '<span class="badge badge-red">Disabled</span> <small class="text-muted">not executable, hidden from the MCP catalog</small>'
+              : '<span class="badge badge-green">Enabled</span>'}</span></div>
           <div class="detail-item"><span class="detail-label">Permission</span><span class="detail-value"><span class="tag">${esc(d.permission)}</span></span></div>
           <div class="detail-item"><span class="detail-label">Group</span><span class="detail-value">${d.group_name ? `<span class="tag">${esc(d.group_name)}</span>` : '—'}</span></div>
           <div class="detail-item detail-wide"><span class="detail-label">Description</span><span class="detail-value">${esc(d.description || '—')}</span></div>

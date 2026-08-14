@@ -1,6 +1,6 @@
 """ORM model for SQL definitions stored in PostgreSQL."""
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.db.session import Base
@@ -23,6 +23,12 @@ class SqlDefinitionModel(Base):
     result_description = Column(Text, nullable=False, server_default="")
     sql = Column(Text, nullable=False)
     permission = Column(String(200), nullable=False)
+    # Take a definition out of service without deleting it. Disabled definitions
+    # stay in the registry so the Admin UI can switch them back on and execution
+    # can say "disabled" rather than the indistinguishable "not found", but they
+    # are excluded from the definition list and therefore from the MCP catalog.
+    # Defaults true so existing rows keep working across the migration.
+    enabled = Column(Boolean, nullable=False, server_default="true", index=True)
     params = Column(JSONB, default=dict)
     order_by = Column(JSONB, default=list)
     created_at = Column(DateTime, server_default=func.now())

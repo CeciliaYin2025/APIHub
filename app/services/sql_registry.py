@@ -39,6 +39,11 @@ class SqlDefinition:
     result_description: str = ""  # what the query returns; read by LLMs via MCP
     params: dict[str, ParamDef] = field(default_factory=dict)
     order_by: list[dict] = field(default_factory=list)
+    # False takes the definition out of service. Disabled definitions are still
+    # loaded so the Admin UI can switch them back on and execution can report
+    # "disabled" rather than the indistinguishable "not found"; list_all hides
+    # them by default, which is what keeps them out of the MCP catalog.
+    enabled: bool = True
 
 
 def _key(name: str, db_alias: str) -> str:
@@ -84,11 +89,20 @@ class SqlRegistry:
                 return v
         return None
 
-    def list_all(self, db_alias: str | None = None) -> list[SqlDefinition]:
-        """Return all definitions, optionally filtered by *db_alias*."""
+    def list_all(self, db_alias: str | None = None, include_disabled: bool = False) -> list[SqlDefinition]:
+        """Return definitions, optionally filtered by *db_alias*.
+
+        Disabled definitions are omitted unless *include_disabled* is set. That
+        default is what removes a disabled definition from the REST list and, in
+        turn, from the MCP tool catalog — callers that manage definitions rather
+        than serve them (the Admin UI, the MCP tools view) pass True.
+        """
+        items = self._definitions.values()
         if db_alias is not None:
-            return [d for d in self._definitions.values() if d.db_alias == db_alias]
-        return list(self._definitions.values())
+            items = [d for d in items if d.db_alias == db_alias]
+        if not include_disabled:
+            items = [d for d in items if d.enabled]
+        return list(items)
 
     # ── DB loader ────────────────────────────────────────────────────────
 
@@ -128,6 +142,7 @@ class SqlRegistry:
                         result_description=row.result_description or "",
                         params=params,
                         order_by=row.order_by or [],
+                        enabled=True if row.enabled is None else bool(row.enabled),
                     )
                     self._definitions[_key(defn.name, defn.db_alias)] = defn
 
@@ -186,6 +201,7 @@ class SqlRegistry:
             result_description=raw.get("result_description", ""),
             params=params,
             order_by=raw.get("order_by") or [],
+            enabled=bool(raw.get("enabled", True)),
         )
         self._definitions[_key(defn.name, defn.db_alias)] = defn
 

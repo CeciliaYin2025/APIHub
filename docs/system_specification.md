@@ -3,7 +3,7 @@
 | 項目 | 內容 |
 |------|------|
 | 文件名稱 | Oracle RESTful API Hub 系統規格書 |
-| 版本 | 1.9.0 |
+| 版本 | 1.10.0 |
 | 目標資料庫 | Oracle Database 11g (11.1.0.4)（支援多資料庫） |
 | 框架 | FastAPI (Python 3.10+) |
 | 文件日期 | 2026-08-14 |
@@ -1453,11 +1453,16 @@ Authorization: Bearer <token>
 | 欄位 | 型態 | 約束 | 說明 |
 |------|------|------|------|
 | `id` | INTEGER | PK, AUTO | 主鍵 |
-| `name` | VARCHAR(200) | UNIQUE, NOT NULL, INDEX | 定義名稱（用於 API 的 `query_name`） |
-| `description` | TEXT | DEFAULT '' | 人類可讀說明 |
+| `name` | VARCHAR(200) | NOT NULL, INDEX | 定義名稱（用於 API 的 `query_name`） |
+| `db_alias` | VARCHAR(64) | NOT NULL, DEFAULT 'default', INDEX | 所屬資料來源。唯一鍵是 **(name, db_alias)**，同名可存在於不同 alias |
+| `group_name` | VARCHAR(100) | NOT NULL, DEFAULT '', INDEX | 自由文字分類，Admin UI 分組與 MCP 工具描述標頭用。**僅為標籤，不具授權意義** |
+| `description` | TEXT | DEFAULT '' | 人類可讀說明；MCP 工具描述的主體 |
+| `result_description` | TEXT | NOT NULL, DEFAULT '' | 回傳內容說明（通常是欄位清單）；MCP 工具描述的 `Returns:` 行 |
 | `sql` | TEXT | NOT NULL | SQL SELECT 語句（支援 `:param` 綁定變數） |
 | `permission` | VARCHAR(200) | NOT NULL | 權限名稱（如 `query:employees`） |
+| `enabled` | BOOLEAN | NOT NULL, DEFAULT true, INDEX | 啟用開關，見 §9.12 |
 | `params` | JSONB | DEFAULT '{}' | 參數定義（鍵值結構，每個參數含 `type`/`required`/`description`） |
+| `order_by` | JSONB | DEFAULT '[]' | 排序定義 `[{column, direction}]`，由 Hub 在自己的包裝層套用 |
 | `created_at` | DATETIME | SERVER DEFAULT SYSDATE | 建立時間 |
 | `updated_at` | DATETIME | SERVER DEFAULT SYSDATE, ONUPDATE | 更新時間 |
 
@@ -2083,6 +2088,39 @@ Skill 為純 Markdown（`SKILL.md` + YAML frontmatter），不依賴特定 clien
 > 只會產生一份必然過期的清單。查詢實際定義請用 `GET /api/v1/{db}/queries/definitions`
 > 或 Admin UI；查詢實際暴露給 LLM 的工具請用 `GET /api/v1/mcp/tools`（見 §5.9）。
 > 面向終端使用者的工具總覽維護於 `docs/eo-mcp-setup.md`。
+
+---
+
+### 9.12 啟用開關（`enabled`）
+
+每筆定義有一個 `enabled` 布林欄位，用於**下架而不刪除**。適用於暫時停用一個有問題
+的查詢、或把一個少用的定義移出 LLM 的工具清單，同時保留 SQL、參數與權限設定。
+
+**停用後的行為**：
+
+| 面向 | 行為 |
+|------|------|
+| `POST /{db}/queries/execute` | **404**，訊息為 `is disabled`，與 `not found` 明確區分 |
+| `GET /{db}/queries/definitions` | 不列出。加 `?include_disabled=true` 才會出現 |
+| MCP 工具清單 | 不出現。MCP server 是透過上述 REST 清單建目錄，因此自動生效 |
+| `GET /api/v1/mcp/tools` | **仍列出**，`enabled: false` / `exposed: false`。此檢視的用途正是解釋「為何某定義沒有到達 LLM」，隱藏它等於讓它無故消失 |
+| Admin UI | 仍列出（列淡化 + `Disabled` 標籤），可切回啟用 |
+
+**設計要點**：
+
+- 停用的定義**仍載入記憶體 registry**，不是載入時跳過。這是為了讓執行端能回報
+  「已停用」而不是與「不存在」無法區分的 404，也讓 Admin UI 找得到它以便切回來。
+  `SqlRegistry.list_all()` 預設過濾，`include_disabled=True` 才回傳
+- `enabled` 預設 `true`，且遷移時 `DEFAULT true NOT NULL` —— 既有定義不受影響，
+  停用永遠是明確的動作
+- MCP 目錄檢視的 `shadowed` 計數改以 `shadowed_by` 判定而非 `not exposed`；否則
+  停用的定義會被誤報成名稱碰撞
+- 停用的定義**不佔用 MCP 工具名稱**，因此不會遮蔽同名的其他定義
+
+**操作方式**：Admin UI 的 SQL Definitions 列表與詳細頁各有一個 Enable/Disable 按鈕；
+API 為 `PUT /{db}/queries/definitions/{name}`，body `{"enabled": false}`。
+
+---
 
 ---
 

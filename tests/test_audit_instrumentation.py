@@ -22,6 +22,7 @@ class _Req:
 
 class _Def:
     permission = "query:get_orders"
+    enabled = True
 
 
 def test_query_execute_records_type_params_and_rows(monkeypatch):

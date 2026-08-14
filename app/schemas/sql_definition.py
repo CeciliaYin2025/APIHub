@@ -29,6 +29,10 @@ class SqlDefinitionCreate(BaseModel):
     result_description: str = ""
     sql: str = Field(..., min_length=1)
     permission: str = ""
+    # False takes the definition out of service without deleting it: it drops out
+    # of the definition list and therefore out of the MCP catalog, and execution
+    # refuses it. Defaults true — disabling is always explicit.
+    enabled: bool = True
     params: dict[str, ParamDefSchema] = Field(default_factory=dict)
     order_by: list[OrderBySchema] = Field(default_factory=list)
 
@@ -39,6 +43,7 @@ class SqlDefinitionUpdate(BaseModel):
     result_description: str | None = None
     sql: str | None = None
     permission: str | None = None
+    enabled: bool | None = None
     params: dict[str, ParamDefSchema] | None = None
     order_by: list[OrderBySchema] | None = None
 
@@ -52,6 +57,7 @@ class SqlDefinitionOut(BaseModel):
     result_description: str = ""
     sql: str
     permission: str
+    enabled: bool = True
     params: dict[str, ParamDefSchema]
     order_by: list[OrderBySchema] = Field(default_factory=list)
     created_at: datetime | None = None
