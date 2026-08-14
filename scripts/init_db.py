@@ -59,6 +59,16 @@ def main():
         )
     print("Ensured api_hub_sql_definitions.result_description column.")
 
+    # Defaults true so every pre-existing definition keeps serving across the
+    # migration; disabling is always an explicit act. Indexed because the
+    # definition list filters on it.
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE api_hub_sql_definitions ADD COLUMN IF NOT EXISTS enabled boolean DEFAULT true NOT NULL")
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sql_def_enabled ON api_hub_sql_definitions (enabled)"))
+    print("Ensured api_hub_sql_definitions.enabled column.")
+
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS action_type varchar(20)"))
         conn.execute(text("ALTER TABLE api_hub_audit_logs ADD COLUMN IF NOT EXISTS params jsonb"))

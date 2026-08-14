@@ -25,8 +25,10 @@ class _FakeSqlRegistry:
     def __init__(self, by_alias):
         self._by_alias = by_alias
 
-    def list_all(self, db_alias=None):
-        return self._by_alias.get(db_alias, [])
+    def list_all(self, db_alias=None, include_disabled=False):
+        # Mirrors the real registry: disabled definitions are hidden unless asked for.
+        items = self._by_alias.get(db_alias, [])
+        return items if include_disabled else [d for d in items if d.enabled]
 
 
 def _defn(name, alias, description="", params=None):
@@ -61,7 +63,7 @@ def test_derives_the_same_names_the_mcp_server_does(monkeypatch):
         tool_name("DW", "employees"),
     ]
     assert all(t["exposed"] for t in view["tools"])
-    assert view["summary"] == {"definitions": 2, "exposed": 2, "shadowed": 0, "truncated": 0}
+    assert view["summary"] == {"definitions": 2, "exposed": 2, "shadowed": 0, "disabled": 0, "truncated": 0}
 
 
 def test_view_and_catalog_share_one_naming_implementation():
@@ -119,7 +121,7 @@ def test_long_names_are_truncated_and_flagged(monkeypatch):
         assert len(row["tool_name"]) == view["tool_name_max_len"] == 64
     # The distinguishing suffix is exactly what the cap removes.
     assert not view["tools"][0]["tool_name"].endswith(("v2", "v3"))
-    assert view["summary"] == {"definitions": 2, "exposed": 1, "shadowed": 1, "truncated": 2}
+    assert view["summary"] == {"definitions": 2, "exposed": 1, "shadowed": 1, "disabled": 0, "truncated": 2}
 
 
 def test_short_names_are_not_flagged_as_truncated(monkeypatch):

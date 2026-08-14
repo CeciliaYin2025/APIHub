@@ -95,7 +95,8 @@ def test_listing_carries_it_to_the_mcp_catalog(monkeypatch):
     from app.models.user import User
 
     class _Registry:
-        def list_all(self, db_alias=None):
+        def list_all(self, db_alias=None, include_disabled=False):
+            # Mirrors the real registry: disabled ones are hidden unless asked for.
             return [
                 SqlDefinition(
                     name="q",

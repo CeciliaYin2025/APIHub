@@ -27,7 +27,10 @@ def build_tool_view() -> dict:
     winners: dict[str, dict] = {}
 
     for alias in aliases:
-        for definition in sql_registry.list_all(db_alias=alias):
+        # include_disabled: this view exists to explain why a definition is not
+        # reaching an LLM, and "switched off" is one of those reasons. Omitting
+        # them would make a disabled definition vanish with no explanation.
+        for definition in sql_registry.list_all(db_alias=alias, include_disabled=True):
             untruncated = untruncated_tool_name(alias, definition.name)
             name = untruncated[:TOOL_NAME_MAX_LEN]
             row = {
@@ -37,11 +40,17 @@ def build_tool_view() -> dict:
                 "description": definition.description or "",
                 "params": sorted(definition.params.keys()),
                 "truncated": len(untruncated) > TOOL_NAME_MAX_LEN,
-                "exposed": True,
+                "enabled": definition.enabled,
+                "exposed": definition.enabled,
                 "shadowed_by": None,
                 "shadows": [],
             }
             winner = winners.get(name)
+            if not definition.enabled:
+                # A disabled definition never reaches the catalog, so it neither
+                # claims a tool name nor shadows anything competing for it.
+                tools.append(row)
+                continue
             if winner is None:
                 winners[name] = row
             else:
@@ -58,7 +67,11 @@ def build_tool_view() -> dict:
         "summary": {
             "definitions": len(tools),
             "exposed": sum(1 for t in tools if t["exposed"]),
-            "shadowed": sum(1 for t in tools if not t["exposed"]),
+            # Counted on shadowed_by rather than on "not exposed": a disabled
+            # definition is also unexposed, and folding the two together would
+            # report a name collision that does not exist.
+            "shadowed": sum(1 for t in tools if t["shadowed_by"] is not None),
+            "disabled": sum(1 for t in tools if not t["enabled"]),
             "truncated": sum(1 for t in tools if t["truncated"]),
         },
         "tools": tools,

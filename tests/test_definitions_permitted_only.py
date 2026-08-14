@@ -30,7 +30,8 @@ def _user(*perms: str, is_superuser: bool = False) -> User:
 
 def _call(monkeypatch, user, **kwargs):
     class _Registry:
-        def list_all(self, db_alias=None):
+        def list_all(self, db_alias=None, include_disabled=False):
+            # Mirrors the real registry: disabled ones are hidden unless asked for.
             return _defs()
 
     monkeypatch.setattr(queries_api, "sql_registry", _Registry())
@@ -70,7 +71,8 @@ def test_filter_matches_on_permission_not_on_definition_name(monkeypatch):
     """
 
     class _Registry:
-        def list_all(self, db_alias=None):
+        def list_all(self, db_alias=None, include_disabled=False):
+            # Mirrors the real registry: disabled ones are hidden unless asked for.
             return [
                 SqlDefinition(name="a", description="", sql="", permission="query:shared", db_alias="dw"),
                 SqlDefinition(name="b", description="", sql="", permission="query:shared", db_alias="dw"),

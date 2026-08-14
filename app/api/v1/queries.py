@@ -45,6 +45,7 @@ def _row_to_out(row: SqlDefinitionModel) -> dict:
         "result_description": row.result_description or "",
         "sql": row.sql,
         "permission": row.permission,
+        "enabled": True if row.enabled is None else bool(row.enabled),
         "params": row.params or {},
         "order_by": row.order_by or [],
         "created_at": row.created_at,
@@ -60,6 +61,7 @@ def _row_to_out(row: SqlDefinitionModel) -> dict:
 def list_definitions(
     db: str = Depends(get_db_alias),
     permitted_only: bool = False,
+    include_disabled: bool = False,
     current_user: User = Depends(get_current_user),
 ):
     """List SQL definitions for a specific database.
@@ -71,7 +73,7 @@ def list_definitions(
     the MCP tool catalog, the Query Console picker — should set it, or they
     advertise names, descriptions and parameters the caller has no right to.
     """
-    definitions = sql_registry.list_all(db_alias=db)
+    definitions = sql_registry.list_all(db_alias=db, include_disabled=include_disabled)
     if permitted_only:
         definitions = [d for d in definitions if has_permission(current_user, d.permission, "read")]
     return [
@@ -79,6 +81,7 @@ def list_definitions(
             "name": d.name,
             "db_alias": d.db_alias,
             "group_name": d.group_name,
+            "enabled": d.enabled,
             "description": d.description,
             "result_description": d.result_description,
             "permission": d.permission,
@@ -158,6 +161,7 @@ def import_yaml_definitions(
                 result_description=raw.get("result_description", ""),
                 sql=raw["sql"].strip(),
                 permission=raw.get("permission", f"query:{name}"),
+                enabled=bool(raw.get("enabled", True)),
                 params=params,
                 order_by=raw.get("order_by") or [],
             )
@@ -198,6 +202,7 @@ def export_definitions_yaml(
             "result_description": row.result_description or "",
             "sql": row.sql,
             "permission": row.permission,
+            "enabled": True if row.enabled is None else bool(row.enabled),
             "params": row.params or {},
             "order_by": row.order_by or [],
         }
@@ -261,6 +266,7 @@ async def import_yaml_file(
                 result_description=raw.get("result_description", ""),
                 sql=raw["sql"].strip(),
                 permission=raw.get("permission", f"query:{name}"),
+                enabled=bool(raw.get("enabled", True)),
                 params=params,
                 order_by=raw.get("order_by") or [],
             )
@@ -306,6 +312,7 @@ def create_definition(
         result_description=body.result_description,
         sql=body.sql.strip(),
         permission=permission,
+        enabled=body.enabled,
         params=params,
         order_by=order_by,
     )
@@ -367,6 +374,8 @@ def update_definition(
         row.sql = body.sql.strip()
     if body.permission is not None:
         row.permission = body.permission
+    if body.enabled is not None:
+        row.enabled = body.enabled
     if body.params is not None:
         row.params = {k: v.model_dump() for k, v in body.params.items()}
     if body.order_by is not None:
@@ -430,6 +439,12 @@ def execute(
     if not definition:
         raise HTTPException(
             status_code=404, detail=f"Query definition '{payload.query_name}' not found for database '{db}'"
+        )
+    # Reported separately from "not found": an operator who has just disabled a
+    # definition needs to see that reason rather than hunt for a missing row.
+    if not definition.enabled:
+        raise HTTPException(
+            status_code=404, detail=f"Query definition '{payload.query_name}' is disabled for database '{db}'"
         )
 
     # Check permission
