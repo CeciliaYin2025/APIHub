@@ -3,8 +3,17 @@
 import httpx
 import pytest
 
+from mcp_server.client import ApiHubClient, ApiHubError
 from mcp_server.config import mcp_settings
 from mcp_server.http_app import OAuthGateMiddleware, create_http_app, passthrough_headers
+
+
+async def _ok_ping(self, timeout: float = 3.0) -> None:
+    """Stand in for a reachable API Hub."""
+
+
+async def _failing_ping(self, timeout: float = 3.0) -> None:
+    raise ApiHubError(503, "connection refused")
 
 
 @pytest.fixture(autouse=True)
@@ -145,9 +154,34 @@ async def test_wellknown_route_is_public():
 
 
 @pytest.mark.asyncio
-async def test_health_stays_public_under_oauth():
+async def test_health_stays_public_under_oauth(monkeypatch):
+    """/health must not sit behind the OAuth gate.
+
+    The upstream probe is stubbed out. Without it this test reaches the real
+    ``mcp_settings.api_hub_url`` (``http://localhost:8000`` by default), so it
+    passed only on a machine that happened to be running the API — and failed in
+    CI, where nothing listens there.
+    """
+    monkeypatch.setattr(ApiHubClient, "ping", _ok_ping)
     app = create_http_app()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://mcp") as client:
         resp = await client.get("/health")
     assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_health_reports_503_when_the_hub_is_unreachable(monkeypatch):
+    """The point of the probe: alive-but-cut-off must not read as healthy.
+
+    Still public, though — an unreachable upstream is a 503, never the 401 the
+    OAuth gate would produce.
+    """
+    monkeypatch.setattr(ApiHubClient, "ping", _failing_ping)
+    app = create_http_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp") as client:
+        resp = await client.get("/health")
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "degraded"

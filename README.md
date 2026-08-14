@@ -188,6 +188,41 @@ Three ways names collide: character folding (`EO Detail` = `EO_DETAIL` = `eo_det
 
 > If the MCP server sets `MCP_DB_ALIASES` it exposes a subset of what this lists. That setting belongs to the MCP process and the Hub cannot read it.
 
+### 12. Client Tooling for LLM Callers
+
+The Hub serves definitions; these are the client-side pieces that make them usable from an agent. All three are **client-side** — none is part of the server image's runtime.
+
+**Period cache — `scripts/eo_cache.py`**
+
+Caches a query result per frozen period, so a closed period is fetched once rather than on every question. Frozen periods are immutable, so this is safe by construction and needs no invalidation policy — apart from one rule it enforces itself.
+
+```bash
+export APIHUB_URL=https://<host>/apihub
+export APIHUB_API_KEY=ahk_...          # or APIHUB_TOKEN=<JWT>
+
+python -m scripts.eo_cache fetch --query eo_red_items \
+    -p frozen_date=2026-06-26 -p compare_date=2026-05-29 -p ou=SP
+python -m scripts.eo_cache status
+python -m scripts.eo_cache clear --query eo_red_items     # or --all
+python -m scripts.eo_cache fetch ... --refresh            # force one refetch
+```
+
+- **The latest period is never cached.** The script reads `eo_max_frozen_date` on every run and stores a result only when every date parameter is strictly older. It is re-run and corrected upstream, so caching it would go stale exactly when someone is most likely to be reading it
+- Requests carrying no date parameter sweep the latest period by construction and are always fetched live
+- Entries are gzipped JSON under `~/.cache/apihub-eo` (`EO_CACHE_DIR`), written atomically; a corrupt entry is treated as a miss
+- Refuses results above `--max-rows` (default 50,000) and points at `scripts/extract_query.py` — one period of `eo_detail` is ~139k rows and belongs in a file, not a cache entry or a context window
+
+**Agent skills — `.claude/skills/`**
+
+Plain-Markdown `SKILL.md` files, no Claude Code-specific features, so any agent can consume them as a system prompt.
+
+- `eo-analysis` — how to read the E&O tools correctly. Tool selection, period pinning, and the traps that turn correct numbers into wrong conclusions (true grains, non-additive columns, ratios that must be read by amount rather than by row count)
+- `new-sql-definition` — how to author a definition that satisfies both REST and MCP. Covers the failure modes nothing enforces: derived tool names that truncate or collide silently, and the subquery wrapper that makes CTEs unusable and inline `ORDER BY` invalid on MSSQL
+
+**Setup guide — `docs/eo-mcp-setup.md`**
+
+End-user instructions for connecting Claude Code / Claude desktop / Hermes to the MCP endpoint and installing the skill, including the account prerequisite (`SSO_AUTOCREATE=false` means an account must exist before SSO will work) and a connection-failure triage table. It reproduces the `eo-analysis` skill in full for clients with no skill mechanism; `tests/test_docs_skill_sync.py` fails the build if that copy drifts from the original.
+
 ## System-to-System Integration
 
 Oracle API Hub 設計為給其他系統（ERP、HR、BI 等）透過 REST API 存取 Oracle 資料的中繼平台。以下說明外部系統如何整合，以及權限設置方式。
@@ -495,6 +530,24 @@ mcp_server/                  # MCP server — separate process, proxies the REST
 ├── naming.py                # Tool-name derivation, shared with the Hub's catalog view
 ├── client.py                # REST API HTTP client
 └── config.py                # MCP_* settings
+
+scripts/                     # Operational and client-side tools (not in the server runtime)
+├── init_db.py               # Create tables, backfill columns/indexes, seed the admin user
+├── migrate_sql_def_db_alias.py   # One-time: backfill db_alias on pre-existing definitions
+├── backfill_sql_def_group.py     # One-time: derive group_name from the definition name
+├── purge_audit_logs.py      # Trim the audit trail (schedule it; nothing runs it automatically)
+├── register_isap_app.py     # Register this instance's redirect_uris with isap-auth
+├── extract_query.py         # Client-side: stream a full result set to CSV/Parquet/XLSX
+└── eo_cache.py              # Client-side: per-frozen-period result cache (never caches the latest)
+
+.claude/skills/              # Agent skills — plain Markdown, usable by any agent
+├── eo-analysis/SKILL.md     # How to read the E&O tools without drawing wrong conclusions
+├── new-sql-definition/SKILL.md   # How to author a definition valid for both REST and MCP
+└── update-spec/SKILL.md     # Keep README + system_specification.md in step with the code
+
+docs/
+├── system_specification.md  # Full specification (Traditional Chinese)
+└── eo-mcp-setup.md          # End-user guide: connect Claude/Hermes, install the skill
 
 examples/
 └── read_rd_tc_all.py        # Client example: auth + execute a query as a scoped reader account

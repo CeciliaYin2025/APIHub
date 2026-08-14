@@ -51,6 +51,23 @@ include = ["app*", "mcp_server*"]
 target-version = "py310"
 line-length = 120
 
+[tool.ruff.lint]
+# Pinned explicitly rather than left to ruff's default. CI installs ruff
+# unpinned (`pip install ruff`), and newer releases widened the default rule
+# set, so the same code started failing `ruff check app/ tests/` without a
+# commit touching it — main's pipeline went red on lint alone, which skips every
+# later stage and means pytest had not run for days.
+#
+# This is the set the codebase was actually written against and passes cleanly.
+# Notably absent is B008 (function call in an argument default): 83 of the 135
+# newly-reported violations were FastAPI's own `Depends()` idiom, where the
+# "fix" would be wrong.
+#
+# Widening this set is a deliberate decision, not something a ruff upgrade
+# should make on the project's behalf. Add rules here with the fixes in the same
+# commit.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["tests/e2e", "node_modules", ".venv"]
