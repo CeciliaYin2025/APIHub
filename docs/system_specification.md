@@ -3,10 +3,10 @@
 | 項目 | 內容 |
 |------|------|
 | 文件名稱 | Oracle RESTful API Hub 系統規格書 |
-| 版本 | 1.8.0 |
+| 版本 | 1.9.0 |
 | 目標資料庫 | Oracle Database 11g (11.1.0.4)（支援多資料庫） |
 | 框架 | FastAPI (Python 3.10+) |
-| 文件日期 | 2026-08-07 |
+| 文件日期 | 2026-08-14 |
 
 ---
 
@@ -2002,6 +2002,88 @@ POST /api/v1/queries/definitions/reload    (需要超級管理員權限)
 
 從 DB（或 YAML 備援）重新載入所有定義至記憶體，無需重啟服務。CRUD 操作後會自動觸發重載，通常不需手動呼叫。
 
+> **注意**：此重載是針對「透過 API 變更定義」的情境。若繞過 API 直接寫入
+> `api_hub_sql_definitions`（例如以 `docker exec` 執行遷移腳本），記憶體 registry
+> **不會**自動更新，必須另外呼叫本端點或重啟服務，否則 Admin UI 與 MCP 仍看到舊資料。
+
+---
+
+### 9.9 客戶端期別快取 — `scripts/eo_cache.py`
+
+分析型定義的成本集中在少數幾個慢查詢（例如跨期比對需掃描無 `Item_No` 索引的
+view）。凍結期別一旦結束即不可變，重跑同一個封閉期別只會得到相同結果，因此在
+**呼叫端**快取即可，不需要在資料來源建立物化表。
+
+| 指令 | 用途 |
+|------|------|
+| `fetch --query <name> -p k=v ...` | 執行定義；符合條件時重用本機快取 |
+| `fetch ... --refresh` | 忽略既有快取，強制重抓單筆 |
+| `status` | 列出目前快取的項目、列數、大小與抓取時間 |
+| `clear --query <name>` / `clear --all` | 清除指定定義或全部快取 |
+
+**快取判定規則（由腳本強制，非約定）**：
+
+1. 每次執行都先呼叫 `eo_max_frozen_date` 取得最新期別
+2. 請求必須帶有至少一個日期參數（`frozen_date`、`compare_date`）
+3. **所有**日期參數都必須嚴格早於最新期別
+
+任一條不滿足即不寫入快取，並在 stderr 說明原因。**最新一期永不快取** —— 上游仍
+可能重跑修正，快取它會在分析者最可能查看的情況下悄悄提供過期資料。未帶日期參數的
+查詢本質上會掃到最新期別，因此也一律即時查詢。
+
+其他行為：
+
+- 快取項目為 gzip JSON，位於 `~/.cache/apihub-eo`（可用 `EO_CACHE_DIR` 覆寫），
+  路徑鍵為 `(db, 定義名稱, 完整參數集)` 的 SHA-256 前 16 碼
+- 寫入採 temp file + atomic rename；讀取失敗（損毀）視為 cache miss 而非例外
+- 以 `fetch_mode=batch` 取數，超過 `--max-rows`（預設 50,000）即中止並提示改用
+  `scripts/extract_query.py`。單一期別的明細定義可達約 139,000 列，不屬於快取，
+  也不屬於 LLM 的上下文
+- 認證沿用 `scripts/extract_query.py` 的慣例：`APIHUB_URL` + `APIHUB_API_KEY`
+  或 `APIHUB_TOKEN`
+
+本腳本為**客戶端工具**，透過 HTTP 呼叫 REST API，不屬於伺服器映像的執行期。
+
+---
+
+### 9.10 Agent Skills — `.claude/skills/`
+
+SQL 定義提供**資料**，Skill 提供**判讀方法**。定義的 `description` 與
+`result_description` 已能描述單一工具，但「哪些欄位不可跨列加總」「哪個比率會誤導」
+這類跨工具的知識沒有欄位可以承載 —— 缺少它，LLM 拿到正確數字仍可能得出錯誤結論。
+
+| Skill | 內容 |
+|-------|------|
+| `eo-analysis` | 工具選擇、期別鎖定，以及會產生「看似合理但錯誤」結論的陷阱清單（真實資料粒度、非可加總欄位、須以金額而非列數解讀的比率） |
+| `new-sql-definition` | 撰寫同時滿足 REST 與 MCP 的定義。涵蓋無人強制檢查的失效模式：工具名稱為衍生值，超長會截斷、撞名會靜默捨棄；Hub 將定義包成子查詢，因此 CTE 永不可用、內嵌 `ORDER BY` 在 MSSQL 會失敗 |
+| `update-spec` | 維持 `README.md` 與本規格書與程式碼同步 |
+
+Skill 為純 Markdown（`SKILL.md` + YAML frontmatter），不依賴特定 client 的專屬功能；
+不支援 skill 機制的 client 可直接將內容作為系統提示使用。
+
+---
+
+### 9.11 終端使用者安裝指南 — `docs/eo-mcp-setup.md`
+
+供需要以 AI 查詢資料的終端使用者，涵蓋 MCP 連線與 skill 安裝：
+
+- **帳號前置條件**：`SSO_AUTOCREATE=false` 時，isap-auth 登入成功但 API Hub 無對應
+  本地帳號者會得到 403，必須由管理者事先建檔並指派角色
+- **端點格式**：`/<app>/mcp/mcp/` 為兩層路徑（gateway 前綴 + Streamable HTTP 掛載點）
+  且結尾斜線必要；授權伺服器可能位於**不同主機**，由 RS metadata 指示
+- **連線失敗判讀表**：工具清單為空 / 403 / 404 各自對應的原因
+- 附錄收錄 `eo-analysis` skill 全文，供無法取得 repo 的使用者複製
+
+該附錄為副本，存在漂移風險，因此 `tests/test_docs_skill_sync.py` 會在附錄與
+`.claude/skills/eo-analysis/SKILL.md` 不一致時使建置失敗 —— 過期的副本對照著它操作
+的讀者是不可見的。
+
+> **本規格書不列出個別 SQL 定義。** 定義儲存於平台庫的 `api_hub_sql_definitions`
+> 表，屬於**環境資料而非程式碼**，各環境內容不同且隨時可經 Admin UI 變更；寫進本文
+> 只會產生一份必然過期的清單。查詢實際定義請用 `GET /api/v1/{db}/queries/definitions`
+> 或 Admin UI；查詢實際暴露給 LLM 的工具請用 `GET /api/v1/mcp/tools`（見 §5.9）。
+> 面向終端使用者的工具總覽維護於 `docs/eo-mcp-setup.md`。
+
 ---
 
 ## 10. 管理介面 (Admin UI)
@@ -2369,6 +2451,18 @@ curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
 | `ISAP_REGISTRATION_TOKEN` | — | 自註冊用的 bootstrap token（`isapreg_…`）。**僅**註冊腳本讀取，放在 `deploy/*/.env.isap` 而非 `.env`：它能改寫本應用的 `redirect_uris`，外洩即為 auth code 竊取途徑。留空時註冊腳本跳過並以 0 退出 |
 | `ISAP_REDIRECT_URIS` | — | 登記的 callback 位址，換行或逗號分隔。宣告式整批取代。**僅**註冊腳本讀取 |
 
+### 14.1 客戶端工具環境變數
+
+以下變數**不由伺服器讀取**，僅供 `scripts/extract_query.py` 與 `scripts/eo_cache.py`
+等客戶端腳本使用，設定在執行這些腳本的機器上。
+
+| 環境變數 | 預設值 | 說明 |
+|----------|--------|------|
+| `APIHUB_URL` | — | API Hub 對外位址（如 `https://host/apihub`）。兩支腳本皆必要 |
+| `APIHUB_API_KEY` | — | 服務帳號 API Key（`ahk_…`）。與 `APIHUB_TOKEN` 擇一 |
+| `APIHUB_TOKEN` | — | JWT。僅在未提供 `APIHUB_API_KEY` 時採用 |
+| `EO_CACHE_DIR` | `~/.cache/apihub-eo` | `scripts/eo_cache.py` 的快取目錄（見 §9.9） |
+
 ---
 
 ## 15. 專案目錄結構
@@ -2446,17 +2540,29 @@ Oracle-api-hub/
 │   ├── naming.py                        # 工具名稱衍生規則（sanitize / 64 字元上限，與 Hub 共用）
 │   ├── client.py                        # REST API HTTP client
 │   └── config.py                        # MCP_* 環境變數組態
-├── scripts/
+├── scripts/                             # 維運與客戶端工具（不屬於伺服器執行期）
 │   ├── __init__.py
 │   ├── init_db.py                       # 資料庫初始化腳本（建表 + 欄位/索引補齊 + 種子資料）
-│   └── purge_audit_logs.py              # 稽核軌跡保留期限清理（分批 DELETE）
+│   ├── migrate_sql_def_db_alias.py      # 一次性遷移：回填既有定義的 db_alias
+│   ├── backfill_sql_def_group.py        # 一次性遷移：由定義名稱推導 group_name
+│   ├── purge_audit_logs.py              # 稽核軌跡保留期限清理（分批 DELETE）
+│   ├── register_isap_app.py             # 向 isap-auth 註冊本應用的 redirect_uris
+│   ├── extract_query.py                 # 客戶端：批次串流完整結果集至 CSV/Parquet/XLSX
+│   └── eo_cache.py                      # 客戶端：依凍結期別快取結果（最新一期永不快取，見 §9.9）
+├── .claude/
+│   └── skills/                          # Agent Skills（純 Markdown，見 §9.10）
+│       ├── eo-analysis/SKILL.md         # 資料判讀方法與陷阱清單
+│       ├── new-sql-definition/SKILL.md  # 撰寫同時滿足 REST 與 MCP 的定義
+│       └── update-spec/SKILL.md         # 維持文件與程式碼同步
 ├── tests/
 │   ├── __init__.py
 │   ├── test_security.py                 # 安全模組測試
 │   ├── test_sql_registry.py             # SQL 登錄服務測試
-│   └── test_write_service.py            # 寫入服務測試（表名驗證）
+│   ├── test_write_service.py            # 寫入服務測試（表名驗證）
+│   └── test_docs_skill_sync.py          # 守門測試：規格附錄與 SKILL.md 不一致即失敗
 ├── docs/
-│   └── system_specification.md          # 本系統規格書
+│   ├── system_specification.md          # 本系統規格書
+│   └── eo-mcp-setup.md                  # 終端使用者安裝指南（MCP + skill，見 §9.11）
 ├── Dockerfile                           # Docker 映像定義
 ├── docker-compose.yaml                  # 多服務容器編排
 ├── pyproject.toml                       # 專案元資料與依賴
