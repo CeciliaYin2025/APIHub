@@ -14,11 +14,23 @@ from mcp_server.config import mcp_settings
 
 _CACHE_TTL = 60.0
 
+# Advertised to the client via RFC 9728. This list must stay non-empty even
+# though isap-auth ignores an absent scope: MCP clients derive the scope of
+# their authorize request from it, and a client that ends up with an empty
+# scope skips the step that appends ``offline_access`` — which is the only
+# thing that earns a refresh token (isap-auth issues one solely for that
+# scope). Without it every caller re-runs the browser login when the 8 h
+# access token expires. ``offline_access`` is deliberately NOT listed here:
+# clients add it themselves off the authorization server's metadata, and
+# listing it would request it even from clients that cannot store one.
+SCOPES_SUPPORTED = ["openid", "profile", "email"]
+
 
 def protected_resource_metadata() -> dict:
     return {
         "resource": mcp_settings.public_url,
         "authorization_servers": [mcp_settings.auth_issuer],
+        "scopes_supported": SCOPES_SUPPORTED,
     }
 
 

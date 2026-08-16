@@ -100,6 +100,7 @@ curl -ks https://isap.sercomm.com/auth/.well-known/oauth-authorization-server
 | 登入後仍然 403 | API Hub 沒有你的本地帳號，或 username 與 isap-auth 不一致（檢查前導零） |
 | `404 Not Found` | URL 少了一層 `/mcp/` 或結尾斜線 |
 | 瀏覽器授權頁面出現 `Unknown app_id or redirect_uri not allowed` | 這是伺服器端設定問題，回報給管理者 |
+| 每隔約 8 小時就被要求重新授權 | access token 效期 8 小時，正常情況下 client 會拿 refresh token 靜默續期（最長 30 天）。若每 8 小時都跳登入，表示這次授權沒拿到 refresh token——請清掉該 MCP server 的既有授權再重連一次，讓 client 重跑一次完整流程 |
 
 ---
 

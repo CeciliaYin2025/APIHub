@@ -22,10 +22,21 @@ def test_metadata_and_challenge():
     assert meta == {
         "resource": "https://isap.example.com/apihub/mcp",
         "authorization_servers": ["https://isap.example.com/auth"],
+        "scopes_supported": ["openid", "profile", "email"],
     }
     assert 'resource_metadata="https://isap.example.com/apihub/mcp/.well-known/oauth-protected-resource"' in (
         challenge_header()
     )
+
+
+def test_metadata_advertises_a_non_empty_scope_list():
+    """A client that derives an empty scope from this never asks for
+    ``offline_access``, so it never gets a refresh token and re-runs the
+    browser login every time the access token expires. ``offline_access``
+    itself stays out: clients append it from the AS metadata."""
+    scopes = protected_resource_metadata()["scopes_supported"]
+    assert scopes
+    assert "offline_access" not in scopes
 
 
 def _transport(introspect_response, bridge_response=None, calls=None):
