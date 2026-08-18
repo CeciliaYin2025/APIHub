@@ -122,10 +122,11 @@ Drop YAML files into `app/database_definitions/` — each file is a list of data
 
 ### 6. ISAP SSO (optional, `ADMIN_SSO_ENABLED`)
 
-Sign in to the Admin UI with an ISAP account instead of a local password, via isap-auth's app-code flow.
+Sign in to the Admin UI with an ISAP account instead of a local password, via isap-auth's OAuth 2.1 authorization-code flow with PKCE.
 
-- `GET /api/v1/auth/sso/login` redirects to isap-auth's `/authorize` with a random `state`, stored in an `httpOnly` `SameSite=Lax` cookie
-- `GET /api/v1/auth/sso/callback` verifies that `state`, exchanges the one-time code for user info over the internal network, maps it to a local user and hands the minted JWT to the SPA in a **URL fragment** (never a query parameter, which would land in access logs)
+- `GET /api/v1/auth/sso/login` redirects to isap-auth's `/authorize` with `response_type=code`, an S256 `code_challenge`, `scope=openid profile email offline_access`, and a random `state`. The `state` and the PKCE **verifier** are stored in `httpOnly` `SameSite=Lax` cookies — the verifier never travels through the browser in readable form, so an intercepted code cannot be redeemed
+- `GET /api/v1/auth/sso/callback` verifies that `state`, redeems the code with the verifier over the internal network, resolves the identity via OIDC UserInfo, maps it to a local user and hands the minted JWT to the SPA in a **URL fragment** (never a query parameter, which would land in access logs)
+- `POST /api/v1/auth/sso/refresh` renews that JWT from the isap-auth refresh token, which is kept in an `httpOnly` `SameSite=Strict` cookie scoped to the SSO routes and rotated on every use. The SPA calls it on any 401 and retries once, so a session outlives `ACCESS_TOKEN_EXPIRE_MINUTES` without a new browser login; the refresh token itself never reaches JavaScript. `POST /api/v1/auth/sso/logout` clears it
 - The local password form stays on the login page, so a broken isap-auth never locks administrators out
 - `SSO_AUTOCREATE` decides whether an unknown ISAP user is auto-provisioned as a role-less local account or rejected; it governs the MCP identity bridge too, and `MCP_BRIDGE_AUTOCREATE` remains as an alias
 - Both endpoints return 404 while `ADMIN_SSO_ENABLED` is off, and the UI hides the button

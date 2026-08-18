@@ -1634,16 +1634,18 @@ Authorization: Bearer <token>
 
 #### 7.1.1 ISAP SSO 登入流程（選用，`ADMIN_SSO_ENABLED`）
 
-Admin UI 除本地帳密外，可改用 ISAP 帳號登入。走 isap-auth 的 app-code 流程，API Hub 仍然自己簽發 JWT，因此後續每個請求的驗證路徑與本地登入完全相同。
+Admin UI 除本地帳密外，可改用 ISAP 帳號登入。走 isap-auth 的 **OAuth 2.1 authorization code + PKCE** 流程，API Hub 仍然自己簽發 JWT，因此後續每個請求的驗證路徑與本地登入完全相同。
 
 ```
   Browser                    API Hub                     isap-auth
     │                           │                            │
     │  GET /auth/sso/login      │                            │
     │─────────────────────────▶│                            │
-    │                           │  產生 state，寫入          │
-    │                           │  httpOnly SameSite cookie  │
-    │  302 → /authorize?app_id=&redirect_uri=&state=         │
+    │                           │  產生 state + PKCE verifier│
+    │                           │  兩者寫入 httpOnly cookie  │
+    │  302 → /authorize?client_id=&response_type=code        │
+    │        &code_challenge=&code_challenge_method=S256     │
+    │        &scope=...offline_access&state=                 │
     │◀─────────────────────────│                            │
     │  GET /authorize ...                                    │
     │───────────────────────────────────────────────────────▶│
@@ -1654,19 +1656,37 @@ Admin UI 除本地帳密外，可改用 ISAP 帳號登入。走 isap-auth 的 ap
     │  GET /auth/sso/callback   │                            │
     │─────────────────────────▶│                            │
     │                           │  比對 state 與 cookie      │
-    │                           │  POST /api/v1/token        │
-    │                           │  （走 docker 內網）        │
+    │                           │  POST /token（內網）       │
+    │                           │  grant_type=authorization_code
+    │                           │  + code_verifier           │
     │                           │───────────────────────────▶│
-    │                           │◀───────────────────────────│
+    │                           │◀── access + refresh token ─│
+    │                           │  GET /userinfo（內網）     │
+    │                           │───────────────────────────▶│
+    │                           │◀────── username / email ───│
     │                           │  resolve_sso_user()        │
     │                           │  建立 JWT (HS256)          │
+    │                           │  refresh token 存入        │
+    │                           │  httpOnly SameSite=Strict  │
     │  302 → /admin#sso_token=eyJ...                         │
+    │◀─────────────────────────│                            │
+    │                                                        │
+    │  （JWT 過期後，SPA 於 401 時）                          │
+    │  POST /auth/sso/refresh   │                            │
+    │─────────────────────────▶│  POST /token（內網）       │
+    │                           │  grant_type=refresh_token  │
+    │                           │───────────────────────────▶│
+    │                           │◀── 新 access + 新 refresh ─│
+    │  {"access_token": "eyJ..."}  cookie 換新（輪替）       │
     │◀─────────────────────────│                            │
 ```
 
 要點：
 
 - **`state` 是必要的防護**，不是選配。缺少它時，攻擊者可先自行取得一個 code，再誘導受害者開啟帶該 code 的 callback 網址，使受害者靜默登入成攻擊者的帳號。isap-auth 會原樣帶回 `state`，比對後即清除 cookie。
+- **PKCE（S256）綁定 code 與發起流程的瀏覽器**：verifier 只存在 httpOnly cookie 與伺服器記憶體中，重導向網址只帶 challenge（雜湊）。被攔截到的 code 沒有 verifier 就換不到 token。缺 verifier cookie 時與 state 不符同樣處理 —— 拒絕兌換，不是照樣兌換。
+- **`offline_access` 換到 refresh token**，存在 `SameSite=Strict`、路徑限縮到 `/auth/sso` 的 httpOnly cookie。選 Strict 而非 Lax 是因為 isap-auth 每次兌換都輪替並偵測重放：跨站請求若消耗掉一次輪替，正常分頁下次刷新就會被判定為重放而整串失效。SPA 只在收到 401 時呼叫一次 `POST /auth/sso/refresh` 並重試該請求；refresh token 全程不進入 JavaScript。
+- **刷新失敗一律清除 cookie**。已用過或被撤銷的 token 不會因為重試而變有效，留著只會讓每次刷新都變成重放。
 - **JWT 以 URL fragment 交付**，不用 query string —— fragment 不會送到伺服器，因此不會進入 nginx access log 或 Referer。SPA 讀取後立即以 `history.replaceState` 清除。
 - **使用者解析共用** `app/services/sso_service.py::resolve_sso_user`，與 OAuth Resource Server（§7.1.2）及 MCP identity bridge（`POST /auth/sso-token`，相容路徑）同一份政策：`SSO_AUTOCREATE` 決定未建檔者自動建立或 403，服務帳號與停用帳號一律拒絕。
 - **失敗一律導回登入頁**並附 `#sso_error=` slug（`missing_code`、`state_mismatch`、`auth_unreachable`、`invalid_code`、`not_provisioned`、`not_eligible`），不回傳 JSON。
@@ -2552,6 +2572,7 @@ curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
 | `ISAP_AUTH_PUBLIC_URL` | — | isap-auth 對外位址，供瀏覽器導向 `/authorize` |
 | `ISAP_AUTH_INTERNAL_URL` | — | isap-auth 內網位址，供後端 `POST /token` 交換 code，不繞出 gateway |
 | `ISAP_APP_ID` | `apihub` | 本應用在 isap-auth 的 app_id，必須與 bootstrap token 綁定的值相同 |
+| `SSO_REFRESH_MAX_AGE_SECONDS` | `604800` | Admin UI refresh-token cookie 的存活上限（7 天）。isap-auth 自身的 refresh token 壽命另外計算，兩者取短 |
 | `SSO_AUTOCREATE` | `false` | 未建檔的 SSO 使用者是否自動建立為無角色帳號。同時作用於 Admin UI 與 MCP bridge；`MCP_BRIDGE_AUTOCREATE` 保留為相容別名 |
 | `OAUTH_RS_ENABLED` | `false` | REST API 是否直接接受 isap-auth 簽發的 access token（見 §7.1.2）。關閉時整條 introspection 分支不存在，`/.well-known/oauth-protected-resource` 回 404 |
 | `OAUTH_ISSUER` | — | 對客戶端公布的 authorization server。留空時退回 `ISAP_AUTH_PUBLIC_URL` |

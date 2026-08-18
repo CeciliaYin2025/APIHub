@@ -5,7 +5,7 @@ import secrets
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -34,7 +34,15 @@ from app.services.api_key_service import (
     revoke_api_key,
 )
 from app.services.auth_service import authenticate_user, get_current_active_superuser, get_current_user
-from app.services.sso_service import SsoExchangeError, exchange_sso_code, resolve_sso_user
+from app.services.sso_service import (
+    SCOPE,
+    SsoExchangeError,
+    build_pkce_pair,
+    exchange_pkce_code,
+    fetch_userinfo,
+    refresh_tokens,
+    resolve_sso_user,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -396,9 +404,11 @@ def sso_token_bridge(
     return SsoTokenResponse(access_token=token)
 
 
-# ── Admin UI SSO (isap-auth legacy app-code flow) ───────────────────────────
+# ── Admin UI SSO (isap-auth, OAuth 2.1 authorization code + PKCE) ───────────
 
 SSO_STATE_COOKIE = "apihub_sso_state"
+SSO_VERIFIER_COOKIE = "apihub_sso_verifier"
+SSO_REFRESH_COOKIE = "apihub_sso_refresh"
 
 
 def _require_sso_enabled() -> None:
@@ -412,6 +422,34 @@ def _sso_callback_url() -> str:
     return f"{settings.apihub_public_url.rstrip('/')}{settings.api_prefix}/auth/sso/callback"
 
 
+def _refresh_cookie_path() -> str:
+    """Scope the refresh cookie to the SSO routes.
+
+    It is a credential for the user's whole ISAP session, so it must not ride
+    along on every ordinary API call the way a "/" cookie would.
+    """
+    return f"{settings.root_path}{settings.api_prefix}/auth/sso"
+
+
+def _set_refresh_cookie(response, refresh_token: str) -> None:
+    """Store the refresh token where only this server can read it.
+
+    SameSite=Strict, not Lax: a cross-site request that carried this cookie
+    would consume the rotation, and the legitimate tab's next refresh would
+    then look like a replay to isap-auth — which revokes the entire token
+    family. Strict keeps that off the table without a CSRF token.
+    """
+    response.set_cookie(
+        SSO_REFRESH_COOKIE,
+        refresh_token,
+        max_age=settings.sso_refresh_max_age_seconds,
+        httponly=True,
+        samesite="strict",
+        secure=not settings.debug,
+        path=_refresh_cookie_path(),
+    )
+
+
 def _admin_redirect(fragment: str) -> RedirectResponse:
     """Hand the result back to the SPA in the URL fragment.
 
@@ -421,6 +459,7 @@ def _admin_redirect(fragment: str) -> RedirectResponse:
     """
     response = RedirectResponse(url=f"{settings.root_path}/admin#{fragment}", status_code=302)
     response.delete_cookie(SSO_STATE_COOKIE, path="/")
+    response.delete_cookie(SSO_VERIFIER_COOKIE, path="/")
     return response
 
 
@@ -429,11 +468,16 @@ def sso_login():
     """Start the SSO flow: bounce the browser to isap-auth's /authorize."""
     _require_sso_enabled()
     state = secrets.token_urlsafe(32)
+    verifier, challenge = build_pkce_pair()
     params = urlencode(
         {
-            "app_id": settings.isap_app_id,
+            "client_id": settings.isap_app_id,
+            "response_type": "code",
             "redirect_uri": _sso_callback_url(),
             "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "scope": SCOPE,
         }
     )
     response = RedirectResponse(
@@ -452,6 +496,17 @@ def sso_login():
         secure=not settings.debug,
         path="/",
     )
+    # The PKCE verifier never leaves this server: the browser only ever carries
+    # it back inside an httpOnly cookie it cannot read.
+    response.set_cookie(
+        SSO_VERIFIER_COOKIE,
+        verifier,
+        max_age=600,
+        httponly=True,
+        samesite="lax",
+        secure=not settings.debug,
+        path="/",
+    )
     return response
 
 
@@ -462,7 +517,7 @@ def sso_callback(
     state: str = Query(default=""),
     db: Session = Depends(get_db),
 ):
-    """Exchange the auth code, map to a local user, hand a JWT to the SPA.
+    """Redeem the auth code, map to a local user, hand a JWT to the SPA.
 
     Every failure path redirects with a `#sso_error=` fragment rather than
     returning JSON — this endpoint is reached by a browser navigation, so the
@@ -475,9 +530,15 @@ def sso_callback(
         return _admin_redirect("sso_error=state_mismatch")
     if not code:
         return _admin_redirect("sso_error=missing_code")
+    verifier = request.cookies.get(SSO_VERIFIER_COOKIE, "")
+    if not verifier:
+        # Same class of failure as a bad state: the flow cannot be tied back to
+        # the browser that started it, so the code must not be redeemed.
+        return _admin_redirect("sso_error=state_mismatch")
 
     try:
-        info = exchange_sso_code(code)
+        tokens = exchange_pkce_code(code, verifier, _sso_callback_url())
+        info = fetch_userinfo(tokens["access_token"])
     except SsoExchangeError as e:
         return _admin_redirect(f"sso_error={e.reason}")
 
@@ -488,4 +549,54 @@ def sso_callback(
         return _admin_redirect(f"sso_error={reason}")
 
     access_token = create_access_token(data={"sub": user.username})
-    return _admin_redirect(f"sso_token={access_token}")
+    response = _admin_redirect(f"sso_token={access_token}")
+    if tokens.get("refresh_token"):
+        _set_refresh_cookie(response, tokens["refresh_token"])
+    return response
+
+
+@router.post("/sso/refresh", response_model=Token, include_in_schema=False)
+def sso_refresh(request: Request, db: Session = Depends(get_db)):
+    """Mint a fresh API Hub JWT from the stored isap-auth refresh token.
+
+    Without this the Admin UI session ends when the local JWT expires
+    (ACCESS_TOKEN_EXPIRE_MINUTES) and the user runs the whole browser login
+    again. The refresh token itself never reaches the SPA.
+
+    Failure clears the cookie: a spent or revoked token will not become valid
+    on retry, and leaving it in place would make every future refresh replay it
+    — which isap-auth treats as theft and answers by revoking the family.
+    """
+    _require_sso_enabled()
+
+    stored = request.cookies.get(SSO_REFRESH_COOKIE, "")
+    if not stored:
+        raise HTTPException(status_code=401, detail="No SSO session")
+
+    try:
+        tokens = refresh_tokens(stored)
+        info = fetch_userinfo(tokens["access_token"])
+        user = resolve_sso_user(db, info["username"], info.get("email") or "")
+    except (SsoExchangeError, HTTPException):
+        response = JSONResponse(status_code=401, content={"detail": "SSO session expired"})
+        response.delete_cookie(SSO_REFRESH_COOKIE, path=_refresh_cookie_path())
+        return response
+
+    response = JSONResponse(content={"access_token": create_access_token(data={"sub": user.username})})
+    # Rotation: isap-auth invalidates the presented token, so the replacement
+    # must be stored even when the rest of this request succeeded trivially.
+    if tokens.get("refresh_token"):
+        _set_refresh_cookie(response, tokens["refresh_token"])
+    return response
+
+
+@router.post("/sso/logout", include_in_schema=False)
+def sso_logout():
+    """Drop the refresh cookie so the next visit starts a fresh login.
+
+    The SPA clears its own JWT locally; without this the browser would still
+    hold a usable refresh token afterwards.
+    """
+    response = JSONResponse(content={"message": "Signed out"})
+    response.delete_cookie(SSO_REFRESH_COOKIE, path=_refresh_cookie_path())
+    return response

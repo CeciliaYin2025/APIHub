@@ -7,9 +7,13 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.models.user import User
 from app.services.sso_service import (
+    SCOPE,
     SsoExchangeError,
     autocreate_enabled,
-    exchange_sso_code,
+    build_pkce_pair,
+    exchange_pkce_code,
+    fetch_userinfo,
+    refresh_tokens,
     resolve_sso_user,
 )
 
@@ -102,51 +106,158 @@ def _transport(handler):
     return httpx.MockTransport(handler)
 
 
-def test_exchange_returns_user_info(monkeypatch):
+@pytest.fixture
+def _isap(monkeypatch):
     monkeypatch.setattr(settings, "isap_auth_internal_url", "http://isap-auth:9997/auth")
     monkeypatch.setattr(settings, "isap_app_id", "apihub")
+
+
+# ── PKCE ────────────────────────────────────────────────────────────────────
+
+
+def test_pkce_pair_is_s256_and_random():
+    import base64
+    import hashlib
+
+    verifier, challenge = build_pkce_pair()
+    assert 43 <= len(verifier) <= 128  # RFC 7636 §4.1
+    expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    assert challenge == expected
+    assert "=" not in challenge  # base64url, unpadded
+    assert build_pkce_pair()[0] != verifier
+
+
+def test_scope_requests_offline_access():
+    """Without it isap-auth returns no refresh token and the Admin UI session
+    cannot be renewed silently."""
+    assert "offline_access" in SCOPE.split()
+
+
+# ── authorization_code grant ────────────────────────────────────────────────
+
+
+def test_code_grant_posts_pkce_form(_isap):
     seen = {}
 
     def handler(request):
         seen["url"] = str(request.url)
-        seen["json"] = request.read().decode()
-        return httpx.Response(200, json={"code": 200, "msg": "OK", "data": {"username": "alice", "email": "a@x"}})
+        seen["form"] = request.read().decode()
+        return httpx.Response(200, json={"access_token": "at", "refresh_token": "rt"})
 
-    info = exchange_sso_code("the-code", transport=_transport(handler))
-    assert info["username"] == "alice"
+    tokens = exchange_pkce_code("the-code", "the-verifier", "https://h/cb", transport=_transport(handler))
+
+    assert tokens["access_token"] == "at"
+    assert tokens["refresh_token"] == "rt"
     assert seen["url"] == "http://isap-auth:9997/auth/api/v1/token"
-    assert '"code": "the-code"' in seen["json"] or '"code":"the-code"' in seen["json"]
-    assert "apihub" in seen["json"]
+    assert "grant_type=authorization_code" in seen["form"]
+    assert "code_verifier=the-verifier" in seen["form"]
+    assert "client_id=apihub" in seen["form"]
 
 
-def test_exchange_maps_connection_failure(monkeypatch):
-    monkeypatch.setattr(settings, "isap_auth_internal_url", "http://isap-auth:9997/auth")
-
+def test_code_grant_maps_connection_failure(_isap):
     def handler(request):
         raise httpx.ConnectError("nope")
 
     with pytest.raises(SsoExchangeError) as exc:
-        exchange_sso_code("x", transport=_transport(handler))
+        exchange_pkce_code("x", "v", "https://h/cb", transport=_transport(handler))
     assert exc.value.reason == "auth_unreachable"
 
 
-def test_exchange_maps_rejected_code(monkeypatch):
-    monkeypatch.setattr(settings, "isap_auth_internal_url", "http://isap-auth:9997/auth")
-
+def test_code_grant_maps_rejected_code(_isap):
     def handler(request):
-        return httpx.Response(401, json={"code": 401, "msg": "Invalid, expired, or already used auth code"})
+        return httpx.Response(400, json={"error": "invalid_grant"})
 
     with pytest.raises(SsoExchangeError) as exc:
-        exchange_sso_code("x", transport=_transport(handler))
+        exchange_pkce_code("x", "v", "https://h/cb", transport=_transport(handler))
     assert exc.value.reason == "invalid_code"
 
 
-def test_exchange_maps_missing_username(monkeypatch):
-    monkeypatch.setattr(settings, "isap_auth_internal_url", "http://isap-auth:9997/auth")
-
+def test_code_grant_rejects_a_response_without_a_token(_isap):
     def handler(request):
-        return httpx.Response(200, json={"code": 200, "msg": "OK", "data": {}})
+        return httpx.Response(200, json={"token_type": "Bearer"})
 
     with pytest.raises(SsoExchangeError) as exc:
-        exchange_sso_code("x", transport=_transport(handler))
+        exchange_pkce_code("x", "v", "https://h/cb", transport=_transport(handler))
     assert exc.value.reason == "invalid_code"
+
+
+# ── refresh_token grant ─────────────────────────────────────────────────────
+
+
+def test_refresh_grant_posts_the_stored_token(_isap):
+    seen = {}
+
+    def handler(request):
+        seen["form"] = request.read().decode()
+        return httpx.Response(200, json={"access_token": "at2", "refresh_token": "rt2"})
+
+    tokens = refresh_tokens("rt1", transport=_transport(handler))
+
+    assert tokens["refresh_token"] == "rt2"
+    assert "grant_type=refresh_token" in seen["form"]
+    assert "refresh_token=rt1" in seen["form"]
+
+
+def test_refresh_grant_maps_a_spent_token_distinctly(_isap):
+    """Separate slug from invalid_code: the caller reacts differently — a spent
+    refresh token means "log in again", not "that code was bad"."""
+
+    def handler(request):
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    with pytest.raises(SsoExchangeError) as exc:
+        refresh_tokens("spent", transport=_transport(handler))
+    assert exc.value.reason == "session_expired"
+
+
+# ── userinfo ────────────────────────────────────────────────────────────────
+
+
+def test_userinfo_returns_identity(_isap):
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"sub": "alice", "preferred_username": "alice", "email": "a@x"})
+
+    claims = fetch_userinfo("at", transport=_transport(handler))
+
+    assert claims["username"] == "alice"
+    assert claims["email"] == "a@x"
+    assert seen["url"] == "http://isap-auth:9997/auth/api/v1/userinfo"
+    assert seen["auth"] == "Bearer at"
+
+
+def test_userinfo_falls_back_to_sub(_isap):
+    def handler(request):
+        return httpx.Response(200, json={"sub": "bob"})
+
+    assert fetch_userinfo("at", transport=_transport(handler))["username"] == "bob"
+
+
+def test_userinfo_rejects_claims_without_identity(_isap):
+    def handler(request):
+        return httpx.Response(200, json={"email": "nobody@x"})
+
+    with pytest.raises(SsoExchangeError) as exc:
+        fetch_userinfo("at", transport=_transport(handler))
+    assert exc.value.reason == "invalid_code"
+
+
+def test_userinfo_maps_rejected_token(_isap):
+    def handler(request):
+        return httpx.Response(401, json={"error": "invalid_token"})
+
+    with pytest.raises(SsoExchangeError) as exc:
+        fetch_userinfo("dead", transport=_transport(handler))
+    assert exc.value.reason == "invalid_code"
+
+
+def test_userinfo_maps_connection_failure(_isap):
+    def handler(request):
+        raise httpx.ConnectError("nope")
+
+    with pytest.raises(SsoExchangeError) as exc:
+        fetch_userinfo("at", transport=_transport(handler))
+    assert exc.value.reason == "auth_unreachable"

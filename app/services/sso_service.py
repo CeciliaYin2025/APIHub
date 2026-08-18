@@ -6,10 +6,16 @@ Shared by both SSO entry points — the MCP identity bridge
 between them: a user MCP lets in is exactly a user the Admin UI lets in.
 
 Neither entry point verifies identity here. The bridge has already checked its
-shared secret and the Admin UI has already exchanged a single-use auth code;
+shared secret and the Admin UI has already redeemed a single-use auth code;
 this module trusts the username it is handed.
+
+It also owns the Admin UI's half of the OAuth 2.1 authorization-code flow
+against isap-auth: PKCE pair generation, the code and refresh grants, and the
+UserInfo lookup that turns an access token back into a username.
 """
 
+import base64
+import hashlib
 import secrets
 
 import httpx
@@ -71,26 +77,119 @@ def resolve_sso_user(db: Session, username: str, email: str = "") -> User:
     return user
 
 
-def exchange_sso_code(code: str, *, transport: httpx.BaseTransport | None = None) -> dict:
-    """Trade a one-time auth code for isap-auth's user info (legacy JSON style).
+# openid/profile/email identify the user; offline_access is what earns a refresh
+# token from isap-auth, and without it the Admin UI session dies with the access
+# token and the user has to run the whole browser login again.
+SCOPE = "openid profile email offline_access"
 
-    Uses ISAP_AUTH_INTERNAL_URL so the call stays on the docker network instead
-    of looping back out through the public gateway. ``transport`` exists for
-    tests (httpx.MockTransport).
+
+def build_pkce_pair() -> tuple[str, str]:
+    """(verifier, S256 challenge).
+
+    PKCE binds the authorization code to the browser that started the flow: a
+    code stolen in transit (proxy log, referrer, shoulder-surfed redirect) is
+    useless without the verifier, which never leaves this server. The legacy
+    app-code flow this replaces had no such binding.
     """
-    url = f"{settings.isap_auth_internal_url.rstrip('/')}/api/v1/token"
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+def _token_endpoint() -> str:
+    """isap-auth's token endpoint, reached over the docker network.
+
+    ISAP_AUTH_INTERNAL_URL keeps this server-to-server leg off the public
+    gateway; only the browser-facing /authorize redirect uses the public URL.
+    """
+    return f"{settings.isap_auth_internal_url.rstrip('/')}/api/v1/token"
+
+
+def _post_token(form: dict, failure: str, *, transport: httpx.BaseTransport | None = None) -> dict:
+    """POST an OAuth 2.1 grant and return the token response.
+
+    ``failure`` is the slug raised for anything the authorization server
+    refuses, so the caller can tell "this code is bad" from "this refresh token
+    is spent" without inspecting the response. ``transport`` exists for tests.
+    """
     try:
         with httpx.Client(transport=transport, timeout=10.0) as client:
-            resp = client.post(url, json={"code": code, "app_id": settings.isap_app_id})
+            resp = client.post(_token_endpoint(), data=form)
     except httpx.HTTPError as e:
         raise SsoExchangeError("auth_unreachable") from e
 
     if resp.status_code != 200:
+        raise SsoExchangeError(failure)
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise SsoExchangeError(failure) from e
+    if not data.get("access_token"):
+        raise SsoExchangeError(failure)
+    return data
+
+
+def exchange_pkce_code(
+    code: str,
+    verifier: str,
+    redirect_uri: str,
+    *,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """Redeem an authorization code (OAuth 2.1 + PKCE) for tokens."""
+    return _post_token(
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": settings.isap_app_id,
+            "code_verifier": verifier,
+        },
+        "invalid_code",
+        transport=transport,
+    )
+
+
+def refresh_tokens(refresh_token: str, *, transport: httpx.BaseTransport | None = None) -> dict:
+    """Rotate a refresh token into a fresh access token.
+
+    isap-auth rotates on every redeem and revokes the whole family on replay,
+    so the new refresh token in the response MUST replace the stored one — drop
+    it and the next attempt looks like a replay and logs the user out.
+    """
+    return _post_token(
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": settings.isap_app_id,
+        },
+        "session_expired",
+        transport=transport,
+    )
+
+
+def fetch_userinfo(access_token: str, *, transport: httpx.BaseTransport | None = None) -> dict:
+    """Resolve an access token to identity claims (OIDC UserInfo).
+
+    The OAuth token grant returns tokens, not a username — unlike the legacy
+    JSON exchange it replaces. UserInfo is used rather than introspection
+    because it needs no shared secret, so Admin UI SSO stays independent of
+    whether OAUTH_RS_ENABLED is configured.
+    """
+    url = f"{settings.isap_auth_internal_url.rstrip('/')}/api/v1/userinfo"
+    try:
+        with httpx.Client(transport=transport, timeout=10.0) as client:
+            resp = client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+    except httpx.HTTPError as e:
+        raise SsoExchangeError("auth_unreachable") from e
+    if resp.status_code != 200:
         raise SsoExchangeError("invalid_code")
     try:
-        data = (resp.json() or {}).get("data") or {}
+        claims = resp.json() or {}
     except ValueError as e:
         raise SsoExchangeError("invalid_code") from e
-    if not data.get("username"):
+    username = claims.get("preferred_username") or claims.get("username") or claims.get("sub")
+    if not username:
         raise SsoExchangeError("invalid_code")
-    return data
+    claims["username"] = username
+    return claims

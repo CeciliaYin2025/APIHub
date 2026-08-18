@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     # Admin UI callback and the MCP identity bridge; mcp_bridge_autocreate stays
     # as a backward-compatible alias (see sso_service.autocreate_enabled).
     sso_autocreate: bool = False
+    # How long the Admin UI's isap-auth refresh-token cookie lives. Bounds how
+    # long a browser can renew its session without a fresh login; isap-auth's
+    # own refresh-token lifetime applies on top, whichever is shorter.
+    sso_refresh_max_age_seconds: int = 604800  # 7 days
 
     # ── OAuth 2.1 Resource Server ────────────────────────────────────────────
     # Accept access tokens issued by isap-auth directly on the REST API, so an

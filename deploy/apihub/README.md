@@ -91,6 +91,12 @@ Admin UI SSO does **not** need this flag: it uses the bootstrap-token path
 4. The user badge shows the SSO username, not a shared service account.
 5. With `SSO_AUTOCREATE=false`, an SSO user with no API Hub account lands back
    on the login page with "Ask an administrator to create one".
+6. Leave the tab open past `ACCESS_TOKEN_EXPIRE_MINUTES` (default 60) and keep
+   clicking: the session renews silently via `POST /api/v1/auth/sso/refresh`
+   instead of bouncing to the login page. DevTools shows one 401 followed by a
+   replay of the same request.
+7. Sign out, then reload `/admin` — the page must ask for credentials again,
+   not sign back in from a leftover refresh cookie.
 
 ## REST API as an OAuth Resource Server (`OAUTH_RS_ENABLED`)
 

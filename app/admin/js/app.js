@@ -23,6 +23,7 @@ const SSO_ERRORS = {
   invalid_code: 'SSO login failed: the authorization code was invalid or had expired.',
   not_provisioned: 'Your SSO account has no API Hub user yet. Ask an administrator to create one.',
   not_eligible: 'This account may not sign in via SSO.',
+  session_expired: 'Your SSO session has expired. Please sign in again.',
 };
 
 /**
@@ -64,7 +65,12 @@ document.addEventListener('DOMContentLoaded', () => {
       else showLogin();
     });
   } else if (!(sso && sso.error)) {
-    showLogin();
+    /* No JWT in hand, but the browser may still hold an SSO refresh cookie
+       from an earlier visit — try it before asking for a password. */
+    ssoRefresh().then(async ok => {
+      if (ok && await fetchCurrentUser()) showApp();
+      else showLogin();
+    });
   }
   bindGlobalEvents();
 });
@@ -117,8 +123,31 @@ document.getElementById('logoutBtn').addEventListener('click', () => {
   token = '';
   currentUser = null;
   localStorage.removeItem('hub_token');
+  /* Best-effort: without this the browser keeps a usable SSO refresh cookie
+     and the next page load silently signs the user back in. */
+  fetch(`${API}/auth/sso/logout`, { method: 'POST', credentials: 'same-origin' }).catch(() => {});
   showLogin();
 });
+
+/**
+ * Trade the httpOnly SSO refresh cookie for a fresh API Hub JWT.
+ * Returns true when a new token was stored. The refresh token itself never
+ * reaches this code — the server reads it from the cookie and rotates it.
+ */
+async function ssoRefresh() {
+  if (!window.__SSO_ENABLED__) return false;
+  try {
+    const res = await fetch(`${API}/auth/sso/refresh`, { method: 'POST', credentials: 'same-origin' });
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (!data.access_token) return false;
+    token = data.access_token;
+    localStorage.setItem('hub_token', token);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function fetchCurrentUser() {
   try {
@@ -184,7 +213,7 @@ function dbPrefix() {
 }
 
 /* ── API helper ───────────────────────────────────────────────────────── */
-async function api(method, path, body) {
+function requestOpts(method, body) {
   const opts = {
     method,
     headers: { 'Authorization': `Bearer ${token}` },
@@ -193,7 +222,18 @@ async function api(method, path, body) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(`${API}${path}`, opts);
+  return opts;
+}
+
+async function api(method, path, body) {
+  let res = await fetch(`${API}${path}`, requestOpts(method, body));
+  /* A 401 usually just means the JWT aged out. If an SSO session is still
+     alive behind the httpOnly cookie, renew and replay once — the user should
+     not be thrown back to the login page every ACCESS_TOKEN_EXPIRE_MINUTES.
+     Only one retry: a second 401 means the session itself is gone. */
+  if (res.status === 401 && await ssoRefresh()) {
+    res = await fetch(`${API}${path}`, requestOpts(method, body));
+  }
   if (res.status === 401) { showLogin(); throw new Error('Unauthorized'); }
   // Some endpoints return 204 No Content (password reset, deletes) — an empty
   // body has no JSON to parse, so read as text and parse only when present.
