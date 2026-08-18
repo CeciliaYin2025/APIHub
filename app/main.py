@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +16,7 @@ from app.db.oracle_pool import close_pool, init_pool
 from app.middleware.audit import AuditMiddleware
 from app.middleware.auth_context import AuthContextMiddleware
 from app.middleware.rate_limiter import RateLimiterMiddleware
+from app.services import oauth_rs
 from app.services.sql_registry import sql_registry
 
 _ADMIN_DIR = Path(__file__).resolve().parent / "admin"
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
     sql_registry.load()
     yield
     close_pool()
+    await oauth_rs.aclose()
     logger.info("Oracle API Hub shut down")
 
 
@@ -74,6 +76,25 @@ app.include_router(queries.router, prefix=settings.api_prefix)
 app.include_router(procedures.router, prefix=settings.api_prefix)
 app.include_router(writes.router, prefix=settings.api_prefix)
 app.include_router(schemas.router, prefix=settings.api_prefix)
+
+# ── OAuth 2.1 Resource Server metadata ───────────────────────────────────────
+
+
+@app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+def oauth_protected_resource():
+    """RFC 9728 metadata: which authorization server issues tokens for this API.
+
+    Served at the app root, so behind the gateway it lands on
+    ``<root_path>/.well-known/...``. RFC 9728 clients build the URL by inserting
+    the well-known path at the DOMAIN root instead
+    (``/.well-known/oauth-protected-resource/apihub``), which only a gateway
+    rewrite can route here — see
+    deploy/apihub/gateway-conf/oauth-wellknown-apihub.snippet.conf.
+    """
+    if not oauth_rs.enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    return oauth_rs.protected_resource_metadata()
+
 
 # ── Admin UI (static SPA) ────────────────────────────────────────────────────
 app.mount("/admin/css", StaticFiles(directory=str(_ADMIN_DIR / "css")), name="admin-css")

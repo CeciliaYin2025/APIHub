@@ -21,7 +21,7 @@ class AuditLog(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     ts = Column(DateTime, server_default=func.now(), index=True)
-    principal_type = Column(String(20))  # "user" | "api_key" | "anonymous"
+    principal_type = Column(String(20))  # "user" | "sso_user" | "api_key" | "anonymous"
     principal = Column(String(100), index=True)
     api_key_id = Column(Integer, nullable=True)
     api_key_name = Column(String(100), nullable=True)

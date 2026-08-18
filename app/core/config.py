@@ -96,6 +96,26 @@ class Settings(BaseSettings):
     # as a backward-compatible alias (see sso_service.autocreate_enabled).
     sso_autocreate: bool = False
 
+    # ── OAuth 2.1 Resource Server ────────────────────────────────────────────
+    # Accept access tokens issued by isap-auth directly on the REST API, so an
+    # OAuth client needs no local password and no API key. isap-auth issues
+    # OPAQUE tokens, so validation is an RFC 7662 introspection call — see
+    # app/services/oauth_rs.py. Off by default: with this false the whole
+    # branch is inert and only password JWTs / API keys are accepted.
+    oauth_rs_enabled: bool = False
+    # Authorization server advertised to clients. Empty falls back to
+    # ISAP_AUTH_PUBLIC_URL so an Admin-UI-SSO deployment need not repeat it.
+    oauth_issuer: str = ""
+    # Docker-internal introspection endpoint, e.g.
+    # http://isap-auth:9997/auth/api/v1/introspect — never the public URL.
+    oauth_introspection_url: str = ""
+    # Must equal isap-auth's own OAUTH_INTROSPECTION_SECRET (copy it, do not
+    # generate a new one). Empty relies on network restriction alone.
+    oauth_introspection_secret: str = ""
+    # Introspection result cache. This is ALSO the upper bound on how long a
+    # centrally revoked token (logout, disabled account) keeps working here.
+    oauth_introspection_cache_seconds: float = 60.0
+
     # Read only by scripts/register_isap_app.py — the api container is not given
     # these, so the bootstrap token never sits in a long-running process.
     isap_app_name: str = "Oracle API Hub"

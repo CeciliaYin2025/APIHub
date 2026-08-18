@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import API_KEY_PREFIX, hash_api_key, verify_password
 from app.models.user import ApiKey, User
+from app.services import oauth_rs
 
 # Relative tokenUrl (no leading slash) so Swagger's "Authorize" resolves it
 # against the docs page, which includes root_path (e.g. /apihub/docs behind the
@@ -26,7 +27,13 @@ api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
 class Principal:
     """Resolved caller identity attached to request.state.principal."""
 
-    type: str  # "user" | "api_key"
+    # "user"      — local password login (JWT minted by POST /auth/token)
+    # "api_key"   — service account key (ahk_...)
+    # "sso_user"  — isap-auth access token validated by introspection
+    #               (app/middleware/auth_context.py), carrying a local User for
+    #               RBAC exactly like the other two. Authorization is never
+    #               taken from the token's claims.
+    type: str
     user: User
     key_id: int | None = None
     key_name: str | None = None
@@ -158,6 +165,18 @@ def resolve_api_key(db, raw_key: str, client_ip: str) -> Principal:
     )
 
 
+def bearer_token(request) -> str | None:
+    """The raw ``Authorization: Bearer`` value, or None if absent.
+
+    Shared with the OAuth branch in AuthContextMiddleware so both agree on what
+    counts as a bearer credential.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    return auth[len("Bearer ") :]
+
+
 def resolve_principal(db, request) -> Principal | None:
     """Resolve caller from X-API-Key or Authorization: Bearer.
 
@@ -169,10 +188,9 @@ def resolve_principal(db, request) -> Principal | None:
     if api_key:
         return resolve_api_key(db, api_key, client_ip)
 
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    token = bearer_token(request)
+    if not token:
         return None
-    token = auth[len("Bearer ") :]
     if token.startswith(API_KEY_PREFIX):
         return resolve_api_key(db, token, client_ip)
 
@@ -216,10 +234,14 @@ def get_current_user(
     """
     principal = getattr(request.state, "principal", None)
     if principal is None:
+        # With the OAuth Resource Server on, point the client at our RFC 9728
+        # metadata instead of a bare "Bearer": that is how an OAuth-aware
+        # client discovers which authorization server to send the user to.
+        challenge = oauth_rs.challenge_header() if oauth_rs.enabled() else "Bearer"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={"WWW-Authenticate": challenge},
         )
     return principal.user
 
