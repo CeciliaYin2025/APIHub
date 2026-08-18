@@ -29,30 +29,58 @@ test('the Users list labels how each account authenticates', async ({ page }) =>
   await expect(page.locator('tr', { hasText: 'admin' }).first()).toContainText('LOCAL');
 });
 
-test('switching an account to SSO saves even with the reset-password box filled', async ({ page }) => {
-  // The regression: a password manager autofills "Reset Password" on the edit
-  // form, the save PUTs the account to sso and then PATCHes a password the
-  // server refuses (400). The edit landed, the error aborted the rest, and the
-  // dialog stayed open — so it read as "cannot save" while half of it had.
+test('switching an account to SSO saves, and leaves Full Name alone', async ({ page }) => {
+  // The regression: the Edit dialog carried a password field, so a browser
+  // password manager treated it as a login form — filling that field AND
+  // overwriting Full Name with the operator's own username. Saving then PUT the
+  // account to sso and PATCHed a password the server rightly refuses (400),
+  // which aborted the handler after the PUT had already landed: the dialog
+  // stayed open and it read as "cannot save" while half of it had.
   await login(page);
   await seedLocalUser(page, 'e2e_switch_sso');
 
   await page.click('.sidebar-nav a[data-page="users"]');
   await page.locator('tr', { hasText: 'e2e_switch_sso' }).getByRole('button', { name: 'Edit' }).click();
 
-  // Stand in for the password manager: fill the box the admin never touched.
-  await page.fill('#editUserForm input[name="new_password"]', 'autofilled-by-the-browser');
+  // No password field on this form at all — that is what keeps the password
+  // manager away from Full Name.
+  await expect(page.locator('#editUserForm input[type="password"]')).toHaveCount(0);
+
+  await page.fill('#editUserForm input[name="full_name"]', 'Real Name');
   await page.selectOption('#editUserForm select[name="auth_source"]', 'sso');
-
-  // Choosing SSO must empty and disable that box on the spot.
-  await expect(page.locator('#editUserForm input[name="new_password"]')).toBeDisabled();
-  await expect(page.locator('#editUserForm input[name="new_password"]')).toHaveValue('');
-
   await page.click('button:has-text("Save Changes")');
 
-  await expect(page.locator('.modal-overlay')).toBeHidden();
+  await expect(page.locator('#modalOverlay')).not.toHaveClass(/active/);
   await expect(page.locator('.toast-container')).toContainText('User updated');
-  await expect(page.locator('tr', { hasText: 'e2e_switch_sso' })).toContainText('SSO');
+  const row = page.locator('tr', { hasText: 'e2e_switch_sso' });
+  await expect(row).toContainText('SSO');
+  await expect(row).toContainText('Real Name');
+});
+
+test('password reset is its own dialog, and is offered only where it can work', async ({ page }) => {
+  await login(page);
+  await seedLocalUser(page, 'e2e_pw_dialog');
+
+  await page.click('.sidebar-nav a[data-page="users"]');
+  const row = page.locator('tr', { hasText: 'e2e_pw_dialog' });
+  await row.getByRole('button', { name: 'Password' }).click();
+  await page.fill('#resetPwForm input[name="new_password"]', 'a-new-password-12345');
+  await page.click('button:has-text("Set Password")');
+  await expect(page.locator('.toast-container')).toContainText('Password updated');
+
+  const ok = await page.request.post('/api/v1/auth/token', {
+    form: { username: 'e2e_pw_dialog', password: 'a-new-password-12345' },
+    failOnStatusCode: false,
+  });
+  expect(ok.status()).toBe(200);
+
+  // Once the account is SSO the button goes away: a password there is refused
+  // by the server, so offering the dialog would only lead to a dead end.
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.selectOption('#editUserForm select[name="auth_source"]', 'sso');
+  await page.click('button:has-text("Save Changes")');
+  await expect(row).toContainText('SSO');
+  await expect(row.getByRole('button', { name: 'Password' })).toHaveCount(0);
 });
 
 test('an SSO account cannot be given a password', async ({ page }) => {

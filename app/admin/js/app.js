@@ -547,6 +547,9 @@ async function renderUsers() {
             <td>${u.is_superuser ? '<span class="badge badge-blue">Yes</span>' : '—'}</td>
             <td>
               <button class="btn btn-xs btn-secondary" onclick="openEditUserModal(${u.id})">Edit</button>
+              ${u.auth_source === 'sso'
+                ? ''
+                : `<button class="btn btn-xs btn-secondary" onclick="openResetPasswordModal(${u.id}, '${esc(u.username)}')">Password</button>`}
               <button class="btn btn-xs btn-danger" onclick="deleteUser(${u.id}, '${esc(u.username)}')">Delete</button>
             </td>
           </tr>`).join('')}</tbody></table>
@@ -588,17 +591,15 @@ window.toggleSuperuserForServiceAccount = function(checkbox) {
 };
 
 /* An SSO account has no usable password, so asking for one invites an admin to
-   set a credential that will never work. Handles both forms: the create modal
-   calls the field `password`, the edit modal `new_password`. */
+   set a credential that will never work. Only the create form has a password
+   field; editing an account's password is its own dialog. */
 window.togglePasswordForAuthSource = function(select) {
   const form = select.form;
-  const pwField = form.password || form.new_password;
+  const pwField = form.password;
   if (!pwField) return;
   const isSso = select.value === 'sso';
   pwField.disabled = isSso;
-  // Only the create form's field is ever required; the edit form's is a
-  // blank-means-keep-current reset box.
-  if (pwField.name === 'password') pwField.required = !isSso;
+  pwField.required = !isSso;
   if (isSso) pwField.value = '';
   const group = pwField.closest('.form-group');
   if (group) {
@@ -724,7 +725,7 @@ window.openEditUserModal = async function(userId) {
         </div>
         <div class="form-group">
           <label>Authentication</label>
-          <select name="auth_source" onchange="togglePasswordForAuthSource(this)" ${user.is_service_account ? 'disabled' : ''}>
+          <select name="auth_source" ${user.is_service_account ? 'disabled' : ''}>
             <option value="local" ${user.auth_source !== 'sso' ? 'selected' : ''}>Local password</option>
             <option value="sso" ${user.auth_source === 'sso' ? 'selected' : ''}>ISAP SSO</option>
           </select>
@@ -744,15 +745,6 @@ window.openEditUserModal = async function(userId) {
             <label for="erole_${r.id}">${esc(r.name)}</label>
           </div>`).join('')}
         </div>
-      </div>
-      <hr>
-      <div class="form-group">
-        <label>Reset Password (leave blank to keep current)</label>
-        <input type="password" name="new_password" placeholder="New password" autocomplete="new-password"
-               ${user.auth_source === 'sso' ? 'disabled' : ''}>
-        <small class="text-muted auth-source-hint">${user.auth_source === 'sso'
-          ? 'Not used — this account signs in through ISAP SSO.'
-          : ''}</small>
       </div>
     </form>
   `;
@@ -774,19 +766,43 @@ window.submitEditUser = async function() {
   };
   try {
     await api('PUT', `/auth/users/${userId}`, data);
-    // Read the password AFTER the update: switching sso -> local in the same
-    // save must land first, or the server rejects the reset on the old value.
-    // And never send one for an account that ends up as SSO: the server refuses
-    // it (400), which used to abort the save AFTER the PUT had already landed —
-    // a half-applied edit, reliably triggered by a browser password manager
-    // autofilling this field without the admin ever touching it.
-    const newPw = data.auth_source === 'sso' ? '' : form.new_password.value;
-    if (newPw) {
-      await api('PATCH', `/auth/users/${userId}/password`, { new_password: newPw });
-    }
     closeModal();
     toast('User updated', 'success');
     renderUsers();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+/* Password reset lives in its OWN dialog, and deliberately not inside Edit
+   User. A form containing a password field is a login form as far as a browser
+   password manager is concerned: it fills the field, and — needing a username
+   to go with it — fills the first text input too, silently overwriting Full
+   Name with whatever account the operator has saved for this site. Keeping the
+   only password input on a form with no other text field removes the bait. */
+window.openResetPasswordModal = function(userId, username) {
+  const body = `
+    <form id="resetPwForm" autocomplete="off">
+      <p>Set a new password for <strong>${esc(username)}</strong>.</p>
+      <div class="form-group">
+        <label>New Password</label>
+        <input type="password" name="new_password" autocomplete="new-password" required>
+      </div>
+    </form>
+  `;
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                   <button class="btn btn-primary" onclick="submitResetPassword(${userId})">Set Password</button>`;
+  openModal('Reset Password', body, footer);
+};
+
+window.submitResetPassword = async function(userId) {
+  const form = document.getElementById('resetPwForm');
+  const newPassword = form.new_password.value;
+  if (!newPassword) { toast('Enter a new password', 'error'); return; }
+  try {
+    await api('PATCH', `/auth/users/${userId}/password`, { new_password: newPassword });
+    closeModal();
+    toast('Password updated', 'success');
   } catch (err) {
     toast(err.message, 'error');
   }
