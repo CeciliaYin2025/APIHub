@@ -140,6 +140,13 @@ OAuth tokens; only auto-discovery breaks.
 Unattended callers (Celery, cron, `scripts/extract_query.py`) keep using API
 keys: isap-auth has no `client_credentials` grant.
 
+With this on, `/apihub/docs` also gains an ISAP entry in Swagger's
+**Authorize** dialog (authorization code + PKCE), so a human can try endpoints
+as themselves instead of pasting a JWT. It needs
+`https://<GATEWAY_SERVER_NAME>/apihub/docs/oauth2-redirect` in
+`ISAP_REDIRECT_URIS` — `.env.isap.example` already lists it; re-run
+`apihub-app-register` after adding it.
+
 ## MCP server (`apihub-mcp`, OAuth 2.1 Resource Server)
 
 The MCP server is an **optional add-on** in a separate compose file,

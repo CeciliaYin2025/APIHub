@@ -41,11 +41,30 @@ async def lifespan(app: FastAPI):
     logger.info("Oracle API Hub shut down")
 
 
+def _swagger_oauth_config() -> dict | None:
+    """Pre-fill Swagger's OAuth dialog, or None to leave the flow out.
+
+    PKCE is forced on: isap-auth registers public clients only
+    (token_endpoint_auth_methods_supported = ["none"]), so a Swagger login
+    without a verifier has nothing to prove itself with. The redirect URI it
+    uses — <APIHUB_PUBLIC_URL>/docs/oauth2-redirect — must be registered in
+    ISAP_REDIRECT_URIS or /authorize rejects the request outright.
+    """
+    if not (settings.oauth_rs_enabled and settings.isap_auth_public_url):
+        return None
+    return {
+        "clientId": settings.isap_app_id,
+        "usePkceWithAuthorizationCodeGrant": True,
+        "scopes": "openid profile email",
+    }
+
+
 app = FastAPI(
     title=settings.api_title,
     version=settings.api_version,
     lifespan=lifespan,
     root_path=settings.root_path,
+    swagger_ui_init_oauth=_swagger_oauth_config(),
 )
 
 # ── Middleware ────────────────────────────────────────────────────────────────

@@ -106,7 +106,9 @@ def test_login_challenge_is_the_hash_not_the_verifier():
     resp = sso_login()
     location = resp.headers["location"]
     challenge = parse_qs(urlparse(location).query)["code_challenge"][0]
-    verifier = [c.split("=", 1)[1].split(";")[0] for c in resp.headers.getlist("set-cookie") if SSO_VERIFIER_COOKIE in c][0]
+    verifier = [
+        c.split("=", 1)[1].split(";")[0] for c in resp.headers.getlist("set-cookie") if SSO_VERIFIER_COOKIE in c
+    ][0]
 
     assert verifier not in location
     expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()

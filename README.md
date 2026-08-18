@@ -142,7 +142,8 @@ Call the REST API with an isap-auth access token — no local password, no API k
 - Central revocation applies — an isap-auth token dies with the SSO session or a disabled account, bounded by `OAUTH_INTROSPECTION_CACHE_SECONDS` (default 60s, which also caps the per-token introspection rate)
 - `GET /.well-known/oauth-protected-resource` publishes RFC 9728 metadata and 401s carry a matching `WWW-Authenticate`, so an OAuth client can discover the authorization server. Behind the gateway this needs the root-level rewrite in `deploy/*/gateway-conf/oauth-wellknown-*.snippet.conf`
 - isap-auth has no `client_credentials` grant, so **unattended callers still use API keys** — OAuth adds a user identity, it does not replace service accounts
-- Off by default: without `OAUTH_RS_ENABLED` plus `OAUTH_INTROSPECTION_URL` the branch is inert and the metadata route 404s
+- `/docs` gains an ISAP entry in Swagger's **Authorize** dialog (authorization code + PKCE), so a human can exercise endpoints as themselves instead of pasting a JWT. Requires `<APIHUB_PUBLIC_URL>/docs/oauth2-redirect` in `ISAP_REDIRECT_URIS`
+- Off by default: without `OAUTH_RS_ENABLED` plus `OAUTH_INTROSPECTION_URL` the branch is inert, the metadata route 404s, and Swagger shows no ISAP option
 
 ### 8. Bulk Extraction (`scripts/extract_query.py`)
 

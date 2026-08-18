@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
+from fastapi.security import APIKeyHeader, OAuth2AuthorizationCodeBearer, OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,30 @@ from app.services import oauth_rs
 # ignore root_path and POST to the un-prefixed URL, which the gateway can't route.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_prefix.lstrip('/')}/auth/token", auto_error=False)
 api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def build_isap_oauth_scheme():
+    """Swagger's "Authorize" entry for logging in with an ISAP account.
+
+    Returns a no-op dependency unless the API actually accepts isap-auth
+    tokens: offering the flow while OAUTH_RS_ENABLED is off would walk the user
+    through a real login and then reject every request they make with it.
+
+    Both URLs are the browser-facing ones — this flow runs in the reader's
+    browser, not on the server, so ISAP_AUTH_INTERNAL_URL would be unreachable.
+    """
+    if not (settings.oauth_rs_enabled and settings.isap_auth_public_url):
+        return lambda: None
+    base = settings.isap_auth_public_url.rstrip("/")
+    return OAuth2AuthorizationCodeBearer(
+        authorizationUrl=f"{base}/api/v1/authorize",
+        tokenUrl=f"{base}/api/v1/token",
+        scopes={"openid": "Identity", "profile": "Profile", "email": "Email address"},
+        auto_error=False,
+    )
+
+
+isap_oauth_scheme = build_isap_oauth_scheme()
 
 
 @dataclass
@@ -225,11 +249,12 @@ def get_current_user(
     request: Request,
     _jwt: str | None = Depends(oauth2_scheme),
     _key: str | None = Depends(api_key_scheme),
+    _sso: str | None = Depends(isap_oauth_scheme),
 ) -> User:
     """Return the caller resolved by AuthContextMiddleware.
 
-    The two Depends params are declared only so Swagger shows both auth
-    schemes and forwards the credentials; the actual resolution happens in
+    The three Depends params are declared only so Swagger shows every auth
+    scheme and forwards the credentials; the actual resolution happens in
     AuthContextMiddleware, which sets request.state.principal.
     """
     principal = getattr(request.state, "principal", None)

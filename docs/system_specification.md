@@ -1729,7 +1729,8 @@ Admin UI 除本地帳密外，可改用 ISAP 帳號登入。走 isap-auth 的 **
 - **未建檔者回 403**（`resolve_sso_user` 的既有政策，受 `SSO_AUTOCREATE` 控制），不降級成 401——token 本身是好的，缺的是 API Hub 帳號，回 401 會讓使用者去查錯的一半。
 - **RFC 9728 探索**：`GET /.well-known/oauth-protected-resource` 公布 resource 與 authorization server，401／403 的 `WWW-Authenticate` 指向它。閘道後方需要根層改寫（`deploy/*/gateway-conf/oauth-wellknown-*.snippet.conf`），因為客戶端是在網域根組出這個網址的。
 - **isap-auth 沒有 `client_credentials` grant**，因此無人值守的呼叫者（Celery、排程、`scripts/extract_query.py`）仍使用 API 金鑰。OAuth 增加的是使用者身分，不取代服務帳號。
-- `OAUTH_RS_ENABLED=false`（預設）或未設 `OAUTH_INTROSPECTION_URL` 時整條分支不存在，well-known 端點回 404。
+- **Swagger 也能登入**：`/docs` 的 Authorize 對話框會多一個 ISAP 項目（authorization code + PKCE，`app/services/auth_service.py::build_isap_oauth_scheme`）。需要把 `<APIHUB_PUBLIC_URL>/docs/oauth2-redirect` 加進 `ISAP_REDIRECT_URIS`，否則 `/authorize` 直接拒絕。關閉 RS 時刻意不顯示 —— 讓使用者走完一次真的登入再被 401 拒絕，比沒有這個按鈕更糟。
+- `OAUTH_RS_ENABLED=false`（預設）或未設 `OAUTH_INTROSPECTION_URL` 時整條分支不存在，well-known 端點回 404，Swagger 也不顯示 ISAP 選項。
 
 與 MCP 的關係：`mcp_server/oauth.py` 仍然自己做 introspection —— 那是**閘門**，只有 MCP 行程能對未認證的請求回 401 challenge 觸發客戶端的 OAuth 流程。差別在轉送什麼：
 
