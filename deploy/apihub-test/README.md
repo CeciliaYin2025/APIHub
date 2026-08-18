@@ -153,11 +153,21 @@ It brings up `apihub-test-mcp` — the Streamable HTTP MCP transport
 REST API. It shares the built `oracle-api-hub:latest` image and `gateway-net`
 only (no direct DB/Redis access). Phase 2 OAuth is enabled by default
 (`MCP_OAUTH_ENABLED=true`): callers present a Bearer token from isap-auth, which
-is introspected and exchanged for a local API Hub JWT via the identity-bridge
-endpoint (`POST /api/v1/auth/sso-token`, gated by `settings.mcp_bridge_secret`).
-That bridge path is blocked at the gateway (`gateway-conf/apihub-test.conf` returns a
-hard 404 for `/apihub-test/api/v1/auth/sso-token`) — only the docker-internal
-`apihub-test-mcp` -> `apihub-test-api:8000` call can ever reach it.
+`apihub-test-mcp` introspects to decide whether to answer with the 401 challenge that
+starts the client's OAuth flow.
+
+With `OAUTH_RS_ENABLED=true` on the API side (see the section above) and
+`MCP_BRIDGE_SECRET` **left empty**, the caller's token is then forwarded
+unchanged and `apihub-test-api` validates it itself — one shared secret and one
+internal endpoint fewer.
+
+Setting `MCP_BRIDGE_SECRET` selects the legacy identity bridge instead: the
+verified claims are traded for a local API Hub JWT via
+`POST /api/v1/auth/sso-token`. Keep that only for a Hub that cannot accept
+isap-auth tokens directly. That bridge path is blocked at the gateway
+(`gateway-conf/apihub-test.conf` returns a hard 404 for
+`/apihub-test/api/v1/auth/sso-token`) — only the docker-internal `apihub-test-mcp` ->
+`apihub-test-api:8000` call can ever reach it.
 
 ### New `.env.mcp` values (see `.env.mcp.example` for full comments)
 
@@ -170,7 +180,7 @@ the `.env.mcp` value.
 | `MCP_PUBLIC_URL` | `https://<GATEWAY_SERVER_NAME>/apihub-test/mcp` — the RS resource identifier clients see. |
 | `MCP_AUTH_ISSUER` | `https://<GATEWAY_SERVER_NAME>/auth` — isap-auth's issuer. |
 | `MCP_INTROSPECTION_SECRET` | **Shared with isap-auth.** Must be the exact same value isap-auth's own `OAUTH_INTROSPECTION_SECRET` uses for its `/auth/api/v1/introspect` endpoint — copy it from the isap-auth deployment, do not generate a new one here. |
-| `MCP_BRIDGE_SECRET` | New per-deployment secret (`openssl rand -base64 32`). Required in both `apihub-test-api`'s env (activates the bridge endpoint) and `apihub-test-mcp`'s env (used to call it) — the compose file wires the same `.env` value into both services. |
+| `MCP_BRIDGE_SECRET` | **Optional, normally empty.** Empty = forward the caller's own token to a Hub running with `OAUTH_RS_ENABLED`. Set it (`openssl rand -base64 32`, same value in both `apihub-test-api`'s and `apihub-test-mcp`'s env) only to use the legacy identity bridge instead. |
 | `MCP_BRIDGE_AUTOCREATE` | Optional, default `false`. `true` auto-creates a role-less local user on first SSO login instead of rejecting unknown SSO users with 403. |
 
 ### Gateway wiring

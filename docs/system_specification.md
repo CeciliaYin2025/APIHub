@@ -1668,7 +1668,7 @@ Admin UI 除本地帳密外，可改用 ISAP 帳號登入。走 isap-auth 的 ap
 
 - **`state` 是必要的防護**，不是選配。缺少它時，攻擊者可先自行取得一個 code，再誘導受害者開啟帶該 code 的 callback 網址，使受害者靜默登入成攻擊者的帳號。isap-auth 會原樣帶回 `state`，比對後即清除 cookie。
 - **JWT 以 URL fragment 交付**，不用 query string —— fragment 不會送到伺服器，因此不會進入 nginx access log 或 Referer。SPA 讀取後立即以 `history.replaceState` 清除。
-- **使用者解析共用** `app/services/sso_service.py::resolve_sso_user`，與 MCP identity bridge（`POST /auth/sso-token`）同一份政策：`SSO_AUTOCREATE` 決定未建檔者自動建立或 403，服務帳號與停用帳號一律拒絕。
+- **使用者解析共用** `app/services/sso_service.py::resolve_sso_user`，與 OAuth Resource Server（§7.1.2）及 MCP identity bridge（`POST /auth/sso-token`，相容路徑）同一份政策：`SSO_AUTOCREATE` 決定未建檔者自動建立或 403，服務帳號與停用帳號一律拒絕。
 - **失敗一律導回登入頁**並附 `#sso_error=` slug（`missing_code`、`state_mismatch`、`auth_unreachable`、`invalid_code`、`not_provisioned`、`not_eligible`），不回傳 JSON。
 - 本地帳密登入保留，isap-auth 故障時管理者仍可進入。
 - `ADMIN_SSO_ENABLED=false`（預設）時兩個端點回 404。
@@ -1711,7 +1711,14 @@ Admin UI 除本地帳密外，可改用 ISAP 帳號登入。走 isap-auth 的 ap
 - **isap-auth 沒有 `client_credentials` grant**，因此無人值守的呼叫者（Celery、排程、`scripts/extract_query.py`）仍使用 API 金鑰。OAuth 增加的是使用者身分，不取代服務帳號。
 - `OAUTH_RS_ENABLED=false`（預設）或未設 `OAUTH_INTROSPECTION_URL` 時整條分支不存在，well-known 端點回 404。
 
-與 MCP 的關係：`mcp_server/oauth.py` 做的是同一件事，但它是獨立行程，必須再經 identity bridge（`POST /auth/sso-token`）換一張本地 JWT。API 本體成為 RS 之後，該 bridge 在架構上已可由 MCP 直接轉送呼叫者的 token 取代（尚未執行）。
+與 MCP 的關係：`mcp_server/oauth.py` 仍然自己做 introspection —— 那是**閘門**，只有 MCP 行程能對未認證的請求回 401 challenge 觸發客戶端的 OAuth 流程。差別在轉送什麼：
+
+| `MCP_BRIDGE_SECRET` | 轉送內容 | 適用 |
+|---|---|---|
+| 空（預設） | 呼叫者原本的 isap-auth token | API Hub 已開 `OAUTH_RS_ENABLED`，由它自己驗 |
+| 有值 | identity bridge 換來的本地 JWT | API Hub 尚未開 RS 的舊部署 |
+
+passthrough 模式少一個共用密碼、少一個必須在閘道封鎖的內部端點；bridge 端點與 `MCP_BRIDGE_SECRET` 保留為相容路徑，切換只是兩邊的設定，不需要改版。
 
 ### 7.2 JWT Token 結構
 

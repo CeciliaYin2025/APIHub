@@ -78,10 +78,11 @@ def _mounted_path(scope) -> str:
 class OAuthGateMiddleware:
     """OAuth 2.1 Resource Server gate for /mcp (Phase 2).
 
-    Validates the caller's Bearer token via isap-auth introspection, exchanges
-    it for a local API Hub JWT through the identity bridge, and injects that
-    JWT into the passthrough contextvar so every proxied REST call runs with
-    the SSO user's own RBAC and audit identity.
+    Validates the caller's Bearer token via isap-auth introspection and puts
+    the credential to forward into the passthrough contextvar, so every proxied
+    REST call runs with the SSO user's own RBAC and audit identity. What gets
+    forwarded — the caller's own token, or a local JWT from the identity
+    bridge — is TokenExchanger's decision.
     """
 
     def __init__(self, app, exchanger: TokenExchanger):
@@ -94,10 +95,10 @@ class OAuthGateMiddleware:
             return
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         auth = headers.get("authorization", "")
-        local_jwt = None
+        credential = None
         if auth.startswith("Bearer "):
-            local_jwt = await self.exchanger.exchange(auth[len("Bearer ") :])
-        if local_jwt is None:
+            credential = await self.exchanger.resolve(auth[len("Bearer ") :])
+        if credential is None:
             response = Response(
                 status_code=401,
                 content=b"",
@@ -105,7 +106,7 @@ class OAuthGateMiddleware:
             )
             await response(scope, receive, send)
             return
-        token = _request_headers.set({"Authorization": f"Bearer {local_jwt}"})
+        token = _request_headers.set({"Authorization": f"Bearer {credential}"})
         try:
             await self.app(scope, receive, send)
         finally:

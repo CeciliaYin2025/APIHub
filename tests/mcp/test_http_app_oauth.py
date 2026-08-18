@@ -27,7 +27,7 @@ class _FakeExchanger:
     def __init__(self, result):
         self._result = result
 
-    async def exchange(self, token):
+    async def resolve(self, token):
         return self._result if token == "good" else None
 
 
@@ -68,6 +68,19 @@ async def test_valid_bearer_injects_local_jwt():
         resp = await client.post("/mcp", headers={"Authorization": "Bearer good"})
     assert resp.status_code == 200
     assert captured["headers"] == {"Authorization": "Bearer local-jwt"}
+
+
+@pytest.mark.asyncio
+async def test_valid_bearer_forwarded_unchanged_in_passthrough():
+    """Passthrough mode hands the caller's own token to the API Hub, which is an
+    OAuth Resource Server itself — the gate must not rewrite it."""
+    captured = {}
+    app = OAuthGateMiddleware(_inner_capture(captured), _FakeExchanger("good"))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp") as client:
+        resp = await client.post("/mcp", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    assert captured["headers"] == {"Authorization": "Bearer good"}
 
 
 @pytest.mark.asyncio

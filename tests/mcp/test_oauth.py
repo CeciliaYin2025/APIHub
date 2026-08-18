@@ -58,24 +58,53 @@ def _transport(introspect_response, bridge_response=None, calls=None):
 
 @pytest.mark.asyncio
 async def test_active_token_exchanged_for_local_jwt():
+    """Bridge mode: MCP_BRIDGE_SECRET set, so claims are traded for a local JWT."""
     exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice", "email": "a@x.com"}))
-    jwt_token = await exchanger.exchange("opaque-token")
-    assert jwt_token == "local-jwt"
+    assert await exchanger.resolve("opaque-token") == "local-jwt"
     await exchanger.aclose()
 
 
 @pytest.mark.asyncio
 async def test_inactive_token_returns_none():
     exchanger = TokenExchanger(transport=_transport({"active": False}))
-    assert await exchanger.exchange("bad-token") is None
+    assert await exchanger.resolve("bad-token") is None
     await exchanger.aclose()
 
 
 @pytest.mark.asyncio
-async def test_exchange_result_cached_60s():
+async def test_result_cached_60s():
     calls: list[str] = []
     exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice", "email": ""}, calls=calls))
-    await exchanger.exchange("opaque-token")
-    await exchanger.exchange("opaque-token")
+    await exchanger.resolve("opaque-token")
+    await exchanger.resolve("opaque-token")
     assert len([c for c in calls if "introspect" in c]) == 1  # second call served from cache
+    await exchanger.aclose()
+
+
+# ── passthrough mode (no bridge secret) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_passthrough_forwards_the_callers_own_token(monkeypatch):
+    """With no bridge secret the API Hub validates the same token itself, so the
+    caller's credential is forwarded unchanged and the bridge is never called."""
+    monkeypatch.setattr(mcp_settings, "bridge_secret", "")
+    calls: list[str] = []
+    exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice"}, calls=calls))
+
+    assert await exchanger.resolve("opaque-token") == "opaque-token"
+    assert not [c for c in calls if "sso-token" in c]
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_passthrough_still_gates_on_introspection(monkeypatch):
+    """Forwarding the token does NOT mean skipping validation: this process is
+    the only one that can answer with the 401 challenge an MCP client needs."""
+    monkeypatch.setattr(mcp_settings, "bridge_secret", "")
+    calls: list[str] = []
+    exchanger = TokenExchanger(transport=_transport({"active": False}, calls=calls))
+
+    assert await exchanger.resolve("dead-token") is None
+    assert [c for c in calls if "introspect" in c]
     await exchanger.aclose()

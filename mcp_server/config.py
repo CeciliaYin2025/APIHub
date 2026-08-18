@@ -28,7 +28,11 @@ class McpSettings(BaseSettings):
     auth_issuer: str = ""  # e.g. https://isap.sercomm.com/auth
     introspection_url: str = ""  # e.g. http://isap-auth:9997/auth/api/v1/introspect
     introspection_secret: str = ""
-    bridge_secret: str = ""  # shared secret for POST /api/v1/auth/sso-token
+    # Identity bridge (POST /api/v1/auth/sso-token). LEAVE EMPTY when the API
+    # Hub runs with OAUTH_RS_ENABLED: the caller's own token is then forwarded
+    # unchanged and the Hub validates it itself. Set it only for a Hub that
+    # cannot accept isap-auth tokens directly — see mcp_server/oauth.py.
+    bridge_secret: str = ""
 
     model_config = {"env_prefix": "MCP_", "env_file": ".env.mcp", "env_file_encoding": "utf-8"}
 

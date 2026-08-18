@@ -39,7 +39,22 @@ def challenge_header() -> str:
 
 
 class TokenExchanger:
-    """Introspect a Bearer token and exchange verified claims for a local JWT."""
+    """Validate a Bearer token and produce the credential to forward downstream.
+
+    Introspection happens either way, because the gate needs it: only this
+    process can answer an unauthenticated MCP request with the 401 challenge
+    that starts the client's OAuth flow. What differs is what gets forwarded:
+
+    - **Passthrough** (no ``MCP_BRIDGE_SECRET``): the caller's own token. The
+      API Hub is an OAuth Resource Server in its own right now
+      (``app/services/oauth_rs.py``), so it validates the same token itself and
+      applies RBAC and audit to the same user. Nothing to share, nothing to
+      keep in sync.
+    - **Bridge** (``MCP_BRIDGE_SECRET`` set): trade the verified claims for a
+      local API Hub JWT via ``POST /api/v1/auth/sso-token``. Kept for
+      deployments whose API Hub does not have ``OAUTH_RS_ENABLED`` on yet;
+      retiring it is a config change on both sides, not a redeploy.
+    """
 
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None):
         self._http = httpx.AsyncClient(timeout=10.0, transport=transport)
@@ -48,20 +63,29 @@ class TokenExchanger:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def exchange(self, bearer_token: str) -> str | None:
+    async def resolve(self, bearer_token: str) -> str | None:
+        """The Authorization value to forward, or None if the token is no good."""
         key = hashlib.sha256(bearer_token.encode()).hexdigest()
         now = time.monotonic()
         cached = self._cache.get(key)
         if cached and (now - cached[0]) < _CACHE_TTL:
             return cached[1]
 
-        result = await self._exchange_uncached(bearer_token)
+        result = await self._resolve_uncached(bearer_token)
         self._cache[key] = (now, result)
         # opportunistic cleanup of expired entries
         self._cache = {k: v for k, v in self._cache.items() if (now - v[0]) < _CACHE_TTL}
         return result
 
-    async def _exchange_uncached(self, bearer_token: str) -> str | None:
+    async def _resolve_uncached(self, bearer_token: str) -> str | None:
+        claims = await self._introspect(bearer_token)
+        if claims is None:
+            return None
+        if not mcp_settings.bridge_secret:
+            return bearer_token
+        return await self._bridge(claims)
+
+    async def _introspect(self, bearer_token: str) -> dict | None:
         headers = {}
         if mcp_settings.introspection_secret:
             headers["Authorization"] = f"Bearer {mcp_settings.introspection_secret}"
@@ -76,7 +100,9 @@ class TokenExchanger:
             return None
         if resp.status_code != 200 or not claims.get("active"):
             return None
+        return claims
 
+    async def _bridge(self, claims: dict) -> str | None:
         try:
             bridge = await self._http.post(
                 f"{mcp_settings.api_hub_url.rstrip('/')}/api/v1/auth/sso-token",
