@@ -96,6 +96,48 @@ Mint it on the isap-auth host first:
 5. With `SSO_AUTOCREATE=false`, an SSO user with no API Hub account lands back
    on the login page with "Ask an administrator to create one".
 
+## REST API as an OAuth Resource Server (`OAUTH_RS_ENABLED`)
+
+Independent of Admin UI SSO above: that is the browser login, this lets a
+program call the REST API with an isap-auth access token instead of a local
+password or an API key. Set in `.env` (all four go to `apihub-test-api`):
+
+    OAUTH_RS_ENABLED=true
+    OAUTH_ISSUER=https://<GATEWAY_SERVER_NAME>/auth
+    OAUTH_INTROSPECTION_URL=http://isap-auth:9997/auth/api/v1/introspect
+    OAUTH_INTROSPECTION_SECRET=<isap-auth's own OAUTH_INTROSPECTION_SECRET>
+
+The secret is **copied from the isap-auth deployment**, not generated here —
+the same value the MCP add-on uses as `MCP_INTROSPECTION_SECRET`.
+
+Discovery needs one manual gateway step, for the same reason as the MCP
+snippet: RFC 9728 clients build the metadata URL at the domain root
+(`/.well-known/oauth-protected-resource/apihub-test`), which no app-scoped
+`location` block can match. Hand
+`gateway-conf/oauth-wellknown-apihub-test.snippet.conf` to the platform operator to
+paste into the shared root well-known conf. Without it the API still accepts
+OAuth tokens; only auto-discovery breaks.
+
+### Verification (requires live environment)
+
+1. `curl https://<GATEWAY_SERVER_NAME>/apihub-test/.well-known/oauth-protected-resource`
+   returns the resource + authorization server (404 means the flag is off).
+2. A call with no credential returns 401 with a `WWW-Authenticate` header
+   naming that same URL.
+3. With an isap-auth access token: `curl -H "Authorization: Bearer <token>"
+   https://<GATEWAY_SERVER_NAME>/apihub-test/api/v1/auth/me` returns the SSO user.
+4. That user's audit rows show `principal_type=sso_user` with their own
+   username — not a shared service account.
+5. With `SSO_AUTOCREATE=false`, a valid token for an unprovisioned user gets
+   **403 "User not provisioned"** (not 401 — the token is fine, the account
+   is missing).
+6. Revoking centrally (isap-auth logout, or disabling the user) stops working
+   tokens within `OAUTH_INTROSPECTION_CACHE_SECONDS` (default 60s), not at the
+   next JWT expiry.
+
+Unattended callers (Celery, cron, `scripts/extract_query.py`) keep using API
+keys: isap-auth has no `client_credentials` grant.
+
 ## MCP server (`apihub-test-mcp`, OAuth 2.1 Resource Server)
 
 The MCP server is an **optional add-on** in a separate compose file,

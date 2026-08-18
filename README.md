@@ -131,7 +131,19 @@ Sign in to the Admin UI with an ISAP account instead of a local password, via is
 - Both endpoints return 404 while `ADMIN_SSO_ENABLED` is off, and the UI hides the button
 - `python -m scripts.register_isap_app` registers this instance's `redirect_uris` with isap-auth. It runs automatically as a compose one-shot (`apihub-app-register`), is idempotent, and exits 0 without calling out when no bootstrap token is configured
 
-### 7. Bulk Extraction (`scripts/extract_query.py`)
+### 7. OAuth 2.1 Resource Server (optional, `OAUTH_RS_ENABLED`)
+
+Call the REST API with an isap-auth access token — no local password, no API key. This is the API-side counterpart to §6: that one is the browser login, this one lets any OAuth client (a script, another app, an MCP host) authenticate as its own ISAP user.
+
+- A bearer token that is neither an API key (`ahk_`) nor a valid local JWT is validated against isap-auth by **RFC 7662 introspection** — its access tokens are opaque, so there is no signature to verify locally
+- Verified claims map to a local user through the same `resolve_sso_user()` the Admin UI and the MCP bridge use, so `SSO_AUTOCREATE` governs provisioning identically
+- **Only the identity crosses over.** Authorization stays entirely local: an `is_superuser` claim from isap-auth grants nothing here
+- Central revocation applies — an isap-auth token dies with the SSO session or a disabled account, bounded by `OAUTH_INTROSPECTION_CACHE_SECONDS` (default 60s, which also caps the per-token introspection rate)
+- `GET /.well-known/oauth-protected-resource` publishes RFC 9728 metadata and 401s carry a matching `WWW-Authenticate`, so an OAuth client can discover the authorization server. Behind the gateway this needs the root-level rewrite in `deploy/*/gateway-conf/oauth-wellknown-*.snippet.conf`
+- isap-auth has no `client_credentials` grant, so **unattended callers still use API keys** — OAuth adds a user identity, it does not replace service accounts
+- Off by default: without `OAUTH_RS_ENABLED` plus `OAUTH_INTROSPECTION_URL` the branch is inert and the metadata route 404s
+
+### 8. Bulk Extraction (`scripts/extract_query.py`)
 
 Stream any registered definition's full result set to a local file — the bulk counterpart to the MCP tools, which return rows into an LLM's context and so do not suit six-figure row counts.
 
@@ -147,17 +159,18 @@ python -m scripts.extract_query --db DW --query eo_detail \
 - The server recomputes `COUNT(*)` per batch, so per-request cost is nearly flat in batch size — prefer large batches. Measured: 139k rows × 89 columns in ~103 s at `--batch-size 10000`
 - Exit codes: `0` ok, `1` API error, `2` bad usage, `3` missing optional output library
 
-### 8. Rate Limiting
-- Per-client sliding window rate limiter (configurable)
+### 9. Rate Limiting
+- In-memory sliding window, one bucket per caller: per API key (honouring that key's own `rate_limit_per_minute`), per username for human callers, per client IP for anonymous requests
+- **Process-local** — it does not coordinate across API instances or Celery workers
 
-### 9. Database Connection Status (`/api/v1/databases/status`)
+### 10. Database Connection Status (`/api/v1/databases/status`)
 - Live per-database connectivity check — `Online` (with latency), `Offline` (with the raw driver error), or `Timeout`
 - Surfaced in the Admin dashboard's Databases card as a **Status** column with a **Refresh** button
 - Every alias is probed concurrently under a **single shared timeout budget**, so N unreachable databases still cost one `DB_HEALTH_CHECK_TIMEOUT`, not N of them
 - The probe SQL comes from the dialect layer (`SELECT 1 FROM DUAL` on Oracle, `SELECT 1` elsewhere)
 - **Superuser only** — it opens real connections and returns raw driver error text. Other users see the dashboard normally, with the column showing `—`
 
-### 10. API Usage Report (`/api/v1/audit`)
+### 11. API Usage Report (`/api/v1/audit`)
 
 Answers "who called which API, on which data source, how often" and "what exactly did they query", from the per-request audit trail in `api_hub_audit_logs`.
 
@@ -173,7 +186,7 @@ Requests are tagged with an `action_type` so data access can be told apart from 
 
 > **Security note:** request parameters are recorded **unmasked and untruncated** by design. Any value a caller passes as a bind parameter lands in `api_hub_audit_logs.params`, and database backups carry it. The table is readable only by superusers, but treat backups accordingly. Table growth is bounded by `AUDIT_RETENTION_DAYS` plus `python -m scripts.purge_audit_logs` — nothing prunes it automatically.
 
-### 11. MCP Tool Catalog View (`/api/v1/mcp/tools`)
+### 12. MCP Tool Catalog View (`/api/v1/mcp/tools`)
 
 Answers "which SQL definitions actually reach an LLM as MCP tools, and which quietly do not".
 
@@ -188,7 +201,7 @@ Three ways names collide: character folding (`EO Detail` = `EO_DETAIL` = `eo_det
 
 > If the MCP server sets `MCP_DB_ALIASES` it exposes a subset of what this lists. That setting belongs to the MCP process and the Hub cannot read it.
 
-### 12. Client Tooling for LLM Callers
+### 13. Client Tooling for LLM Callers
 
 The Hub serves definitions; these are the client-side pieces that make them usable from an agent. All three are **client-side** — none is part of the server image's runtime.
 

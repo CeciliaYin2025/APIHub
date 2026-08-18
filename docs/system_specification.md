@@ -131,7 +131,7 @@ Oracle API Hub 是一套通用型 RESTful API 平台，將 Oracle Database 的 T
 
 | 層級 | 職責 | 對應模組 |
 |------|------|----------|
-| **中介層 (Middleware)** | CORS 跨域、速率限制 | `app/middleware/rate_limiter.py` |
+| **中介層 (Middleware)** | CORS 跨域、身分解析（含 OAuth introspection）、速率限制、稽核 | `app/middleware/` |
 | **路由層 (Router)** | HTTP 端點定義、請求驗證 | `app/api/v1/*.py` |
 | **服務層 (Service)** | 業務邏輯、SQL 執行、權限檢查 | `app/services/*.py` |
 | **資料存取層 (Data)** | 多資料庫連線池管理（DatabaseRegistry）、ORM Session | `app/db/*.py` |
@@ -554,6 +554,21 @@ DELETE FROM employees WHERE emp_id = :wh_emp_id
 | `get_current_user(token, db)` | FastAPI Dependency — 解碼 JWT、查詢使用者、驗證啟用狀態 |
 | `get_current_active_superuser(user)` | FastAPI Dependency — 檢查超級管理員權限 |
 | `PermissionChecker(resource, action)` | 可呼叫物件 Dependency，檢查 RBAC 權限（詳見第 7 節） |
+| `bearer_token(request)` | 取出 `Authorization: Bearer` 原始值，與 OAuth 分支共用同一份「什麼算 bearer 憑證」的判斷 |
+
+---
+
+### 4.10.1 OAuth Resource Server — `app/services/oauth_rs.py`
+
+| 元件 | 說明 |
+|------|------|
+| `enabled()` | `OAUTH_RS_ENABLED` 且已設定 introspection URL 才為真 |
+| `introspect(token)` | RFC 7662 驗證，回傳 claims 或 `None`；正負結果都快取 `OAUTH_INTROSPECTION_CACHE_SECONDS` |
+| `protected_resource_metadata()` | RFC 9728 文件內容，由 `GET /.well-known/oauth-protected-resource` 輸出 |
+| `challenge_header()` | 401／403 用的 `WWW-Authenticate`，指向上述 metadata |
+| `aclose()` | 釋放共用 `httpx.AsyncClient`，由 app lifespan 呼叫 |
+
+與 `mcp_server/oauth.py` 是同一份合約的兩個實作：MCP 是獨立行程，驗完還要經 identity bridge 換本地 JWT；這裡 API Hub 自己就是 RS，驗完直接映射本地使用者。流程與設計取捨見 §7.1.2。
 
 ---
 
@@ -1660,6 +1675,44 @@ Admin UI 除本地帳密外，可改用 ISAP 帳號登入。走 isap-auth 的 ap
 
 應用本身必須先登記在 isap-auth 的 `registered_app` 允許清單中。`scripts/register_isap_app.py` 以 `PUT /apps/{app_id}` 搭配 per-app bootstrap token 完成登記，由 compose one-shot（`apihub-app-register`）在 api 啟動前執行。該端點是宣告式的：`redirect_uris` 整批取代，因此 `deploy/*/.env.isap` 的 `ISAP_REDIRECT_URIS` 是唯一真實來源，重複執行結果一致。未設定 token 時腳本印出訊息並以 0 退出，不阻擋不使用 SSO 的部署。
 
+#### 7.1.2 OAuth 2.1 Resource Server（選用，`OAUTH_RS_ENABLED`）
+
+§7.1.1 解決的是「人用瀏覽器登入 Admin UI」；這一節解決的是「程式用 ISAP 身分呼叫 REST API」。開啟後，API Hub 本身就是 OAuth 2.1 的 Resource Server，呼叫者直接帶 isap-auth 簽發的 access token，不需要本地密碼，也不需要 API 金鑰。
+
+```
+  OAuth Client                 API Hub                      isap-auth
+    │                             │                             │
+    │  POST /{db}/queries/execute │                             │
+    │  Authorization: Bearer <opaque>                           │
+    │───────────────────────────▶│                             │
+    │                             │  build_principal()：       │
+    │                             │  非 ahk_、非本地 JWT → None│
+    │                             │  POST /introspect (內網)   │
+    │                             │────────────────────────────▶│
+    │                             │◀────────────────────────────│
+    │                             │  active:true + username    │
+    │                             │  resolve_sso_user()        │
+    │                             │  Principal(type=sso_user)  │
+    │                             │  PermissionChecker 照舊    │
+    │  {"data": [...]}           │                             │
+    │◀───────────────────────────│                             │
+```
+
+要點：
+
+- **必須 introspection，沒有本地驗簽的捷徑**：isap-auth 的 access token 是 opaque 隨機字串（`secrets.token_urlsafe`），不是 JWT。JWKS 只用於 `id_token`，與 access token 無關。
+- **只有身分跨界，授權完全在本地**。introspect 回傳的 `is_superuser`、`dept_id` 等 claim 一律丟棄，權限仍來自 `api_hub_roles` / `api_hub_permissions`。這是刻意的：外部身分供應者不應能提權。
+- **順序**：`X-API-Key` → `ahk_` bearer → 本地 HS256 JWT → introspection。既有呼叫者一次額外的網路往返都不會付出；`Bearer ahk_...` 明確排除在 introspection 之外，以免把本地金鑰送給另一個服務。
+- **非同步執行**：introspection 在 `AuthContextMiddleware.dispatch` 內 `await`，不放進同步的 `build_principal()`——後者若發出同步 HTTP 請求，會在等待授權伺服器期間卡住整個 event loop。
+- **正負結果都快取** `OAUTH_INTROSPECTION_CACHE_SECONDS`（預設 60 秒）。負向快取是必要的：否則帶著失效 token 重試的呼叫者，每個請求都會打出一次 introspection。此 TTL 同時是「中央撤銷生效延遲」的上限。
+- **fail closed**：授權伺服器無法連線或回非 JSON 一律視為無身分，絕不放行。
+- **未建檔者回 403**（`resolve_sso_user` 的既有政策，受 `SSO_AUTOCREATE` 控制），不降級成 401——token 本身是好的，缺的是 API Hub 帳號，回 401 會讓使用者去查錯的一半。
+- **RFC 9728 探索**：`GET /.well-known/oauth-protected-resource` 公布 resource 與 authorization server，401／403 的 `WWW-Authenticate` 指向它。閘道後方需要根層改寫（`deploy/*/gateway-conf/oauth-wellknown-*.snippet.conf`），因為客戶端是在網域根組出這個網址的。
+- **isap-auth 沒有 `client_credentials` grant**，因此無人值守的呼叫者（Celery、排程、`scripts/extract_query.py`）仍使用 API 金鑰。OAuth 增加的是使用者身分，不取代服務帳號。
+- `OAUTH_RS_ENABLED=false`（預設）或未設 `OAUTH_INTROSPECTION_URL` 時整條分支不存在，well-known 端點回 404。
+
+與 MCP 的關係：`mcp_server/oauth.py` 做的是同一件事，但它是獨立行程，必須再經 identity bridge（`POST /auth/sso-token`）換一張本地 JWT。API 本體成為 RS 之後，該 bridge 在架構上已可由 MCP 直接轉送呼叫者的 token 取代（尚未執行）。
+
 ### 7.2 JWT Token 結構
 
 ```json
@@ -2299,15 +2352,23 @@ CORSMiddleware(
 
 | 參數 | 預設值 | 說明 |
 |------|--------|------|
-| `max_requests` | 60 | 每客戶端每分鐘最大請求數 |
+| `max_requests` | 60 | 每個計數桶每分鐘最大請求數 |
 | `window` | 60 秒 | 滑動視窗長度 |
+
+**計數桶（依 `request.state.principal` 決定）：**
+
+| 呼叫者 | 桶鍵 | 上限 |
+|--------|------|------|
+| API 金鑰 | `api_key:{key_id}` | 該金鑰的 `rate_limit_per_minute`，未設則用全域值 |
+| 使用者（密碼登入或 SSO/OAuth） | `user:{username}` | 全域值 |
+| 匿名 | `ip:{get_client_ip(request)}` | 全域值 |
 
 **處理流程：**
 
 ```
-1. 取得客戶端 IP（request.client.host）
+1. 依上表決定桶鍵與上限
 2. 清除超過 60 秒的歷史記錄
-3. 若現存記錄 >= max_requests
+3. 若現存記錄 >= 上限
    → 回傳 HTTP 429: {"detail": "Rate limit exceeded. Try again later."}
 4. 否則記錄本次請求時間，繼續處理
 ```
@@ -2315,7 +2376,7 @@ CORSMiddleware(
 **限制事項：**
 - 記憶體內儲存，各 API 實例獨立計算
 - 多實例部署時應改用 Redis-based 限流器（如 `fastapi-limiter`）
-- 若部署於反向代理後方，需改用 `X-Forwarded-For` 標頭辨識客戶端
+- 匿名桶的來源 IP 透過 `get_client_ip()` 解析，只有在 `TRUSTED_PROXIES` 明確設定時才採信 `X-Forwarded-For`；未設定時一律使用直連對端。**閘道後方若未設定此值，所有匿名請求會共用同一個桶**
 
 ---
 
@@ -2472,7 +2533,7 @@ curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
 | `API_VERSION` | `1.0.0` | API 版本號 |
 | `API_PREFIX` | `/api/v1` | API 路徑前綴 |
 | `DEBUG` | `false` | 除錯模式（啟用後 log level 為 DEBUG） |
-| `RATE_LIMIT_PER_MINUTE` | `60` | 每客戶端每分鐘最大請求數 |
+| `RATE_LIMIT_PER_MINUTE` | `60` | 每個計數桶每分鐘最大請求數（桶的劃分見 §11.2） |
 | `SQL_DEFINITIONS_DIR` | `app/sql_definitions` | SQL 定義檔目錄路徑 |
 | `DATABASE_DEFINITIONS_DIR` | `app/database_definitions` | 資料庫定義檔目錄路徑 |
 | `DB_{ALIAS}_PASSWORD` | — | 覆蓋指定資料庫別名的密碼（如 `DB_HR_DB_PASSWORD`） |
@@ -2485,6 +2546,11 @@ curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
 | `ISAP_AUTH_INTERNAL_URL` | — | isap-auth 內網位址，供後端 `POST /token` 交換 code，不繞出 gateway |
 | `ISAP_APP_ID` | `apihub` | 本應用在 isap-auth 的 app_id，必須與 bootstrap token 綁定的值相同 |
 | `SSO_AUTOCREATE` | `false` | 未建檔的 SSO 使用者是否自動建立為無角色帳號。同時作用於 Admin UI 與 MCP bridge；`MCP_BRIDGE_AUTOCREATE` 保留為相容別名 |
+| `OAUTH_RS_ENABLED` | `false` | REST API 是否直接接受 isap-auth 簽發的 access token（見 §7.1.2）。關閉時整條 introspection 分支不存在，`/.well-known/oauth-protected-resource` 回 404 |
+| `OAUTH_ISSUER` | — | 對客戶端公布的 authorization server。留空時退回 `ISAP_AUTH_PUBLIC_URL` |
+| `OAUTH_INTROSPECTION_URL` | — | isap-auth 的 RFC 7662 端點，**必須用內網位址**（如 `http://isap-auth:9997/auth/api/v1/introspect`） |
+| `OAUTH_INTROSPECTION_SECRET` | — | 必須與 isap-auth 自己的 `OAUTH_INTROSPECTION_SECRET` 完全相同（直接複製，不要另行產生）。與 MCP 附加元件的 `MCP_INTROSPECTION_SECRET` 同值 |
+| `OAUTH_INTROSPECTION_CACHE_SECONDS` | `60.0` | introspection 結果快取（正負皆快取）。**同時是中央撤銷生效延遲的上限** |
 | `ISAP_APP_NAME` | `Oracle API Hub` | 註冊時送出的顯示名稱。**僅** `scripts/register_isap_app.py` 讀取 |
 | `ISAP_REGISTRATION_TOKEN` | — | 自註冊用的 bootstrap token（`isapreg_…`）。**僅**註冊腳本讀取，放在 `deploy/*/.env.isap` 而非 `.env`：它能改寫本應用的 `redirect_uris`，外洩即為 auth code 竊取途徑。留空時註冊腳本跳過並以 0 退出 |
 | `ISAP_REDIRECT_URIS` | — | 登記的 callback 位址，換行或逗號分隔。宣告式整批取代。**僅**註冊腳本讀取 |
@@ -2531,6 +2597,8 @@ Oracle-api-hub/
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── auth_service.py              # 認證邏輯 + PermissionChecker
+│   │   ├── oauth_rs.py                  # OAuth 2.1 RS：introspection + RFC 9728 metadata
+│   │   ├── sso_service.py               # SSO 身分 → 本地使用者（Admin UI / MCP bridge / OAuth 共用）
 │   │   ├── sql_registry.py              # SQL 定義 Registry（DB 為主，YAML 備援）
 │   │   ├── query_service.py             # SQL 查詢執行 + ROWNUM 分頁
 │   │   ├── procedure_service.py         # Oracle Procedure / Function 呼叫
@@ -2545,7 +2613,9 @@ Oracle-api-hub/
 │   │   └── procedure_tasks.py           # 非同步程序呼叫任務
 │   ├── middleware/
 │   │   ├── __init__.py
-│   │   └── rate_limiter.py              # 滑動視窗速率限制
+│   │   ├── auth_context.py              # 每請求解析 Principal（含 OAuth introspection 分支）
+│   │   ├── audit.py                     # 稽核軌跡（結構化 log + api_hub_audit_logs）
+│   │   └── rate_limiter.py              # 滑動視窗速率限制（依 principal 分桶）
 │   ├── api/
 │   │   ├── __init__.py
 │   │   └── v1/

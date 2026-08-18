@@ -103,6 +103,13 @@ services:
       # Admin UI SSO via isap-auth. Off unless .env turns it on.
       ADMIN_SSO_ENABLED: ${ADMIN_SSO_ENABLED:-false}
       SSO_AUTOCREATE: ${SSO_AUTOCREATE:-false}
+      # OAuth 2.1 Resource Server: accept isap-auth access tokens on the REST
+      # API itself. Off unless .env turns it on; the introspection secret is
+      # isap-auth's, not a value generated here.
+      OAUTH_RS_ENABLED: ${OAUTH_RS_ENABLED:-false}
+      OAUTH_ISSUER: ${OAUTH_ISSUER:-}
+      OAUTH_INTROSPECTION_URL: ${OAUTH_INTROSPECTION_URL:-}
+      OAUTH_INTROSPECTION_SECRET: ${OAUTH_INTROSPECTION_SECRET:-}
     networks: [gateway-net, db-net, redis-net]
     volumes:
       - ../../app/database_definitions:/app/app/database_definitions
