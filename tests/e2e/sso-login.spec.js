@@ -1,5 +1,10 @@
 const { test, expect } = require('@playwright/test');
 
+/* The SPA scopes its storage keys by base path (localStorage is per-origin, so
+   /apihub and /apihub-test would otherwise share one session). Read the key the
+   app actually wrote rather than hardcoding the legacy name. */
+const readToken = (page) => page.evaluate(() => localStorage.getItem(`hub_token@${window.__BASE_PATH__ || '/'}`));
+
 const ADMIN = { user: 'admin', pass: 'changeme' };
 
 // Mint a JWT the same way GET /auth/sso/callback would, via the normal password
@@ -19,7 +24,7 @@ test('a valid #sso_token= fragment signs the user in and is stripped', async ({ 
   await page.goto(`/admin#sso_token=${jwt}`);
   await expect(page.locator('#appLayout')).toBeVisible();
   expect(page.url()).not.toContain('#');
-  expect(await page.evaluate(() => localStorage.getItem('hub_token'))).toBe(jwt);
+  expect(await readToken(page)).toBe(jwt);
 });
 
 test('an #sso_error= fragment stays on the login page with a message', async ({ page }) => {

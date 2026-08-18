@@ -1,5 +1,10 @@
 const { test, expect } = require('@playwright/test');
 
+/* The SPA scopes its storage keys by base path (localStorage is per-origin, so
+   /apihub and /apihub-test would otherwise share one session). Read the key the
+   app actually wrote rather than hardcoding the legacy name. */
+const readToken = (page) => page.evaluate(() => localStorage.getItem(`hub_token@${window.__BASE_PATH__ || '/'}`));
+
 const ADMIN = { user: 'admin', pass: 'changeme' };
 
 async function login(page) {
@@ -12,7 +17,7 @@ async function login(page) {
 
 // A key needs a service account to hang off, and the seeded DB has none.
 async function seedServiceAccount(page, username) {
-  const token = await page.evaluate(() => localStorage.getItem('hub_token'));
+  const token = await readToken(page);
   await page.request.post('/api/v1/auth/users', {
     headers: { Authorization: `Bearer ${token}` },
     data: { username, password: 'unused-service-account', is_service_account: true },

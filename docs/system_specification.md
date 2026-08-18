@@ -2284,14 +2284,16 @@ API 為 `PUT /{db}/queries/definitions/{name}`，body `{"enabled": false}`。
 
 ### 10.4 認證流程
 
-1. 使用者在 Login 頁面輸入帳號密碼
-2. 前端以 `POST /api/v1/auth/token` 取得 JWT Token
-3. Token 儲存於 `localStorage`（key: `hub_token`）
+1. 使用者在 Login 頁面輸入帳號密碼，或點「Sign in with ISAP SSO」（見 §7.1.1）
+2. 前端以 `POST /api/v1/auth/token` 取得 JWT Token；SSO 則由 callback 以 fragment 交付
+3. Token 儲存於 `localStorage`，**key 依 base path 分隔**：`hub_token@/apihub`、`hub_token@/apihub-test`
 4. 後續所有 API 請求附帶 `Authorization: Bearer <token>` 標頭
-5. Token 過期或無效時自動導回 Login 頁面
+5. 收到 401 時先嘗試一次 `POST /auth/sso/refresh` 並重放該請求；再失敗才導回 Login 頁面
 6. 登入成功後載入可用資料庫列表（`GET /databases`），填充 Header 中的資料庫選擇器
-7. 選擇的資料庫儲存於 `localStorage`（key: `hub_current_db`），頁面重載後自動恢復
-8. Logout 清除 `localStorage` 中的 Token
+7. 選擇的資料庫儲存於 `localStorage`（key: `hub_current_db@<base path>`），頁面重載後自動恢復
+8. Logout 清除 Token，並呼叫 `POST /auth/sso/logout` 清掉 refresh cookie
+
+**為什麼 key 要帶 base path**：`localStorage` 以 **origin** 分隔，不看路徑，而 `/apihub` 與 `/apihub-test` 是同一個 origin。共用一個 `hub_token` 會讓後登入的那一組蓋掉另一組的 session（連選定的資料庫一起蓋，兩邊 alias 清單並不相同）。啟動時有一次性搬移：舊的共用 key 會被「認領」成本部署的 scoped key 後刪除，因此升級不會把既有 session 踢掉；若那把 token 其實屬於另一組，它只會驗證失敗一次，走正常登入或 SSO 續期。
 
 ### 10.5 Query Console 功能
 

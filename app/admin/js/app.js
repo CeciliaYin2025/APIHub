@@ -6,9 +6,32 @@
 
 /* ── Global State ─────────────────────────────────────────────────────── */
 const API = (window.__BASE_PATH__ || '') + '/api/v1';
-let token = localStorage.getItem('hub_token') || '';
+
+/* localStorage is keyed by ORIGIN, not by path — and /apihub and /apihub-test
+   are the same origin. Unscoped keys therefore mean whichever deployment you
+   signed into last silently stomps the other's session and database choice.
+   Scope every key by base path so the two can be used side by side. */
+const STORE_SCOPE = window.__BASE_PATH__ || '/';
+const TOKEN_KEY = `hub_token@${STORE_SCOPE}`;
+const CURRENT_DB_KEY = `hub_current_db@${STORE_SCOPE}`;
+
+/* One-time move off the old shared keys. The value is adopted rather than
+   dropped so an existing session survives the upgrade; if it happens to belong
+   to the OTHER deployment it simply fails validation once and the normal login
+   (or silent SSO renewal) takes over. Either way the shared key is gone, so it
+   cannot be stomped again. */
+(function adoptLegacyKeys() {
+  for (const [legacy, scoped] of [['hub_token', TOKEN_KEY], ['hub_current_db', CURRENT_DB_KEY]]) {
+    const value = localStorage.getItem(legacy);
+    if (value === null) continue;
+    localStorage.removeItem(legacy);
+    if (localStorage.getItem(scoped) === null) localStorage.setItem(scoped, value);
+  }
+})();
+
+let token = localStorage.getItem(TOKEN_KEY) || '';
 let currentUser = null;
-let currentDb = localStorage.getItem('hub_current_db') || '';
+let currentDb = localStorage.getItem(CURRENT_DB_KEY) || '';
 let databases = [];
 let qcDefs = [];  // definitions for the Query Console picker (scoped to currentDb)
 let qcAuthMode = 'jwt';  // 'jwt' | 'apikey' — which credential the generated examples show
@@ -56,7 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
     toast(sso.error, 'error');
   } else if (sso && sso.token) {
     token = sso.token;
-    localStorage.setItem('hub_token', token);
+    localStorage.setItem(TOKEN_KEY, token);
   }
 
   if (token) {
@@ -110,7 +133,7 @@ document.getElementById('loginForm').addEventListener('submit', async e => {
     if (!res.ok) throw new Error('Login failed');
     const data = await res.json();
     token = data.access_token;
-    localStorage.setItem('hub_token', token);
+    localStorage.setItem(TOKEN_KEY, token);
     await fetchCurrentUser();
     showApp();
     toast('Login successful', 'success');
@@ -122,7 +145,7 @@ document.getElementById('loginForm').addEventListener('submit', async e => {
 document.getElementById('logoutBtn').addEventListener('click', () => {
   token = '';
   currentUser = null;
-  localStorage.removeItem('hub_token');
+  localStorage.removeItem(TOKEN_KEY);
   /* Best-effort: without this the browser keeps a usable SSO refresh cookie
      and the next page load silently signs the user back in. */
   fetch(`${API}/auth/sso/logout`, { method: 'POST', credentials: 'same-origin' }).catch(() => {});
@@ -142,7 +165,7 @@ async function ssoRefresh() {
     const data = await res.json();
     if (!data.access_token) return false;
     token = data.access_token;
-    localStorage.setItem('hub_token', token);
+    localStorage.setItem(TOKEN_KEY, token);
     return true;
   } catch {
     return false;
@@ -155,7 +178,7 @@ async function fetchCurrentUser() {
     return true;
   } catch {
     token = '';
-    localStorage.removeItem('hub_token');
+    localStorage.removeItem(TOKEN_KEY);
     return false;
   }
 }
@@ -187,11 +210,11 @@ async function loadDatabases() {
       currentDb = databases[0].alias;
       sel.value = currentDb;
     }
-    localStorage.setItem('hub_current_db', currentDb);
+    localStorage.setItem(CURRENT_DB_KEY, currentDb);
   }
   sel.addEventListener('change', () => {
     currentDb = sel.value;
-    localStorage.setItem('hub_current_db', currentDb);
+    localStorage.setItem(CURRENT_DB_KEY, currentDb);
     // If the Query Console is open, re-scope its picker to the new db and
     // clear the stale selection + parameters.
     if (document.querySelector('.sidebar-nav a[data-page="query-console"].active')) {

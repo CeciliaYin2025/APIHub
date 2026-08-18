@@ -1,5 +1,10 @@
 const { test, expect } = require('@playwright/test');
 
+/* The SPA scopes its storage keys by base path (localStorage is per-origin, so
+   /apihub and /apihub-test would otherwise share one session). Read the key the
+   app actually wrote rather than hardcoding the legacy name. */
+const readToken = (page) => page.evaluate(() => localStorage.getItem(`hub_token@${window.__BASE_PATH__ || '/'}`));
+
 const ADMIN = { user: 'admin', pass: 'changeme' };
 
 async function login(page) {
@@ -20,7 +25,7 @@ const SEEDED = [
 ];
 
 async function seedGroupedDefinitions(page) {
-  const token = await page.evaluate(() => localStorage.getItem('hub_token'));
+  const token = await readToken(page);
   for (const d of SEEDED) {
     await page.request.post('/api/v1/default/queries/definitions', {
       headers: { Authorization: `Bearer ${token}` },

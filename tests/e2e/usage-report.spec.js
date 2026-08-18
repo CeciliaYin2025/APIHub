@@ -1,5 +1,10 @@
 const { test, expect } = require('@playwright/test');
 
+/* The SPA scopes its storage keys by base path (localStorage is per-origin, so
+   /apihub and /apihub-test would otherwise share one session). Read the key the
+   app actually wrote rather than hardcoding the legacy name. */
+const readToken = (page) => page.evaluate(() => localStorage.getItem(`hub_token@${window.__BASE_PATH__ || '/'}`));
+
 const ADMIN = { user: 'admin', pass: 'changeme' };
 
 async function login(page, user = ADMIN.user, pass = ADMIN.pass) {
@@ -14,7 +19,7 @@ async function login(page, user = ADMIN.user, pass = ADMIN.pass) {
 // this fails — and that is the point: failed calls are audited too, so the
 // row lands with action_type=query and its params intact.
 async function seedQueryCall(page, params) {
-  const token = await page.evaluate(() => localStorage.getItem('hub_token'));
+  const token = await readToken(page);
   const res = await page.request.post('/api/v1/default/queries/execute', {
     headers: { Authorization: `Bearer ${token}` },
     data: { query_name: 'employees', params },
@@ -88,14 +93,14 @@ test('grouping by day collapses the API dimension', async ({ page }) => {
 
 test('non-superuser never sees the report link', async ({ page }) => {
   await login(page);
-  const token = await page.evaluate(() => localStorage.getItem('hub_token'));
+  const token = await readToken(page);
   await page.request.post('/api/v1/auth/users', {
     headers: { Authorization: `Bearer ${token}` },
     data: { username: 'e2e_reader', password: 'reader-pass-1', full_name: 'Reader', is_superuser: false },
     failOnStatusCode: false,
   });
 
-  await page.evaluate(() => localStorage.removeItem('hub_token'));
+  await page.evaluate(() => localStorage.removeItem(`hub_token@${window.__BASE_PATH__ || '/'}`));
   await login(page, 'e2e_reader', 'reader-pass-1');
   await expect(page.locator('#navUsageReport')).toBeHidden();
 });
