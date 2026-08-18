@@ -77,12 +77,21 @@ def create_user(
         raise HTTPException(status_code=400, detail="Username already exists")
     if payload.is_service_account and payload.is_superuser:
         raise HTTPException(status_code=400, detail="A service account cannot be a superuser")
+    if payload.is_service_account and payload.auth_source == "sso":
+        # A service account authenticates with an API key and nothing else, so
+        # "provisioned against isap-auth" says nothing about it.
+        raise HTTPException(status_code=400, detail="A service account cannot use SSO")
+    if payload.auth_source == "local" and not payload.password:
+        raise HTTPException(status_code=400, detail="A local account requires a password")
     user = User(
         username=payload.username,
-        hashed_password=get_password_hash(payload.password),
+        # SSO accounts get a valid-but-unguessable hash rather than an empty
+        # one, matching sso_service: verify("") would raise instead of failing.
+        hashed_password=get_password_hash(payload.password or secrets.token_urlsafe(32)),
         full_name=payload.full_name,
         is_superuser=payload.is_superuser,
         is_service_account=payload.is_service_account,
+        auth_source=payload.auth_source,
     )
     if payload.role_ids:
         roles = db.query(Role).filter(Role.id.in_(payload.role_ids)).all()
@@ -114,15 +123,24 @@ def update_user(
         if not payload.is_active and user.id == admin.id:
             raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
         user.is_active = payload.is_active
-    # Enforce service-account / superuser mutual exclusion on the resulting state.
+    # Enforce the exclusions on the RESULTING state, not on what was sent.
     new_is_service = payload.is_service_account if payload.is_service_account is not None else user.is_service_account
     new_is_superuser = payload.is_superuser if payload.is_superuser is not None else user.is_superuser
+    new_auth_source = payload.auth_source if payload.auth_source is not None else user.auth_source
     if new_is_service and new_is_superuser:
         raise HTTPException(status_code=400, detail="A service account cannot be a superuser")
+    if new_is_service and new_auth_source == "sso":
+        raise HTTPException(status_code=400, detail="A service account cannot use SSO")
     if payload.is_service_account is not None:
         user.is_service_account = payload.is_service_account
     if payload.is_superuser is not None:
         user.is_superuser = payload.is_superuser
+    if payload.auth_source is not None:
+        # Switching sso -> local leaves the account with the unguessable hash it
+        # was created with, so it still cannot sign in until an admin sets a
+        # password. Deliberate: the alternative is minting a password nobody
+        # asked for.
+        user.auth_source = payload.auth_source
     if payload.role_ids is not None:
         roles = db.query(Role).filter(Role.id.in_(payload.role_ids)).all()
         user.roles = roles
@@ -156,6 +174,11 @@ def reset_user_password(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if user.auth_source == "sso":
+        # Refused rather than silently stored: password login is blocked for
+        # these accounts, so accepting one would leave the admin believing they
+        # had handed out working credentials.
+        raise HTTPException(status_code=400, detail="Cannot set a password on an SSO account")
     user.hashed_password = get_password_hash(payload.new_password)
     db.commit()
 

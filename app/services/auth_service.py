@@ -242,6 +242,12 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
     if user.is_service_account:
         # Service accounts authenticate only via API key, never password flow.
         return None
+    if user.auth_source == "sso":
+        # The account is provisioned against isap-auth, so a password on it is
+        # a bypass of SSO — and of whatever isap-auth enforces (MFA, central
+        # revocation). Without this the flag would be decoration: an admin
+        # password reset would quietly re-open the password route.
+        return None
     return user
 
 

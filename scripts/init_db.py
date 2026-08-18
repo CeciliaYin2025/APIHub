@@ -30,6 +30,15 @@ def main():
     print("Ensured api_hub_users.is_service_account column.")
 
     with engine.begin() as conn:
+        # Existing rows all become 'local': the platform store never recorded how
+        # an account was provisioned, so there is nothing to infer from. Only
+        # accounts created by SSO from here on are marked 'sso'.
+        conn.execute(
+            text("ALTER TABLE api_hub_users ADD COLUMN IF NOT EXISTS auth_source varchar(20) DEFAULT 'local' NOT NULL")
+        )
+    print("Ensured api_hub_users.auth_source column.")
+
+    with engine.begin() as conn:
         conn.execute(
             text("ALTER TABLE api_hub_sql_definitions ADD COLUMN IF NOT EXISTS order_by jsonb DEFAULT '[]'::jsonb")
         )

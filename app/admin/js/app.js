@@ -535,11 +535,12 @@ async function renderUsers() {
         </div>
         <div class="card-body no-pad">
           <table class="data-table"><thead><tr>
-            <th>ID</th><th>Username</th><th>Full Name</th><th>Roles</th><th>Status</th><th>Superuser</th><th>Actions</th>
+            <th>ID</th><th>Username</th><th>Type</th><th>Full Name</th><th>Roles</th><th>Status</th><th>Superuser</th><th>Actions</th>
           </tr></thead>
           <tbody>${users.map(u => `<tr>
             <td>${u.id}</td>
             <td><strong>${esc(u.username)}</strong></td>
+            <td>${accountTypeBadge(u)}</td>
             <td>${esc(u.full_name || '—')}</td>
             <td>${(u.roles || []).map(r => `<span class="tag">${esc(r.name)}</span>`).join(' ') || '—'}</td>
             <td>${u.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>'}</td>
@@ -557,15 +558,50 @@ async function renderUsers() {
   }
 }
 
+/* How the account proves who it is. Service account wins the label: it is
+   API-key-only, so its auth_source is never anything but "local" and showing
+   that would just be noise. */
+function accountTypeBadge(u) {
+  if (u.is_service_account) return '<span class="badge badge-amber">Service</span>';
+  if (u.auth_source === 'sso') return '<span class="badge badge-blue">SSO</span>';
+  return '<span class="badge badge-gray">Local</span>';
+}
+
 // Shared handler for the "Service account" checkbox on the user create/edit
-// forms: a service account cannot be superuser (enforced server-side too), so
-// checking it disables + clears the Superuser select.
+// forms: a service account cannot be superuser, nor use SSO (both enforced
+// server-side too), so checking it disables + clears those fields.
 window.toggleSuperuserForServiceAccount = function(checkbox) {
   const form = checkbox.form;
   const suField = form.is_superuser;
-  if (!suField) return;
-  suField.disabled = checkbox.checked;
-  if (checkbox.checked) suField.value = 'false';
+  if (suField) {
+    suField.disabled = checkbox.checked;
+    if (checkbox.checked) suField.value = 'false';
+  }
+  const asField = form.auth_source;
+  if (asField) {
+    asField.disabled = checkbox.checked;
+    if (checkbox.checked) {
+      asField.value = 'local';
+      if (typeof togglePasswordForAuthSource === 'function') togglePasswordForAuthSource(asField);
+    }
+  }
+};
+
+/* An SSO account has no usable password, so asking for one invites an admin to
+   set a credential that will never work. */
+window.togglePasswordForAuthSource = function(select) {
+  const form = select.form;
+  const pwField = form.password;
+  if (!pwField) return;
+  const isSso = select.value === 'sso';
+  pwField.disabled = isSso;
+  pwField.required = !isSso;
+  if (isSso) pwField.value = '';
+  const group = pwField.closest('.form-group');
+  if (group) {
+    const hint = group.querySelector('.auth-source-hint');
+    if (hint) hint.textContent = isSso ? 'Not used — this account signs in through ISAP SSO.' : '';
+  }
 };
 
 window.openUserModal = function() {
@@ -580,7 +616,15 @@ window.openUserModal = function() {
         <div class="form-group">
           <label>Password</label>
           <input type="password" name="password" required>
+          <small class="text-muted auth-source-hint"></small>
         </div>
+      </div>
+      <div class="form-group">
+        <label>Authentication</label>
+        <select name="auth_source" onchange="togglePasswordForAuthSource(this)">
+          <option value="local">Local password</option>
+          <option value="sso">ISAP SSO</option>
+        </select>
       </div>
       <div class="form-group">
         <label>Full Name</label>
@@ -614,12 +658,16 @@ window.openUserModal = function() {
 
 window.submitUser = async function() {
   const form = document.getElementById('userForm');
+  const authSource = form.auth_source.value;
   const data = {
     username: form.username.value,
-    password: form.password.value,
+    // Omitted for SSO accounts: the server generates an unguessable hash so
+    // there is no password to leak, guess, or maintain.
+    password: authSource === 'sso' ? null : form.password.value,
     full_name: form.full_name.value || null,
     is_superuser: form.is_superuser.value === 'true',
     is_service_account: form.is_service_account.checked,
+    auth_source: form.is_service_account.checked ? 'local' : authSource,
     role_ids: [...form.querySelectorAll('input[name="role_ids"]:checked')].map(c => parseInt(c.value)),
   };
   try {
@@ -668,6 +716,13 @@ window.openEditUserModal = async function(userId) {
             <option value="true" ${user.is_superuser ? 'selected' : ''}>Yes</option>
           </select>
         </div>
+        <div class="form-group">
+          <label>Authentication</label>
+          <select name="auth_source" ${user.is_service_account ? 'disabled' : ''}>
+            <option value="local" ${user.auth_source !== 'sso' ? 'selected' : ''}>Local password</option>
+            <option value="sso" ${user.auth_source === 'sso' ? 'selected' : ''}>ISAP SSO</option>
+          </select>
+        </div>
       </div>
       <div class="form-group">
         <div class="checkbox-item">
@@ -687,7 +742,10 @@ window.openEditUserModal = async function(userId) {
       <hr>
       <div class="form-group">
         <label>Reset Password (leave blank to keep current)</label>
-        <input type="password" name="new_password" placeholder="New password">
+        <input type="password" name="new_password" placeholder="New password" ${user.auth_source === 'sso' ? 'disabled' : ''}>
+        ${user.auth_source === 'sso'
+          ? '<small class="text-muted">SSO accounts cannot sign in with a password. Switch Authentication to Local first.</small>'
+          : ''}
       </div>
     </form>
   `;
@@ -704,10 +762,13 @@ window.submitEditUser = async function() {
     is_active: form.is_active.value === 'true',
     is_superuser: form.is_superuser.value === 'true',
     is_service_account: form.is_service_account.checked,
+    auth_source: form.is_service_account.checked ? 'local' : form.auth_source.value,
     role_ids: [...form.querySelectorAll('input[name="role_ids"]:checked')].map(c => parseInt(c.value)),
   };
   try {
     await api('PUT', `/auth/users/${userId}`, data);
+    // Read the password AFTER the update: switching sso -> local in the same
+    // save must land first, or the server rejects the reset on the old value.
     const newPw = form.new_password.value;
     if (newPw) {
       await api('PATCH', `/auth/users/${userId}/password`, { new_password: newPw });
