@@ -588,14 +588,17 @@ window.toggleSuperuserForServiceAccount = function(checkbox) {
 };
 
 /* An SSO account has no usable password, so asking for one invites an admin to
-   set a credential that will never work. */
+   set a credential that will never work. Handles both forms: the create modal
+   calls the field `password`, the edit modal `new_password`. */
 window.togglePasswordForAuthSource = function(select) {
   const form = select.form;
-  const pwField = form.password;
+  const pwField = form.password || form.new_password;
   if (!pwField) return;
   const isSso = select.value === 'sso';
   pwField.disabled = isSso;
-  pwField.required = !isSso;
+  // Only the create form's field is ever required; the edit form's is a
+  // blank-means-keep-current reset box.
+  if (pwField.name === 'password') pwField.required = !isSso;
   if (isSso) pwField.value = '';
   const group = pwField.closest('.form-group');
   if (group) {
@@ -607,15 +610,18 @@ window.togglePasswordForAuthSource = function(select) {
 window.openUserModal = function() {
   const roles = window._cachedRoles || [];
   const body = `
-    <form id="userForm">
+    <!-- autocomplete off throughout: these are admin forms for OTHER people's
+         accounts, and a password manager filling them writes the operator's own
+         credentials into someone else's record. -->
+    <form id="userForm" autocomplete="off">
       <div class="form-row">
         <div class="form-group">
           <label>Username</label>
-          <input type="text" name="username" required>
+          <input type="text" name="username" required autocomplete="off">
         </div>
         <div class="form-group">
           <label>Password</label>
-          <input type="password" name="password" required>
+          <input type="password" name="password" required autocomplete="new-password">
           <small class="text-muted auth-source-hint"></small>
         </div>
       </div>
@@ -628,7 +634,7 @@ window.openUserModal = function() {
       </div>
       <div class="form-group">
         <label>Full Name</label>
-        <input type="text" name="full_name">
+        <input type="text" name="full_name" autocomplete="off">
       </div>
       <div class="form-group">
         <label>Superuser</label>
@@ -691,7 +697,7 @@ window.openEditUserModal = async function(userId) {
 
   const userRoleIds = (user.roles || []).map(r => r.id);
   const body = `
-    <form id="editUserForm">
+    <form id="editUserForm" autocomplete="off">
       <input type="hidden" name="user_id" value="${user.id}">
       <div class="form-group">
         <label>Username</label>
@@ -699,7 +705,7 @@ window.openEditUserModal = async function(userId) {
       </div>
       <div class="form-group">
         <label>Full Name</label>
-        <input type="text" name="full_name" value="${esc(user.full_name || '')}">
+        <input type="text" name="full_name" value="${esc(user.full_name || '')}" autocomplete="off">
       </div>
       <div class="form-row">
         <div class="form-group">
@@ -718,7 +724,7 @@ window.openEditUserModal = async function(userId) {
         </div>
         <div class="form-group">
           <label>Authentication</label>
-          <select name="auth_source" ${user.is_service_account ? 'disabled' : ''}>
+          <select name="auth_source" onchange="togglePasswordForAuthSource(this)" ${user.is_service_account ? 'disabled' : ''}>
             <option value="local" ${user.auth_source !== 'sso' ? 'selected' : ''}>Local password</option>
             <option value="sso" ${user.auth_source === 'sso' ? 'selected' : ''}>ISAP SSO</option>
           </select>
@@ -742,10 +748,11 @@ window.openEditUserModal = async function(userId) {
       <hr>
       <div class="form-group">
         <label>Reset Password (leave blank to keep current)</label>
-        <input type="password" name="new_password" placeholder="New password" ${user.auth_source === 'sso' ? 'disabled' : ''}>
-        ${user.auth_source === 'sso'
-          ? '<small class="text-muted">SSO accounts cannot sign in with a password. Switch Authentication to Local first.</small>'
-          : ''}
+        <input type="password" name="new_password" placeholder="New password" autocomplete="new-password"
+               ${user.auth_source === 'sso' ? 'disabled' : ''}>
+        <small class="text-muted auth-source-hint">${user.auth_source === 'sso'
+          ? 'Not used — this account signs in through ISAP SSO.'
+          : ''}</small>
       </div>
     </form>
   `;
@@ -769,7 +776,11 @@ window.submitEditUser = async function() {
     await api('PUT', `/auth/users/${userId}`, data);
     // Read the password AFTER the update: switching sso -> local in the same
     // save must land first, or the server rejects the reset on the old value.
-    const newPw = form.new_password.value;
+    // And never send one for an account that ends up as SSO: the server refuses
+    // it (400), which used to abort the save AFTER the PUT had already landed —
+    // a half-applied edit, reliably triggered by a browser password manager
+    // autofilling this field without the admin ever touching it.
+    const newPw = data.auth_source === 'sso' ? '' : form.new_password.value;
     if (newPw) {
       await api('PATCH', `/auth/users/${userId}/password`, { new_password: newPw });
     }
