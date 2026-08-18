@@ -119,6 +119,7 @@ Drop YAML files into `app/database_definitions/` — each file is a list of data
 - Role-Based Access Control with three matching modes: exact (`query:employees`), **prefix wildcard** (`query:HR*` matches `query:HR_ORG`, `query:HR_Emps`, …), and full-category (`query:*`)
 - Permission model: `resource:action` (e.g., `query:employees` + `read`); the action must always match exactly
 - Superuser bypass for administrative access
+- **Account types** are two independent dimensions, shown as one badge in the Admin UI's Users list: `is_service_account` (API-key only — **Service**) and `auth_source` (`local` = password login, `sso` = isap-auth only). An `sso` account cannot log in with a password and cannot have one set; a `local` account is *not* blocked from SSO, because every row predating the column was backfilled to `local`. A service account cannot be `sso`
 
 ### 6. ISAP SSO (optional, `ADMIN_SSO_ENABLED`)
 

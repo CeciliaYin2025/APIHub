@@ -1428,6 +1428,8 @@ Authorization: Bearer <token>
 | `full_name` | VARCHAR(200) | NULLABLE | 全名 |
 | `is_active` | BOOLEAN | NOT NULL, DEFAULT TRUE | 啟用狀態 |
 | `is_superuser` | BOOLEAN | NOT NULL, DEFAULT FALSE | 超級管理員（繞過權限檢查） |
+| `is_service_account` | BOOLEAN | NOT NULL, DEFAULT FALSE | 系統帳號：只能用 API 金鑰，不得走密碼流程，且不得為超級管理員 |
+| `auth_source` | VARCHAR(20) | NOT NULL, DEFAULT `'local'` | 認證來源 `local` / `sso`（見 §7.1.3） |
 | `created_at` | DATETIME | SERVER DEFAULT SYSDATE | 建立時間 |
 | `updated_at` | DATETIME | SERVER DEFAULT SYSDATE, ONUPDATE | 更新時間 |
 
@@ -1740,6 +1742,26 @@ Admin UI 除本地帳密外，可改用 ISAP 帳號登入。走 isap-auth 的 **
 | 有值 | identity bridge 換來的本地 JWT | API Hub 尚未開 RS 的舊部署 |
 
 passthrough 模式少一個共用密碼、少一個必須在閘道封鎖的內部端點；bridge 端點與 `MCP_BRIDGE_SECRET` 保留為相容路徑，切換只是兩邊的設定，不需要改版。
+
+#### 7.1.3 帳號類型：`is_service_account` 與 `auth_source`
+
+兩個**互相獨立的維度**，不是同一個列舉：`is_service_account` 說的是「這個帳號給人還是給程式用」，`auth_source` 說的是「怎麼證明身分」。
+
+| Admin UI 顯示 | 條件 | 可用的認證方式 |
+|---|---|---|
+| **Service** | `is_service_account=true` | 只有 API 金鑰（`ahk_…`） |
+| **SSO** | `auth_source='sso'` | 只有 isap-auth（Admin UI SSO 或 OAuth token） |
+| **Local** | `auth_source='local'` | 密碼登入；若同時被 SSO 認出也可走 SSO |
+
+三條必須一起看的規則：
+
+- **`auth_source` 只管密碼那條路**。`sso` 帳號 `authenticate_user()` 一律回 `None`，`PATCH /users/{id}/password` 回 400。反過來**不成立**：`local` 帳號不會被擋在 SSO 之外 —— 因為導入這個欄位時所有既有資料一律回填 `local`（平台庫從未記錄過來源，無從推斷），若同時擋 SSO 側，等於把當時所有 SSO 使用者鎖在門外。
+- **不擋密碼就等於沒做**。若只是加個欄位卻仍允許密碼登入，管理者一次 password reset 就能悄悄繞過 isap-auth 連同它的 MFA 與集中撤銷 —— 欄位就只是裝飾。
+- **服務帳號不得為 `sso`**（建立與更新都以**結果狀態**檢查，400）：它只用金鑰認證，標記 SSO 沒有任何意義。
+
+`SSO_AUTOCREATE=false`（本專案部署的預設）時，SSO 使用者由管理者事先在 Admin UI 建檔，此時要把 Authentication 選成 **ISAP SSO**，密碼欄位會停用 —— 伺服器改存一個隨機且無人知道的雜湊，而不是空字串（`verify("")` 會拋例外而非回 False）。`SSO_AUTOCREATE=true` 時 `resolve_sso_user()` 自動建立的帳號直接寫入 `auth_source='sso'`。
+
+由 `sso` 改回 `local` 是允許的，但帳號仍帶著那個無人知道的雜湊，必須再做一次 password reset 才能登入（Admin UI 的編輯畫面會先送出 `auth_source` 再送密碼，順序不能反）。
 
 ### 7.2 JWT Token 結構
 

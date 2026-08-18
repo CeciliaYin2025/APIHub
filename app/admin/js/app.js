@@ -535,17 +535,21 @@ async function renderUsers() {
         </div>
         <div class="card-body no-pad">
           <table class="data-table"><thead><tr>
-            <th>ID</th><th>Username</th><th>Full Name</th><th>Roles</th><th>Status</th><th>Superuser</th><th>Actions</th>
+            <th>ID</th><th>Username</th><th>Type</th><th>Full Name</th><th>Roles</th><th>Status</th><th>Superuser</th><th>Actions</th>
           </tr></thead>
           <tbody>${users.map(u => `<tr>
             <td>${u.id}</td>
             <td><strong>${esc(u.username)}</strong></td>
+            <td>${accountTypeBadge(u)}</td>
             <td>${esc(u.full_name || '—')}</td>
             <td>${(u.roles || []).map(r => `<span class="tag">${esc(r.name)}</span>`).join(' ') || '—'}</td>
             <td>${u.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>'}</td>
             <td>${u.is_superuser ? '<span class="badge badge-blue">Yes</span>' : '—'}</td>
             <td>
               <button class="btn btn-xs btn-secondary" onclick="openEditUserModal(${u.id})">Edit</button>
+              ${u.auth_source === 'sso'
+                ? ''
+                : `<button class="btn btn-xs btn-secondary" onclick="openResetPasswordModal(${u.id}, '${esc(u.username)}')">Password</button>`}
               <button class="btn btn-xs btn-danger" onclick="deleteUser(${u.id}, '${esc(u.username)}')">Delete</button>
             </td>
           </tr>`).join('')}</tbody></table>
@@ -557,34 +561,81 @@ async function renderUsers() {
   }
 }
 
+/* How the account proves who it is. Service account wins the label: it is
+   API-key-only, so its auth_source is never anything but "local" and showing
+   that would just be noise. */
+function accountTypeBadge(u) {
+  if (u.is_service_account) return '<span class="badge badge-amber">Service</span>';
+  if (u.auth_source === 'sso') return '<span class="badge badge-blue">SSO</span>';
+  return '<span class="badge badge-gray">Local</span>';
+}
+
 // Shared handler for the "Service account" checkbox on the user create/edit
-// forms: a service account cannot be superuser (enforced server-side too), so
-// checking it disables + clears the Superuser select.
+// forms: a service account cannot be superuser, nor use SSO (both enforced
+// server-side too), so checking it disables + clears those fields.
 window.toggleSuperuserForServiceAccount = function(checkbox) {
   const form = checkbox.form;
   const suField = form.is_superuser;
-  if (!suField) return;
-  suField.disabled = checkbox.checked;
-  if (checkbox.checked) suField.value = 'false';
+  if (suField) {
+    suField.disabled = checkbox.checked;
+    if (checkbox.checked) suField.value = 'false';
+  }
+  const asField = form.auth_source;
+  if (asField) {
+    asField.disabled = checkbox.checked;
+    if (checkbox.checked) {
+      asField.value = 'local';
+      if (typeof togglePasswordForAuthSource === 'function') togglePasswordForAuthSource(asField);
+    }
+  }
+};
+
+/* An SSO account has no usable password, so asking for one invites an admin to
+   set a credential that will never work. Only the create form has a password
+   field; editing an account's password is its own dialog. */
+window.togglePasswordForAuthSource = function(select) {
+  const form = select.form;
+  const pwField = form.password;
+  if (!pwField) return;
+  const isSso = select.value === 'sso';
+  pwField.disabled = isSso;
+  pwField.required = !isSso;
+  if (isSso) pwField.value = '';
+  const group = pwField.closest('.form-group');
+  if (group) {
+    const hint = group.querySelector('.auth-source-hint');
+    if (hint) hint.textContent = isSso ? 'Not used — this account signs in through ISAP SSO.' : '';
+  }
 };
 
 window.openUserModal = function() {
   const roles = window._cachedRoles || [];
   const body = `
-    <form id="userForm">
+    <!-- autocomplete off throughout: these are admin forms for OTHER people's
+         accounts, and a password manager filling them writes the operator's own
+         credentials into someone else's record. -->
+    <form id="userForm" autocomplete="off">
       <div class="form-row">
         <div class="form-group">
           <label>Username</label>
-          <input type="text" name="username" required>
+          <input type="text" name="username" required autocomplete="off">
         </div>
         <div class="form-group">
           <label>Password</label>
-          <input type="password" name="password" required>
+          <input type="password" name="password" required autocomplete="new-password">
+          <small class="text-muted auth-source-hint"></small>
         </div>
       </div>
       <div class="form-group">
+        <label>Authentication</label>
+        <select name="auth_source" onchange="togglePasswordForAuthSource(this)">
+          <option value="local">Local password</option>
+          <option value="sso">ISAP SSO</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label>Full Name</label>
-        <input type="text" name="full_name">
+        <input type="text" name="full_name" autocomplete="off">
       </div>
       <div class="form-group">
         <label>Superuser</label>
@@ -614,12 +665,16 @@ window.openUserModal = function() {
 
 window.submitUser = async function() {
   const form = document.getElementById('userForm');
+  const authSource = form.auth_source.value;
   const data = {
     username: form.username.value,
-    password: form.password.value,
+    // Omitted for SSO accounts: the server generates an unguessable hash so
+    // there is no password to leak, guess, or maintain.
+    password: authSource === 'sso' ? null : form.password.value,
     full_name: form.full_name.value || null,
     is_superuser: form.is_superuser.value === 'true',
     is_service_account: form.is_service_account.checked,
+    auth_source: form.is_service_account.checked ? 'local' : authSource,
     role_ids: [...form.querySelectorAll('input[name="role_ids"]:checked')].map(c => parseInt(c.value)),
   };
   try {
@@ -643,7 +698,7 @@ window.openEditUserModal = async function(userId) {
 
   const userRoleIds = (user.roles || []).map(r => r.id);
   const body = `
-    <form id="editUserForm">
+    <form id="editUserForm" autocomplete="off">
       <input type="hidden" name="user_id" value="${user.id}">
       <div class="form-group">
         <label>Username</label>
@@ -651,7 +706,7 @@ window.openEditUserModal = async function(userId) {
       </div>
       <div class="form-group">
         <label>Full Name</label>
-        <input type="text" name="full_name" value="${esc(user.full_name || '')}">
+        <input type="text" name="full_name" value="${esc(user.full_name || '')}" autocomplete="off">
       </div>
       <div class="form-row">
         <div class="form-group">
@@ -666,6 +721,13 @@ window.openEditUserModal = async function(userId) {
           <select name="is_superuser" ${user.is_service_account ? 'disabled' : ''}>
             <option value="false" ${!user.is_superuser ? 'selected' : ''}>No</option>
             <option value="true" ${user.is_superuser ? 'selected' : ''}>Yes</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Authentication</label>
+          <select name="auth_source" ${user.is_service_account ? 'disabled' : ''}>
+            <option value="local" ${user.auth_source !== 'sso' ? 'selected' : ''}>Local password</option>
+            <option value="sso" ${user.auth_source === 'sso' ? 'selected' : ''}>ISAP SSO</option>
           </select>
         </div>
       </div>
@@ -684,11 +746,6 @@ window.openEditUserModal = async function(userId) {
           </div>`).join('')}
         </div>
       </div>
-      <hr>
-      <div class="form-group">
-        <label>Reset Password (leave blank to keep current)</label>
-        <input type="password" name="new_password" placeholder="New password">
-      </div>
     </form>
   `;
   const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -704,17 +761,48 @@ window.submitEditUser = async function() {
     is_active: form.is_active.value === 'true',
     is_superuser: form.is_superuser.value === 'true',
     is_service_account: form.is_service_account.checked,
+    auth_source: form.is_service_account.checked ? 'local' : form.auth_source.value,
     role_ids: [...form.querySelectorAll('input[name="role_ids"]:checked')].map(c => parseInt(c.value)),
   };
   try {
     await api('PUT', `/auth/users/${userId}`, data);
-    const newPw = form.new_password.value;
-    if (newPw) {
-      await api('PATCH', `/auth/users/${userId}/password`, { new_password: newPw });
-    }
     closeModal();
     toast('User updated', 'success');
     renderUsers();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+};
+
+/* Password reset lives in its OWN dialog, and deliberately not inside Edit
+   User. A form containing a password field is a login form as far as a browser
+   password manager is concerned: it fills the field, and — needing a username
+   to go with it — fills the first text input too, silently overwriting Full
+   Name with whatever account the operator has saved for this site. Keeping the
+   only password input on a form with no other text field removes the bait. */
+window.openResetPasswordModal = function(userId, username) {
+  const body = `
+    <form id="resetPwForm" autocomplete="off">
+      <p>Set a new password for <strong>${esc(username)}</strong>.</p>
+      <div class="form-group">
+        <label>New Password</label>
+        <input type="password" name="new_password" autocomplete="new-password" required>
+      </div>
+    </form>
+  `;
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                   <button class="btn btn-primary" onclick="submitResetPassword(${userId})">Set Password</button>`;
+  openModal('Reset Password', body, footer);
+};
+
+window.submitResetPassword = async function(userId) {
+  const form = document.getElementById('resetPwForm');
+  const newPassword = form.new_password.value;
+  if (!newPassword) { toast('Enter a new password', 'error'); return; }
+  try {
+    await api('PATCH', `/auth/users/${userId}/password`, { new_password: newPassword });
+    closeModal();
+    toast('Password updated', 'success');
   } catch (err) {
     toast(err.message, 'error');
   }

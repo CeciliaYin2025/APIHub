@@ -68,6 +68,7 @@ def resolve_sso_user(db: Session, username: str, email: str = "") -> User:
             is_active=True,
             is_superuser=False,
             is_service_account=False,
+            auth_source="sso",
         )
         db.add(user)
         db.commit()

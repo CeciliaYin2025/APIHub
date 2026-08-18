@@ -33,6 +33,11 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     is_superuser = Column(Boolean, default=False, nullable=False)
     is_service_account = Column(Boolean, default=False, nullable=False)
+    # "local" | "sso" — how this account proves who it is. Governs PASSWORD
+    # login only: an "sso" account cannot use POST /auth/token. It deliberately
+    # does NOT gate the SSO side, because every pre-existing row was backfilled
+    # to "local" and locking those users out of SSO would be a silent outage.
+    auth_source = Column(String(20), default="local", server_default="local", nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
