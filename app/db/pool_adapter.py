@@ -7,6 +7,15 @@ from contextlib import contextmanager
 from typing import Any, Generator
 
 
+class PoolExhaustedError(RuntimeError):
+    """No connection became free within the pool's acquire timeout.
+
+    Raised instead of queueing indefinitely: a caller that waits forever holds
+    on to a worker thread, so a flood of slow queries against one alias starves
+    every other endpoint in the process — including login. Surfaces as HTTP 503.
+    """
+
+
 class PoolAdapter(abc.ABC):
     """Engine-agnostic connection pool wrapper."""
 

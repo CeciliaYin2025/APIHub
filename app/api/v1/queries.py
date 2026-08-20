@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.databases import get_db_alias
 from app.core.config import settings
+from app.db.pool_adapter import PoolExhaustedError
 from app.db.session import get_db
 from app.middleware.audit import record_audit
 from app.models.sql_definition import SqlDefinitionModel
@@ -465,6 +466,11 @@ def execute(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except PoolExhaustedError as e:
+        # 503, not 500: the query is fine, the alias is simply saturated. A
+        # distinct status lets a client back off instead of retrying straight
+        # away and deepening the queue that refused it.
+        raise HTTPException(status_code=503, detail=str(e), headers={"Retry-After": "5"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query execution error: {e}")
 

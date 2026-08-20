@@ -142,3 +142,9 @@ length of the outage. It is for monitoring.
 All via `MCP_*` env vars or `.env.mcp` — see `mcp_server/config.py`.
 Phase 2 (OAuth 2.1 Resource Server, isap-auth) is toggled by `MCP_OAUTH_ENABLED`.
 `MCP_WATCH_INTERVAL_SECONDS` is covered under Freshness above.
+
+`MCP_REQUEST_TIMEOUT_SECONDS` (default 120) caps one REST call. Set it above
+the slowest definition being exposed: when it expires the client reports a
+failure and the model usually re-issues the same tool call, while the Hub is
+still executing the abandoned one — so a timeout below the real query time
+turns one slow query into a growing pile of duplicates on the API.

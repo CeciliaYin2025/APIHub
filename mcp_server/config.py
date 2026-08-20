@@ -16,6 +16,13 @@ class McpSettings(BaseSettings):
     db_aliases: str = ""
     # Hard cap for the page_size argument on query tools (REST itself allows up to 1000)
     page_size_max: int = 100
+    # Seconds to wait for one REST call before giving up. The ceiling matters
+    # more than it looks: when it expires the MCP client reports a failure and
+    # the model typically re-issues the same tool call, while the Hub is still
+    # executing the abandoned one — so a value below the real query time turns
+    # one slow query into an ever-growing pile of duplicates. Keep it above the
+    # slowest definition being exposed.
+    request_timeout_seconds: float = 120.0
     # stdio only: poll the catalog fingerprint this often and push
     # notifications/tools/list_changed when it moves. 0 disables the poller, and
     # with it the tools_changed capability. Has no effect on the HTTP transport,

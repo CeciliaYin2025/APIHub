@@ -46,6 +46,10 @@ class DatabaseConfig:
     pool_min: int = 2
     pool_max: int = 10
     pool_increment: int = 1
+    # Seconds a caller waits for a free connection before being refused with
+    # PoolExhaustedError (HTTP 503). Only the MSSQL adapter enforces it today;
+    # Oracle and psycopg2 bring their own queueing behaviour.
+    pool_acquire_timeout: float = 10.0
     # MSSQL-specific: pin the TDS protocol version (e.g. "7.0" for SQL Server 2005,
     # whose login handshake otherwise hangs under modern FreeTDS auto-negotiation).
     tds_version: str = ""
@@ -147,6 +151,7 @@ class DatabaseRegistry:
                 pool_min=entry.get("pool_min", 2),
                 pool_max=entry.get("pool_max", 10),
                 pool_increment=entry.get("pool_increment", 1),
+                pool_acquire_timeout=float(entry.get("pool_acquire_timeout", 10.0)),
                 tds_version=str(entry.get("tds_version", "")),
             )
             self._configs[alias] = cfg
@@ -260,6 +265,7 @@ class DatabaseRegistry:
                 "pool_min": cfg.pool_min,
                 "pool_max": cfg.pool_max,
                 "pool_increment": cfg.pool_increment,
+                "pool_acquire_timeout": cfg.pool_acquire_timeout,
                 "tds_version": cfg.tds_version,
                 "pool_active": alias in self._pools,
             })

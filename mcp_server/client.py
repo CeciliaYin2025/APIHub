@@ -9,6 +9,8 @@ from collections.abc import Callable
 
 import httpx
 
+from mcp_server.config import mcp_settings
+
 
 class ApiHubError(Exception):
     """A REST call failed; the message is safe to surface to the MCP client."""
@@ -38,11 +40,12 @@ class ApiHubClient:
         *,
         headers_provider: Callable[[], dict] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        timeout: float | None = None,
     ):
         self._headers_provider = headers_provider or (lambda: {})
         self._http = httpx.AsyncClient(
             base_url=f"{base_url.rstrip('/')}/api/v1",
-            timeout=30.0,
+            timeout=mcp_settings.request_timeout_seconds if timeout is None else timeout,
             transport=transport,
         )
 
@@ -53,8 +56,8 @@ class ApiHubClient:
         """Raise ApiHubError if the REST API is not answering.
 
         Deliberately short-timeout and unauthenticated: the Hub's ``/health``
-        needs no credential, and a health probe must not inherit the 30 s
-        request timeout — a hung upstream would hang the probe with it.
+        needs no credential, and a health probe must not inherit the (much
+        longer) request timeout — a hung upstream would hang the probe with it.
         """
         await self._request("GET", "/health", timeout=timeout)
 

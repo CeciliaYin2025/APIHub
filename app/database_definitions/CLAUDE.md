@@ -9,7 +9,8 @@ Per-entry fields (loaded into `DatabaseConfig`):
 - `description`: shown in `GET /api/v1/databases` and the Admin UI DB selector.
 - Oracle: `dsn` (`host:port/service`).
 - PostgreSQL / MSSQL: `host`, `port`, `database`.
-- Common: `user`, `password`, `pool_min`, `pool_max`, `pool_increment` (Oracle only).
+- Common: `user`, `password`, `pool_min`, `pool_max`, `pool_increment` (Oracle only), `pool_acquire_timeout` (default 10s).
+- **`pool_max` is only a real ceiling on MSSQL and PostgreSQL.** Oracle's own pool queues on it; psycopg2's `ThreadedConnectionPool` raises at once; the MSSQL adapter bounds checkouts with a semaphore and, after `pool_acquire_timeout` seconds, refuses with `PoolExhaustedError` → **HTTP 503**. Refusing beats queueing: query endpoints are sync, so each waiter holds one of the process's worker threads, and one saturated alias can otherwise starve every other endpoint including login.
 
 Conventions to follow:
 
