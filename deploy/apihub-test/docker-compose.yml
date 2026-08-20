@@ -155,22 +155,21 @@ services:
 
   # ── long-running: Flower (Celery monitoring) ──────────────────────────────
   # Served through the gateway at /apihub-test/flower/ (see
-  # gateway-conf/apihub-test.conf). Flower has no auth of its own, so
+  # gateway-conf/apihub-test.conf). Uses the standalone image: flower is only
+  # in the app's [dev] extra, so the app image has no `celery flower` command.
+  # It monitors via the broker (CELERY_BROKER_URL from .env) and needs no app
+  # code — hence also no depends_on. Flower has no default auth, so
   # FLOWER_BASIC_AUTH (user:password in .env) is REQUIRED — the `:?`
   # interpolation makes compose refuse to start without it rather than expose
   # an unauthenticated dashboard. Task args are visible in this UI.
   apihub-test-flower:
-    image: oracle-api-hub:latest
+    image: mher/flower:2.0
     container_name: apihub-test-flower
     restart: unless-stopped
     env_file: [.env]
     networks: [gateway-net, redis-net]
-    command: ["celery", "-A", "app.tasks.celery_app", "flower",
-              "--port=5555", "--url-prefix=apihub-test/flower",
-              "--basic-auth=${FLOWER_BASIC_AUTH:?set FLOWER_BASIC_AUTH (user:password) in .env}"]
-    depends_on:
-      apihub-test-api:
-        condition: service_started
+    command: ["celery", "flower", "--port=5555", "--url_prefix=apihub-test/flower",
+              "--basic_auth=${FLOWER_BASIC_AUTH:?set FLOWER_BASIC_AUTH (user:password) in .env}"]
 
 networks:
   gateway-net: { external: true }
