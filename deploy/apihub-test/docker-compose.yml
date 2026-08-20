@@ -153,6 +153,25 @@ services:
       apihub-test-api:
         condition: service_started
 
+  # ── long-running: Flower (Celery monitoring) ──────────────────────────────
+  # Served through the gateway at /apihub-test/flower/ (see
+  # gateway-conf/apihub-test.conf). Flower has no auth of its own, so
+  # FLOWER_BASIC_AUTH (user:password in .env) is REQUIRED — the `:?`
+  # interpolation makes compose refuse to start without it rather than expose
+  # an unauthenticated dashboard. Task args are visible in this UI.
+  apihub-test-flower:
+    image: oracle-api-hub:latest
+    container_name: apihub-test-flower
+    restart: unless-stopped
+    env_file: [.env]
+    networks: [gateway-net, redis-net]
+    command: ["celery", "-A", "app.tasks.celery_app", "flower",
+              "--port=5555", "--url-prefix=apihub-test/flower",
+              "--basic-auth=${FLOWER_BASIC_AUTH:?set FLOWER_BASIC_AUTH (user:password) in .env}"]
+    depends_on:
+      apihub-test-api:
+        condition: service_started
+
 networks:
   gateway-net: { external: true }
   db-net:      { external: true }
