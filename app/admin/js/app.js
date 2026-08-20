@@ -342,6 +342,18 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// esc() does not escape double quotes (innerHTML round-trip leaves them as-is),
+// so attribute values like title="..." need this variant.
+function escAttr(s) {
+  return esc(s).replace(/"/g, '&quot;');
+}
+
+// One-line description cell: CSS clamps it (.cell-truncate), title shows the full text.
+function descCell(text, extraClass = '') {
+  const cls = ('cell-truncate ' + extraClass).trim();
+  return `<td class="${cls}" title="${escAttr(text || '')}">${esc(text || '—')}</td>`;
+}
+
 function syntaxHighlight(json) {
   if (typeof json !== 'string') json = JSON.stringify(json, null, 2);
   return json.replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
@@ -473,7 +485,7 @@ async function renderDashboard() {
           <tbody>${databases.map(d => `<tr>
             <td><strong>${esc(d.alias)}</strong>${d.alias === currentDb ? ' <span class="badge badge-blue">Active</span>' : ''}</td>
             <td><span class="badge ${d.db_type === 'oracle' ? 'badge-blue' : d.db_type === 'postgresql' ? 'badge-green' : 'badge-amber'}">${esc((d.db_type || 'oracle').toUpperCase())}</span></td>
-            <td>${esc(d.description || '—')}</td>
+            ${descCell(d.description)}
             ${dbConnCols ? `<td><code>${esc(d.dsn || (d.host ? d.host + ':' + d.port + '/' + d.database : '—'))}</code></td>
             <td>${esc(d.user)}</td>` : ''}
             <td id="dbstat-${d.alias}">Checking…</td>
@@ -867,7 +879,7 @@ async function renderRoles() {
           <tbody>${roles.map(r => `<tr>
             <td>${r.id}</td>
             <td><strong>${esc(r.name)}</strong></td>
-            <td>${esc(r.description || '—')}</td>
+            ${descCell(r.description)}
             <td>${(r.permissions || []).map(p => `<span class="tag">${esc(p.resource)}:${esc(p.action)}</span>`).join(' ') || '—'}</td>
             <td>
               <button class="btn btn-xs btn-secondary" onclick="openEditRoleModal(${r.id})">Edit</button>
@@ -1002,7 +1014,7 @@ async function renderPermissions() {
             <td>${p.id}</td>
             <td><span class="tag">${esc(p.resource)}</span></td>
             <td><span class="badge badge-blue">${esc(p.action)}</span></td>
-            <td>${esc(p.description || '—')}</td>
+            ${descCell(p.description)}
             <td>
               <button class="btn btn-xs btn-secondary" onclick="openEditPermModal(${p.id})">Edit</button>
               <button class="btn btn-xs btn-danger" onclick="deletePerm(${p.id}, '${esc(p.resource)}')">Delete</button>
@@ -1399,7 +1411,7 @@ function paintSqlDefTable() {
       <td>${d.enabled === false
             ? '<span class="badge badge-red">Disabled</span>'
             : '<span class="badge badge-green">Enabled</span>'}</td>
-      <td class="text-sm">${esc(d.description || '—')}</td>
+      ${descCell(d.description, 'text-sm')}
       <td><span class="tag">${esc(d.permission)}</span></td>
       <td>${Object.keys(d.params || {}).map(k => {
         const p = d.params[k];

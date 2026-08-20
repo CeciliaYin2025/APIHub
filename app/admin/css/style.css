@@ -159,6 +159,9 @@ a:hover { text-decoration: underline; }
 }
 .data-table tbody tr:hover { background: var(--gray-50); }
 .data-table tbody tr:last-child td { border-bottom: none; }
+.data-table td.cell-truncate {
+  max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* ── Split list (group picker on the left, its rows on the right) ─────── */
 .split-list { display: grid; grid-template-columns: minmax(200px, 260px) 1fr; align-items: stretch; }
