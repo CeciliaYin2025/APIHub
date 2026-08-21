@@ -616,11 +616,13 @@ DELETE FROM employees WHERE emp_id = :wh_emp_id
 **工具名稱衍生規則**（`mcp_server/naming.py`）：
 
 ```
-query_{sanitize(db_alias)}_{sanitize(definition_name)}   →  截斷至 64 字元
+query_{sanitize(db_alias)}_{sanitize(definition_name)}   →  截斷至 128 字元
 sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"，再去除頭尾 "_"
 ```
 
-64 與字元集皆源自 MCP／Anthropic 對工具名稱的限制 `^[a-zA-Z0-9_-]{1,64}$`。扣掉固定前綴 `query_` 與中間的 `_`，alias 與定義名稱**合計僅餘 57 字元**。
+128 為 MCP 規範對工具名稱長度的上限（規範同時允許 `.`，但既有名稱一律把 `.` 折成 `_`，改動會使已設定該工具的用戶端全部改名，故維持折疊）。扣掉固定前綴 `query_` 與中間的 `_`，alias 與定義名稱**合計餘 121 字元**。
+
+上限原為 64，沿用自已被取代的 Anthropic 工具名稱限制，也是截斷型撞名的主要來源。
 
 **三種撞名途徑：**
 
@@ -628,7 +630,7 @@ sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"
 |------|------|------|
 | 大小寫／字元折疊 | `EO Detail`、`EO_DETAIL`、`eo_detail` → `query_dw_eo_detail` | `sanitize()` 轉小寫並把空白等字元換成 `_`。`-` 被保留，故 `eo-detail` 不會撞 |
 | 分隔符歧義 | (`pg_test`, `employees`) 與 (`pg`, `test_employees`) → `query_pg_test_employees` | alias 與定義名稱皆可含 `_`，兩者又以 `_` 相接，**可跨資料來源撞名** |
-| 長度截斷 | `..._region_v2` 與 `..._region_v3` → 同一個 64 字元名稱 | 版本號位於結尾者最易中招 |
+| 長度截斷 | `..._region_v2` 與 `..._region_v3` → 同一個 128 字元名稱 | 版本號位於結尾者最易中招 |
 
 **工具描述組成**（`mcp_server/catalog.py::build_description`，本檢視不涵蓋）：標頭為 `[alias · group_name]`（`group_name` 為空時退為 `[alias]`），其後接 `description`（為空時退為 `Run registered query '<name>'`），最後若 `result_description` 非空則另起一行 `Returns: ...`。`group_name` 讓模型拿到維運者自己的分類而非從名稱猜測；`result_description` 說明查詢回傳什麼（通常是欄位清單），**無任何驗證機制**，純粹是寫給 LLM 看的文件 —— 不寫的話，模型只能先跑一次查詢才知道結果長什麼樣。
 

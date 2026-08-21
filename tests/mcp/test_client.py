@@ -137,6 +137,83 @@ async def test_connection_error_maps_to_apihub_error():
     await client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_describe_table_rejects_path_traversal():
+    """A model-supplied table name must not be able to steer the proxy elsewhere."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    client = make_client(handler)
+    with pytest.raises(ApiHubError) as exc:
+        await client.describe_table("orcl", "../../../auth/users")
+    assert exc.value.status_code == 400
+    assert calls == []  # rejected before any HTTP request went out
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_db_alias_rejected_on_every_path_building_call():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    client = make_client(handler)
+    for call in (
+        lambda: client.list_definitions("../databases"),
+        lambda: client.describe_table("../../auth/users", "orders"),
+        lambda: client.execute_query("orcl/../..", "orders", {}),
+    ):
+        with pytest.raises(ApiHubError) as exc:
+            await call()
+        assert exc.value.status_code == 400
+    assert calls == []
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_schema_qualified_and_oracle_identifier_chars_still_allowed():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={})
+
+    client = make_client(handler)
+    await client.describe_table("orcl", "HR.EMPLOYEES")
+    await client.describe_table("orcl", "SYS$AUDIT#LOG")
+    assert calls == [
+        "/api/v1/orcl/schemas/describe/HR.EMPLOYEES",
+        "/api/v1/orcl/schemas/describe/SYS$AUDIT#LOG",
+    ]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_server_error_detail_is_not_forwarded_to_the_model():
+    """5xx bodies carry driver/schema internals; a 4xx detail is actionable and stays."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"detail": "ORA-00942: table or view does not exist [SCHEMA.SECRET_TABLE]"})
+
+    client = make_client(handler)
+    with pytest.raises(ApiHubError) as exc:
+        await client.execute_query("orcl", "orders", {})
+    assert exc.value.status_code == 500
+    assert "ORA-00942" not in exc.value.detail
+    assert "SECRET_TABLE" not in exc.value.detail
+    await client.aclose()
+
+
+def test_request_timeout_is_configurable():
+    client = ApiHubClient("http://hub", timeout=5.0)
+    assert client._http.timeout.read == 5.0
+
+
 def test_static_headers_empty_key_yields_no_header():
     assert static_headers("")() == {}
     assert static_headers("sk-x")() == {"X-API-Key": "sk-x"}

@@ -8,7 +8,7 @@ self-describing tools instead of a generic execute(name, params) black box.
 import logging
 from dataclasses import dataclass
 
-from mcp.types import Tool
+from mcp.types import Tool, ToolAnnotations
 
 from mcp_server.client import ApiHubClient, ApiHubError
 from mcp_server.naming import (  # noqa: F401  (sanitize/tool_name re-exported: long-standing import path)
@@ -41,6 +41,62 @@ PARAM_TYPE_HINT = {
 # belong in a model's context (that is what scripts/extract_query.py is for).
 # "top_n" adds nothing over "page" with a page_size.
 FETCH_MODES = ("page", "count", "one")
+
+# Mirrors app/schemas/query.py::QueryResponse. Deliberately loose — the SDK
+# validates every result against this schema and fails the call on a mismatch,
+# so only the fields a caller can actually rely on are required, and unlisted
+# fetch-mode fields (batch_offset, has_more, ...) are allowed through.
+QUERY_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "success": {"type": "boolean"},
+        "query_name": {"type": "string"},
+        "total": {"type": "integer", "description": "Rows matching the query before paging"},
+        "page": {"type": ["integer", "null"]},
+        "page_size": {"type": ["integer", "null"]},
+        "columns": {"type": "array", "items": {"type": "string"}, "description": "Column names, in order"},
+        "data": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": "One object per row, keyed by column name",
+        },
+    },
+    "required": ["success", "total", "columns", "data"],
+    "additionalProperties": True,
+}
+
+
+def read_only_annotations() -> ToolAnnotations:
+    """Annotations for a tool that only reads.
+
+    ``openWorldHint`` is true because the answer comes from a live external
+    database, not from a closed set the client could predict.
+    """
+    return ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+
+
+PAGE_ARG = "page"
+PAGE_SIZE_ARG = "page_size"
+
+
+def _free_arg_name(base: str, declared: set[str]) -> str:
+    name = base
+    while name in declared:
+        name = f"_{name}"
+    return name
+
+
+def pagination_arg_names(definition: dict) -> tuple[str, str]:
+    """Argument names for the injected paging knobs.
+
+    A definition is free to declare a bind parameter of its own called ``page``
+    or ``page_size``. Injecting the paging knobs under those names would both
+    overwrite the declared JSON schema and make ``dispatch_tool`` swallow the
+    caller's bind value, so the knobs step aside with an underscore prefix
+    instead. The definition's own parameters always keep the plain name.
+    """
+    declared = set(definition.get("params") or {})
+    return _free_arg_name(PAGE_ARG, declared), _free_arg_name(PAGE_SIZE_ARG, declared)
 
 
 def param_schema(pdef: dict) -> dict:
@@ -105,8 +161,9 @@ def build_tool(db_alias: str, definition: dict, page_size_max: int) -> Tool:
             "one: the first row only; errors if the query matches nothing."
         ),
     }
-    properties["page"] = {"type": "integer", "minimum": 1, "default": 1, "description": "Result page number"}
-    properties["page_size"] = {
+    page_arg, page_size_arg = pagination_arg_names(definition)
+    properties[page_arg] = {"type": "integer", "minimum": 1, "default": 1, "description": "Result page number"}
+    properties[page_size_arg] = {
         "type": "integer",
         "minimum": 1,
         "maximum": page_size_max,
@@ -115,6 +172,7 @@ def build_tool(db_alias: str, definition: dict, page_size_max: int) -> Tool:
     }
     return Tool(
         name=tool_name(db_alias, definition["name"]),
+        title=f"[{db_alias}] {definition['name']}",
         description=build_description(db_alias, definition),
         inputSchema={
             "type": "object",
@@ -122,6 +180,8 @@ def build_tool(db_alias: str, definition: dict, page_size_max: int) -> Tool:
             "required": required,
             "additionalProperties": False,
         },
+        outputSchema=QUERY_OUTPUT_SCHEMA,
+        annotations=read_only_annotations(),
     )
 
 
@@ -129,6 +189,9 @@ def build_tool(db_alias: str, definition: dict, page_size_max: int) -> Tool:
 class QueryTarget:
     db_alias: str
     query_name: str
+    # Which argument names carry paging for this tool — see pagination_arg_names().
+    page_key: str = PAGE_ARG
+    page_size_key: str = PAGE_SIZE_ARG
 
 
 class ToolCatalog:
@@ -140,7 +203,7 @@ class ToolCatalog:
       (``permitted_only``), and one process serves every caller on the HTTP
       transport, so a cached copy would hand whichever caller populated it to
       everyone else — the names, descriptions and parameters of tools they
-      cannot run. ``tools()` therefore fetches on every call and returns the
+      cannot run. ``tools()`` therefore fetches on every call and returns the
       result without storing it; there is no field here for a later change to
       accidentally start sharing.
     - **The name → target map is shared and cumulative.** It is derived from
@@ -168,6 +231,7 @@ class ToolCatalog:
         self._page_size_max = page_size_max
         self._targets: dict[str, QueryTarget] = {}
         self._version: str | None = None
+        self._last_refresh_names: set[str] | None = None
 
     @property
     def page_size_max(self) -> int:
@@ -201,9 +265,20 @@ class ToolCatalog:
         Returned straight from this load rather than read back off the instance:
         two callers loading concurrently would otherwise be able to read each
         other's counts.
+
+        ``changed`` compares against the previous *refresh*, not the previous
+        load — plain ``tools/list`` calls (including the SDK's own outputSchema
+        lookup during ``tools/call``) must not eat a change before the refresh
+        that is supposed to report it. On stdio (one caller) the comparison is
+        exact; on HTTP two callers with different permissions can flip it
+        spuriously, which costs the client one extra ``tools/list`` — the cheap
+        side to err on.
         """
-        _, diagnostics = await self._load()
-        return diagnostics
+        tools, diagnostics = await self._load()
+        names = {t.name for t in tools}
+        changed = self._last_refresh_names is None or names != self._last_refresh_names
+        self._last_refresh_names = names
+        return {**diagnostics, "changed": changed}
 
     async def _load(self) -> tuple[list[Tool], dict]:
         # Read the fingerprint *before* the definitions: a change landing
@@ -257,8 +332,14 @@ class ToolCatalog:
                         winner.query_name,
                     )
                     continue
+                page_key, page_size_key = pagination_arg_names(definition)
                 tools.append(tool)
-                targets[tool.name] = QueryTarget(db_alias=alias, query_name=definition["name"])
+                targets[tool.name] = QueryTarget(
+                    db_alias=alias,
+                    query_name=definition["name"],
+                    page_key=page_key,
+                    page_size_key=page_size_key,
+                )
 
         # Collisions are detected against *this* load's names only — matching
         # against the accumulated map would report every tool as colliding with

@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from mcp_server.config import mcp_settings
-from mcp_server.oauth import TokenExchanger, challenge_header, protected_resource_metadata
+from mcp_server.oauth import Exchange, TokenExchanger, challenge_header, protected_resource_metadata
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +22,7 @@ def test_metadata_and_challenge():
     assert meta == {
         "resource": "https://isap.example.com/apihub/mcp",
         "authorization_servers": ["https://isap.example.com/auth"],
+        "bearer_methods_supported": ["header"],
         "scopes_supported": ["openid", "profile", "email"],
     }
     assert 'resource_metadata="https://isap.example.com/apihub/mcp/.well-known/oauth-protected-resource"' in (
@@ -37,6 +38,20 @@ def test_metadata_advertises_a_non_empty_scope_list():
     scopes = protected_resource_metadata()["scopes_supported"]
     assert scopes
     assert "offline_access" not in scopes
+
+
+def test_scopes_are_advertised_when_configured(monkeypatch):
+    """Least privilege: tell the client which scopes to ask for instead of
+    letting it request everything the AS offers."""
+    monkeypatch.setattr(mcp_settings, "oauth_scopes", "apihub:read apihub:query")
+    assert protected_resource_metadata()["scopes_supported"] == ["apihub:read", "apihub:query"]
+    assert 'scope="apihub:read apihub:query"' in challenge_header()
+
+
+def test_default_scopes_fill_in_when_not_configured():
+    """Empty config still advertises the built-in list — see SCOPES_SUPPORTED."""
+    assert protected_resource_metadata()["scopes_supported"] == ["openid", "profile", "email"]
+    assert 'scope="openid profile email"' in challenge_header()
 
 
 def _transport(introspect_response, bridge_response=None, calls=None):
@@ -56,27 +71,138 @@ def _transport(introspect_response, bridge_response=None, calls=None):
     return httpx.MockTransport(handler)
 
 
+AUD = "https://isap.example.com/apihub/mcp"
+
+
 @pytest.mark.asyncio
 async def test_active_token_exchanged_for_local_jwt():
     """Bridge mode: MCP_BRIDGE_SECRET set, so claims are traded for a local JWT."""
-    exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice", "email": "a@x.com"}))
-    assert await exchanger.resolve("opaque-token") == "local-jwt"
+    exchanger = TokenExchanger(
+        transport=_transport({"active": True, "username": "alice", "email": "a@x.com", "aud": AUD})
+    )
+    result = await exchanger.exchange("opaque-token")
+    assert result.jwt == "local-jwt"
     await exchanger.aclose()
 
 
 @pytest.mark.asyncio
 async def test_inactive_token_returns_none():
     exchanger = TokenExchanger(transport=_transport({"active": False}))
-    assert await exchanger.resolve("bad-token") is None
+    assert await exchanger.exchange("bad-token") == Exchange(jwt=None, status=401)
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_token_issued_for_another_resource_is_rejected():
+    """An active isap-auth token minted for a different app on the same gateway."""
+    calls: list[str] = []
+    exchanger = TokenExchanger(
+        transport=_transport(
+            {"active": True, "username": "alice", "aud": "https://isap.example.com/itpm/mcp"},
+            calls=calls,
+        )
+    )
+    assert (await exchanger.exchange("other-app-token")).status == 401
+    assert not [c for c in calls if "sso-token" in c]  # never reached the identity bridge
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_token_without_any_audience_claim_is_rejected():
+    exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice"}))
+    assert (await exchanger.exchange("audience-less-token")).status == 401
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_audience_accepted_from_list_valued_aud():
+    exchanger = TokenExchanger(
+        transport=_transport(
+            {
+                "active": True,
+                "username": "alice",
+                "aud": ["https://isap.example.com/itpm/mcp", "https://isap.example.com/apihub/mcp"],
+            }
+        )
+    )
+    assert (await exchanger.exchange("multi-aud-token")).jwt == "local-jwt"
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_audience_accepted_from_space_delimited_resource_claim():
+    exchanger = TokenExchanger(
+        transport=_transport(
+            {
+                "active": True,
+                "username": "alice",
+                "resource": "https://isap.example.com/itpm/mcp https://isap.example.com/apihub/mcp",
+            }
+        )
+    )
+    assert (await exchanger.exchange("resource-claim-token")).jwt == "local-jwt"
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_explicit_audience_setting_overrides_public_url(monkeypatch):
+    monkeypatch.setattr(mcp_settings, "oauth_audience", "apihub-mcp")
+    exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice", "aud": "apihub-mcp"}))
+    assert (await exchanger.exchange("token")).jwt == "local-jwt"
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unreachable_upstream_is_retryable_and_not_cached():
+    """A network blip is not a verdict on the token — caching it would lock the
+    caller out for 60 s after the upstream recovered."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        raise httpx.ConnectError("boom")
+
+    exchanger = TokenExchanger(transport=httpx.MockTransport(handler))
+    assert await exchanger.exchange("tok") == Exchange(jwt=None, status=503)
+    await exchanger.exchange("tok")
+    assert len(calls) == 2
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bridge_refusal_is_forbidden_not_unauthorized():
+    """The token authenticated fine; the person simply has no account here."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "introspect" in str(request.url):
+            return httpx.Response(200, json={"active": True, "username": "alice", "aud": AUD})
+        return httpx.Response(403, json={"detail": "user not provisioned"})
+
+    exchanger = TokenExchanger(transport=httpx.MockTransport(handler))
+    assert await exchanger.exchange("tok") == Exchange(jwt=None, status=403)
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bridge_server_error_is_retryable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "introspect" in str(request.url):
+            return httpx.Response(200, json={"active": True, "username": "alice", "aud": AUD})
+        return httpx.Response(500, json={"detail": "boom"})
+
+    exchanger = TokenExchanger(transport=httpx.MockTransport(handler))
+    assert (await exchanger.exchange("tok")).status == 503
     await exchanger.aclose()
 
 
 @pytest.mark.asyncio
 async def test_result_cached_60s():
     calls: list[str] = []
-    exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice", "email": ""}, calls=calls))
-    await exchanger.resolve("opaque-token")
-    await exchanger.resolve("opaque-token")
+    exchanger = TokenExchanger(
+        transport=_transport({"active": True, "username": "alice", "email": "", "aud": AUD}, calls=calls)
+    )
+    await exchanger.exchange("opaque-token")
+    await exchanger.exchange("opaque-token")
     assert len([c for c in calls if "introspect" in c]) == 1  # second call served from cache
     await exchanger.aclose()
 
@@ -90,9 +216,9 @@ async def test_passthrough_forwards_the_callers_own_token(monkeypatch):
     caller's credential is forwarded unchanged and the bridge is never called."""
     monkeypatch.setattr(mcp_settings, "bridge_secret", "")
     calls: list[str] = []
-    exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice"}, calls=calls))
+    exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice", "aud": AUD}, calls=calls))
 
-    assert await exchanger.resolve("opaque-token") == "opaque-token"
+    assert (await exchanger.exchange("opaque-token")).jwt == "opaque-token"
     assert not [c for c in calls if "sso-token" in c]
     await exchanger.aclose()
 
@@ -105,6 +231,8 @@ async def test_passthrough_still_gates_on_introspection(monkeypatch):
     calls: list[str] = []
     exchanger = TokenExchanger(transport=_transport({"active": False}, calls=calls))
 
-    assert await exchanger.resolve("dead-token") is None
+    result = await exchanger.exchange("dead-token")
+    assert result.jwt is None
+    assert result.status == 401
     assert [c for c in calls if "introspect" in c]
     await exchanger.aclose()

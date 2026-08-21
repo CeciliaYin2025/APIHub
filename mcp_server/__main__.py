@@ -72,6 +72,7 @@ async def main() -> None:
     client = ApiHubClient(
         mcp_settings.api_hub_url,
         headers_provider=static_headers(mcp_settings.api_hub_api_key),
+        timeout=mcp_settings.request_timeout_seconds,
     )
     aliases = [a.strip() for a in mcp_settings.db_aliases.split(",") if a.strip()] or None
     catalog = ToolCatalog(

@@ -10,9 +10,16 @@ the MCP server actually serves.
 
 import re
 
-# Anthropic/MCP tool names must match ^[a-zA-Z0-9_-]{1,64}$ — hence both the
-# character-class scrub below and the hard length cap.
-TOOL_NAME_MAX_LEN = 64
+# MCP tool names should be 1-128 characters. The scrub below keeps the name
+# inside [a-zA-Z0-9_-]; the spec also permits ".", but folding it to "_" is what
+# every existing tool name was built with, and switching now would rename them
+# under clients that have them configured.
+#
+# The cap used to be 64, inherited from a superseded Anthropic tool-name limit.
+# That was the main manufacturer of collisions: two definitions differing only
+# in a suffix past character 64 truncated to the same name, and catalog.py then
+# silently dropped the loser. 128 is what the current spec allows.
+TOOL_NAME_MAX_LEN = 128
 
 _NAME_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 

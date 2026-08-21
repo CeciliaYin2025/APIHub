@@ -6,6 +6,7 @@ import pytest
 from mcp_server.client import ApiHubClient, ApiHubError
 from mcp_server.config import mcp_settings
 from mcp_server.http_app import OAuthGateMiddleware, create_http_app, passthrough_headers
+from mcp_server.oauth import Exchange
 
 
 async def _ok_ping(self, timeout: float = 3.0) -> None:
@@ -24,11 +25,12 @@ def _settings(monkeypatch):
 
 
 class _FakeExchanger:
-    def __init__(self, result):
+    def __init__(self, result, failure=None):
         self._result = result
+        self._failure = failure or Exchange(jwt=None, status=401)
 
-    async def resolve(self, token):
-        return self._result if token == "good" else None
+    async def exchange(self, token):
+        return Exchange(jwt=self._result) if token == "good" else self._failure
 
 
 def _inner_capture(captured):
@@ -154,6 +156,39 @@ async def test_public_routes_stay_public_behind_a_root_path(path):
     start = next(m for m in sent if m["type"] == "http.response.start")
     assert start["status"] == 200
     assert captured["headers"] == {}
+
+
+@pytest.mark.asyncio
+async def test_upstream_outage_is_503_not_401():
+    """A 401 would send the client round the whole authorization flow again for
+    a problem no new token can fix."""
+    app = OAuthGateMiddleware(_inner_capture({}), _FakeExchanger("jwt", failure=Exchange(jwt=None, status=503)))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp") as client:
+        resp = await client.post("/mcp", headers={"Authorization": "Bearer whatever"})
+    assert resp.status_code == 503
+    assert "WWW-Authenticate" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_unprovisioned_user_is_403():
+    app = OAuthGateMiddleware(_inner_capture({}), _FakeExchanger("jwt", failure=Exchange(jwt=None, status=403)))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp") as client:
+        resp = await client.post("/mcp", headers={"Authorization": "Bearer whatever"})
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_bearer_scheme_is_matched_case_insensitively():
+    """RFC 6750 auth-scheme tokens are case-insensitive."""
+    captured = {}
+    app = OAuthGateMiddleware(_inner_capture(captured), _FakeExchanger("local-jwt"))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp") as client:
+        resp = await client.post("/mcp", headers={"Authorization": "bearer good"})
+    assert resp.status_code == 200
+    assert captured["headers"] == {"Authorization": "Bearer local-jwt"}
 
 
 @pytest.mark.asyncio

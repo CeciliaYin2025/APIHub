@@ -5,7 +5,7 @@ whose derived name is already taken — in its own process, with no log line and
 no trace in the REST API. A definition can therefore be healthy in the Admin UI
 and served fine over REST while being invisible to every LLM. These tests pin
 the three ways that happens (case/character folding, the ambiguous ``_``
-separator between alias and name, and the 64-character cap) and pin the view to
+separator between alias and name, and the length cap) and pin the view to
 the same naming module the MCP server uses, so the two cannot drift apart.
 """
 
@@ -112,13 +112,13 @@ def test_alias_order_decides_which_definition_survives(monkeypatch):
 
 
 def test_long_names_are_truncated_and_flagged(monkeypatch):
-    v2 = "monthly_shipment_reconciliation_by_customer_and_region_v2"
-    v3 = "monthly_shipment_reconciliation_by_customer_and_region_v3"
+    base = "monthly_shipment_reconciliation_by_customer_and_region_" * 3  # past the 128 cap
+    v2, v3 = f"{base}v2", f"{base}v3"
     view = _view(monkeypatch, ["DW"], {"DW": [_defn(v2, "DW"), _defn(v3, "DW")]})
 
     for row in view["tools"]:
         assert row["truncated"] is True
-        assert len(row["tool_name"]) == view["tool_name_max_len"] == 64
+        assert len(row["tool_name"]) == view["tool_name_max_len"] == 128
     # The distinguishing suffix is exactly what the cap removes.
     assert not view["tools"][0]["tool_name"].endswith(("v2", "v3"))
     assert view["summary"] == {"definitions": 2, "exposed": 1, "shadowed": 1, "disabled": 0, "truncated": 2}

@@ -13,7 +13,8 @@ let mcpToolsFilter = '';
 let mcpToolsProblemsOnly = false;
 
 /* A row worth an operator's attention: dropped outright, or renamed by the
- * 64-character cap in a way that may have eaten what made it distinct. */
+ * length cap in a way that may have eaten what made it distinct. The cap itself
+ * comes from the API response (tool_name_max_len), never hardcoded here. */
 function mcpToolsIsProblem(t) {
   return !t.exposed || t.truncated;
 }

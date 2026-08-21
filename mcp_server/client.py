@@ -5,7 +5,9 @@ every tool call is proxied through the REST API so RBAC, audit logging, and
 rate limiting apply exactly as they do for any other API consumer.
 """
 
+import re
 from collections.abc import Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -19,6 +21,22 @@ class ApiHubError(Exception):
         self.status_code = status_code
         self.detail = detail
         super().__init__(f"[{status_code}] {detail}")
+
+
+# Path segments below are built from LLM-supplied tool arguments. Without these
+# guards a table name of "../../../auth/users" collapses (httpx normalises "..")
+# into a request against a completely different REST endpoint, carrying the
+# caller's credential with it. Validate first, then percent-encode — encoding
+# alone would still let "%2E%2E" style input through on a lenient server, and
+# validation alone leaves "#" to be swallowed as a URL fragment.
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_TABLE_RE = re.compile(r"^[A-Za-z0-9_$#]{1,128}(?:\.[A-Za-z0-9_$#]{1,128})?$")
+
+
+def _segment(value: str, pattern: re.Pattern, kind: str) -> str:
+    if not isinstance(value, str) or not pattern.match(value):
+        raise ApiHubError(400, f"Invalid {kind}: {value!r}")
+    return quote(value, safe="")
 
 
 def static_headers(api_key: str) -> Callable[[], dict]:
@@ -66,6 +84,11 @@ class ApiHubClient:
             resp = await self._http.request(method, url, headers=self._headers_provider(), **kwargs)
         except httpx.HTTPError as e:
             raise ApiHubError(0, f"API Hub unreachable: {e}") from e
+        if resp.status_code >= 500:
+            # 5xx bodies carry driver text and object names (ORA-00942 and the
+            # like). A 4xx detail is actionable feedback the model can correct
+            # from; a 5xx one is an internal detail it can do nothing with.
+            raise ApiHubError(resp.status_code, "API Hub returned a server error")
         if resp.status_code >= 400:
             try:
                 detail = resp.json().get("detail", resp.text)
@@ -87,7 +110,11 @@ class ApiHubClient:
         # unfiltered list would hand every caller the names, descriptions and
         # parameters of definitions they hold no query:<name> permission for.
         # Execution was always gated; discovery was not.
-        return await self._request("GET", f"/{db}/queries/definitions", params={"permitted_only": "true"})
+        return await self._request(
+            "GET",
+            f"/{_segment(db, _ALIAS_RE, 'database alias')}/queries/definitions",
+            params={"permitted_only": "true"},
+        )
 
     async def execute_query(
         self,
@@ -101,6 +128,7 @@ class ApiHubClient:
     ) -> dict:
         # page/page_size are always sent: the REST schema carries them for every
         # mode and ignores them outside "page", so there is nothing to branch on.
+        db_seg = _segment(db, _ALIAS_RE, "database alias")
         payload = {
             "query_name": query_name,
             "params": params,
@@ -108,7 +136,9 @@ class ApiHubClient:
             "page": page,
             "page_size": page_size,
         }
-        return await self._request("POST", f"/{db}/queries/execute", json=payload)
+        return await self._request("POST", f"/{db_seg}/queries/execute", json=payload)
 
     async def describe_table(self, db: str, table: str) -> dict:
-        return await self._request("GET", f"/{db}/schemas/describe/{table}")
+        db_seg = _segment(db, _ALIAS_RE, "database alias")
+        table_seg = _segment(table, _TABLE_RE, "table name")
+        return await self._request("GET", f"/{db_seg}/schemas/describe/{table_seg}")

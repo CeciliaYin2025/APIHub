@@ -14,8 +14,10 @@ without replacing the passthrough with per-session credential binding
 
 import contextlib
 import contextvars
+from urllib.parse import urlparse
 
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
@@ -23,7 +25,7 @@ from starlette.routing import Mount, Route
 from mcp_server.catalog import ToolCatalog
 from mcp_server.client import ApiHubClient, ApiHubError
 from mcp_server.config import mcp_settings
-from mcp_server.oauth import TokenExchanger, challenge_header, protected_resource_metadata
+from mcp_server.oauth import Exchange, TokenExchanger, challenge_header, protected_resource_metadata
 from mcp_server.server import create_server
 
 _request_headers: contextvars.ContextVar[dict] = contextvars.ContextVar("mcp_request_headers", default={})
@@ -95,26 +97,64 @@ class OAuthGateMiddleware:
             return
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         auth = headers.get("authorization", "")
-        credential = None
-        if auth.startswith("Bearer "):
-            credential = await self.exchanger.resolve(auth[len("Bearer ") :])
-        if credential is None:
-            response = Response(
-                status_code=401,
-                content=b"",
-                headers={"WWW-Authenticate": challenge_header()},
-            )
-            await response(scope, receive, send)
+        result = Exchange(status=401)
+        if auth.lower().startswith("bearer "):  # RFC 6750: the scheme is case-insensitive
+            result = await self.exchanger.exchange(auth[len("bearer ") :])
+        if result.jwt is None:
+            # Only an actual authentication failure gets a challenge. Answering
+            # one for a 503 would have the client re-run the whole authorization
+            # flow against an upstream that is simply down.
+            challenge = {"WWW-Authenticate": challenge_header()} if result.status == 401 else {}
+            await Response(status_code=result.status, content=b"", headers=challenge)(scope, receive, send)
             return
-        token = _request_headers.set({"Authorization": f"Bearer {credential}"})
+        token = _request_headers.set({"Authorization": f"Bearer {result.jwt}"})
         try:
             await self.app(scope, receive, send)
         finally:
             _request_headers.reset(token)
 
 
+def _csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def transport_security() -> TransportSecuritySettings | None:
+    """Origin/Host allow-lists for the MCP endpoint, or None to leave checks off.
+
+    The spec requires servers to validate ``Origin`` (403 on mismatch) so a
+    browser on another site cannot reach the endpoint by DNS rebinding. The SDK
+    gates Origin *and* Host behind a single flag, and an empty Host allow-list
+    rejects every request with 421 — so the lists are derived from
+    ``MCP_PUBLIC_URL`` rather than requiring operators to remember two more env
+    vars, with ``MCP_ALLOWED_HOSTS`` / ``MCP_ALLOWED_ORIGINS`` as overrides.
+    With nothing configured at all (local development) the checks stay off,
+    which matches the SDK default and keeps `uvicorn mcp_server.http_app:app`
+    usable without ceremony.
+
+    A request carrying no ``Origin`` header is always allowed — that is every
+    non-browser MCP client, which is not the threat being addressed here.
+    """
+    hosts = _csv(mcp_settings.allowed_hosts)
+    origins = _csv(mcp_settings.allowed_origins)
+    parsed = urlparse(mcp_settings.public_url)
+    if parsed.scheme and parsed.netloc:
+        hosts = hosts or [parsed.netloc, f"{parsed.netloc}:*"]
+        origins = origins or [f"{parsed.scheme}://{parsed.netloc}", f"{parsed.scheme}://{parsed.netloc}:*"]
+    if not hosts:
+        return None
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
+
+
 def create_http_app():
-    client = ApiHubClient(mcp_settings.api_hub_url, headers_provider=passthrough_headers)
+    client = ApiHubClient(
+        mcp_settings.api_hub_url,
+        headers_provider=passthrough_headers,
+        timeout=mcp_settings.request_timeout_seconds,
+    )
     aliases = [a.strip() for a in mcp_settings.db_aliases.split(",") if a.strip()] or None
     catalog = ToolCatalog(
         client,
@@ -122,7 +162,11 @@ def create_http_app():
         page_size_max=mcp_settings.page_size_max,
     )
     server = create_server(client, catalog)
-    session_manager = StreamableHTTPSessionManager(app=server, stateless=True)
+    session_manager = StreamableHTTPSessionManager(
+        app=server,
+        stateless=True,
+        security_settings=transport_security(),
+    )
 
     async def handle_mcp(scope, receive, send):
         await session_manager.handle_request(scope, receive, send)

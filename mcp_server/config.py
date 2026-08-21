@@ -40,6 +40,19 @@ class McpSettings(BaseSettings):
     # unchanged and the Hub validates it itself. Set it only for a Hub that
     # cannot accept isap-auth tokens directly — see mcp_server/oauth.py.
     bridge_secret: str = ""
+    # Audience this server accepts in incoming tokens. Empty = use public_url.
+    # A token whose aud/resource claim does not name us is rejected (MCP spec:
+    # servers MUST validate that tokens were issued specifically for them).
+    oauth_audience: str = ""
+    # Scopes advertised in the resource metadata and the 401 challenge, so
+    # clients request these rather than everything the AS offers. Space- or
+    # comma-separated; empty means advertise none.
+    oauth_scopes: str = ""
+
+    # DNS-rebinding protection for the HTTP transport (comma-separated).
+    # Both default to values derived from public_url — see http_app.transport_security().
+    allowed_hosts: str = ""
+    allowed_origins: str = ""
 
     model_config = {"env_prefix": "MCP_", "env_file": ".env.mcp", "env_file_encoding": "utf-8"}
 
