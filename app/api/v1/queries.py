@@ -20,6 +20,7 @@ from app.models.sql_definition import SqlDefinitionModel
 from app.models.user import User
 from app.schemas.query import QueryRequest, QueryResponse
 from app.schemas.sql_definition import SqlDefinitionCreate, SqlDefinitionOut, SqlDefinitionUpdate
+from app.services import eo_field_views
 from app.services.auth_service import PermissionChecker, get_current_user, has_permission
 from app.services.query_service import execute_query
 from app.services.sql_registry import sql_registry
@@ -89,6 +90,11 @@ def list_definitions(
             "params": {
                 k: {"type": v.type, "required": v.required, "description": v.description} for k, v in d.params.items()
             },
+            # Present only on definitions with an audience-specific column set
+            # (today: eo_summary). The MCP catalog turns this into the tool's
+            # `view` argument — it is how the MCP server learns which tools have
+            # views without importing app/, which it must never do.
+            "views": list(eo_field_views.VIEWS) if eo_field_views.is_governed(d.name) else None,
         }
         for d in definitions
     ]
@@ -434,8 +440,12 @@ def execute(
     - **one**: exactly one row (404 if none).
     - **count**: matching row count only (``total``), no data returned.
     """
-    record_audit(request, "query", payload.query_name,
-                 params={"params": payload.params, "fetch_mode": payload.fetch_mode})
+    # `view` only when the caller actually sent one — every audit row carrying a
+    # null key would bloat a table that is already unbounded by design.
+    audit_params = {"params": payload.params, "fetch_mode": payload.fetch_mode}
+    if payload.view is not None:
+        audit_params["view"] = payload.view
+    record_audit(request, "query", payload.query_name, params=audit_params)
     definition = sql_registry.get(payload.query_name, db_alias=db)
     if not definition:
         raise HTTPException(
@@ -474,9 +484,22 @@ def execute(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query execution error: {e}")
 
+    # Audience view. Applied AFTER execution, not in the SQL: the definition is
+    # `SELECT ep.*` and MSSQL cannot vary a column list without dynamic SQL, so
+    # projecting here keeps one definition serving both audiences. The caller's
+    # permissions can only narrow what they asked for, never widen it.
+    columns, rows = result["columns"], result["data"]
+    view = view_downgraded = masked = None
+    if eo_field_views.is_governed(payload.query_name):
+        try:
+            view, view_downgraded = eo_field_views.effective_view(current_user, payload.view)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        columns, rows, masked = eo_field_views.apply_view(payload.query_name, columns, rows, view)
+
     # count mode returns no rows, so the matching total is the meaningful
     # volume figure for the report.
-    record_audit(request, result_rows=result["total"] if payload.fetch_mode == "count" else len(result["data"]))
+    record_audit(request, result_rows=result["total"] if payload.fetch_mode == "count" else len(rows))
 
     return QueryResponse(
         query_name=payload.query_name,
@@ -487,6 +510,9 @@ def execute(
         batch_offset=result.get("batch_offset"),
         batch_size=result.get("batch_size"),
         has_more=result.get("has_more"),
-        columns=result["columns"],
-        data=result["data"],
+        columns=columns,
+        data=rows,
+        view=view,
+        view_downgraded=view_downgraded,
+        masked_columns=masked or None,
     )

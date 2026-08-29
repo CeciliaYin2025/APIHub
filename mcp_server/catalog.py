@@ -161,6 +161,25 @@ def build_tool(db_alias: str, definition: dict, page_size_max: int) -> Tool:
             "one: the first row only; errors if the query matches nothing."
         ),
     }
+    # Definitions with an audience-specific column set advertise it as `views`
+    # (see app/api/v1/queries.py::list_definitions). Only those get the argument:
+    # offering `view` on a tool that ignores it invites the model to send it
+    # everywhere.
+    views = definition.get("views")
+    if views:
+        properties["view"] = {
+            "type": "string",
+            "enum": list(views),
+            "default": "mc",
+            "description": (
+                "Audience column set. 'mc' (default) is the full MC report; 'sales' is the "
+                "narrower set sent to Sales, which drops the loss-evaluation, excess and "
+                "stock-structure columns. The two use DIFFERENT NAMES for the same column — "
+                "MC 'Obsolete All OH Amt' is Sales 'E&O OH (All) Amt'. A caller restricted to "
+                "the sales view gets it whatever they ask for; the response says which was applied."
+            ),
+        }
+
     page_arg, page_size_arg = pagination_arg_names(definition)
     properties[page_arg] = {"type": "integer", "minimum": 1, "default": 1, "description": "Result page number"}
     properties[page_size_arg] = {
@@ -192,6 +211,9 @@ class QueryTarget:
     # Which argument names carry paging for this tool — see pagination_arg_names().
     page_key: str = PAGE_ARG
     page_size_key: str = PAGE_SIZE_ARG
+    # Audience views this target accepts, empty when it has none. Used to reject
+    # a `view` argument at the boundary rather than forwarding it blindly.
+    views: tuple[str, ...] = ()
 
 
 class ToolCatalog:
@@ -339,6 +361,7 @@ class ToolCatalog:
                     query_name=definition["name"],
                     page_key=page_key,
                     page_size_key=page_size_key,
+                    views=tuple(definition.get("views") or ()),
                 )
 
         # Collisions are detected against *this* load's names only — matching

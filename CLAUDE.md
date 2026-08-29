@@ -44,6 +44,15 @@ python -m scripts.extract_query --db DW --query eo_detail -p frozen_date=2026-08
 # Register this instance with isap-auth (no-op without a bootstrap token)
 python -m scripts.register_isap_app
 
+# Check the E&O field dictionary against the columns eo_summary really returns.
+# The Sales view is an allowlist, so a mistyped db_field fails SILENTLY — run
+# this after editing app/services/eo_field_views.py. Needs APIHUB_URL + a credential.
+python -m scripts.verify_eo_field_dictionary
+
+# Refresh the eo_summary tool description for the MC/Sales views (reads and
+# diffs first; --apply to write). Needs a SUPERUSER APIHUB_TOKEN.
+python -m scripts.update_eo_summary_description [--apply] [--also-description]
+
 # Same init inside Docker
 docker-compose exec api python -m scripts.init_db
 
@@ -67,6 +76,11 @@ celery -A app.tasks.celery_app flower --port=5555
   `GET /api/v1/mcp/tools` + the Admin UI **MCP Tools** page report that; both derive names
   from `naming.py` rather than re-implementing the rules, and both are **read-only** — the
   MCP server's own config lives in another process, so there is nothing to write to.
+  It also serves **resources** (`mcp_server/resources.py`) — today just
+  `eo://data-dictionary`, proxying `GET /api/v1/eo/field-dictionary`. Registering the
+  `list_resources`/`read_resource` handlers is what declares the capability; the SDK derives
+  it from the handler table. Nothing is cached: the payload's `caller_view` is per-principal
+  and one process serves every caller on the HTTP transport.
 
 ### Data Source Databases vs Platform Store
 
@@ -96,6 +110,33 @@ When adding engine-specific behavior, extend the `Dialect` base class — never 
 The query service (`app/services/query_service.py`) supports: `page` (dialect-aware pagination, default), `all`, `batch` (cursor-style iteration), `top_n`, `one` (single row or 404), `count` (row count only, no data). `app/schemas/query.py` is the single source of truth for the mode names, their companion fields and value ranges — keep any UI or doc copy in sync with it.
 
 `page` and `batch` issue two statements per request — a `COUNT(*)` and the page itself — so walking a definition used to recompute the same count once per page (~60% of each request on an unfiltered 45k-row `eo_detail`). `app/services/count_cache.py` memoises it per `(db_alias, count_sql, binds)` for `QUERY_COUNT_CACHE_TTL_SECONDS` (default 60). `count` and `all` deliberately stay live. Because `batch`'s `has_more` derives from `total`, rows inserted mid-walk stay invisible until the entry expires — paging was never atomic, but be explicit about it. The cache is process-local; `tests/conftest.py` clears it between tests.
+
+### E&O MC / Sales Views
+
+The same `INV_EO_PID_SUMMARY_F` row is published to two audiences **under different column
+names**: the MC report says "Obsolete All OH Amt", the Sales workbook says "E&O OH (All)
+Amt" — Sales renames "Obsolete" to "E&O" throughout. `app/services/eo_field_views.py` is the
+canonical `db_field` × `mc_label` × `sales_label` mapping and the single source of truth for
+the API, the field mask and the MCP resource. Served over HTTP by
+`GET /api/v1/eo/field-dictionary` so the MCP server can reach it without importing `app/`.
+
+- **`view` (`mc` default / `sales`) on `/queries/execute`** projects columns *after*
+  execution, not in SQL: the definition is `SELECT ep.*` and MSSQL cannot vary a column list
+  without dynamic SQL. Only `GOVERNED_DEFINITIONS` (today `eo_summary`) is affected.
+- **The Sales view is an allowlist, never a denylist.** `SELECT ep.*` returns columns neither
+  view lists; "everything minus the MC list" would leak all of those plus anything added to
+  the table later. Comparison is **case-insensitive** — the source casing is inconsistent.
+- **`eo:read:scoped` / `eo:read:full`** (action `read`) pin or grant. Holding **neither keeps
+  the full MC view**, because every existing caller predates this and holds only `query:eo_*`;
+  masking by default would strip columns from all of them on deploy. `query:*` does not
+  confer either — wildcard matching is on a resource prefix and these start with `eo:`.
+- A permission-narrowed request returns **200 with `view_downgraded: true`**, not 403: these
+  tools are LLM-driven, and a hard failure yields retries rather than a corrected request.
+- The three response keys are **omitted entirely** for definitions without a view, so no
+  existing endpoint's wire shape changes.
+- The dictionary is hand-transcribed from the report definitions, and an allowlist typo is
+  **silent** — it just stops a column reaching Sales. Run
+  `python -m scripts.verify_eo_field_dictionary` after editing it.
 
 ### SQL Definition System
 

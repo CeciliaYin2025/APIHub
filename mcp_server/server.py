@@ -20,6 +20,7 @@ from mcp.types import (
 
 from mcp_server.catalog import FETCH_MODES, ToolCatalog, read_only_annotations
 from mcp_server.client import ApiHubClient, ApiHubError
+from mcp_server.resources import read_resource, resource_list
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,16 @@ async def dispatch_tool(client: ApiHubClient, catalog: ToolCatalog, name: str, a
     fetch_mode = str(args.pop("fetch_mode", "page") or "page")
     if fetch_mode not in FETCH_MODES:
         raise ApiHubError(400, f"Unsupported fetch_mode '{fetch_mode}'; allowed: {', '.join(FETCH_MODES)}")
+    # Same boundary reasoning as fetch_mode: the enum is advice to the model.
+    # A `view` sent to a target that has none is dropped rather than forwarded —
+    # it would otherwise become a bind parameter and fail deep in the query.
+    view = args.pop("view", None)
+    if view is not None:
+        view = str(view)
+        if not target.views:
+            view = None
+        elif view not in target.views:
+            raise ApiHubError(400, f"Unsupported view '{view}' for {name}; allowed: {', '.join(target.views)}")
     return await client.execute_query(
         target.db_alias,
         target.query_name,
@@ -163,6 +174,7 @@ async def dispatch_tool(client: ApiHubClient, catalog: ToolCatalog, name: str, a
         fetch_mode=fetch_mode,
         page=page,
         page_size=page_size,
+        view=view,
     )
 
 
@@ -235,6 +247,21 @@ def create_server(client: ApiHubClient, catalog: ToolCatalog, tracker: SessionTr
         if name == "refresh_query_tools" and result.get("changed"):
             await _notify_tools_changed(server)
         return result
+
+    @server.list_resources()
+    async def _list_resources():
+        if tracker is not None:
+            tracker.capture(server)
+        return resource_list()
+
+    @server.read_resource()
+    async def _read_resource(uri):
+        if tracker is not None:
+            tracker.capture(server)
+        # Registering these two handlers is also what declares the `resources`
+        # capability — the SDK derives capabilities from the handler table
+        # (Server.get_capabilities), so there is nothing else to switch on.
+        return await read_resource(client, str(uri))
 
     _reject_unknown_tools_as_protocol_errors(server, catalog)
     return server

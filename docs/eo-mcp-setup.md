@@ -343,6 +343,13 @@ period was re-run.
 These are the traps that produce plausible, wrong answers. Each is documented in
 the tool's own `Returns:` text — read it rather than assuming.
 
+- **`eo_summary` serves two audiences under different names.** It takes a `view`
+  argument: `mc` (default, the full report) or `sales` (the narrower set sent to
+  Sales). The two rename the same columns — MC "Obsolete All OH Amt" is Sales
+  "E&O OH (All) Amt" — so when a user quotes a column name, resolve it through
+  the `eo-data-dictionary` skill before answering. The response reports which
+  `view` was applied and lists `masked_columns`; `view_downgraded: true` means the
+  caller's permissions narrowed it, not that data is missing.
 - **`eo_summary` grain is OU + BU_NO + PID + CUSTOMERGROUPNAME.** Grouping by
   OU+BU+PID alone collapses ~4% of rows and double-counts amounts.
 - **`eo_detail` has no unique key.** ~390 of 139k rows repeat even on a nine-column
@@ -436,6 +443,74 @@ error**. Resolve with `eo_frozen_dates` first.
 
 Grouping summary by OU + BU + PID (without customer group) collapses to 1,424
 combos — it silently merges ~20% of rows. Always SUM; never assume one row per item.
+
+## Two audiences, two names for the same column
+
+The same `INV_EO_PID_SUMMARY_F` row is published twice, and **the two use
+different display names**. Getting this wrong is the single most common way to
+answer confidently about the wrong column.
+
+- **MC view** — the online report "MC E&O Summary by Site" (`EO_Summary_v4.0.cpt`).
+  Internal technical names, including the TP70/TP75 exclusion conditions, and the
+  loss-evaluation block.
+- **Sales view** — the Excel sent to Sales ("E&O Summary - Sales", columns A–X).
+  Fewer columns, plainer names, and the rule that catches everyone:
+  **"Obsolete" is renamed "E&O"**.
+
+So a user who says "E&O OH (All) Amt" and a user who says "Obsolete All OH Amt"
+are asking about **the same column**, `OBSOLETE_OH_ALL_AMT_TWD`. Always answer
+using the db_field.
+
+### The renames (everything else keeps its name)
+
+| db_field | MC label | Sales label |
+|---|---|---|
+| `OBSOLETE_OH_ALL_AMT_TWD` | Obsolete All OH Amt | **E&O OH (All) Amt** |
+| `OBSOLETE_OPO_AMT_TWD` | Obsolete OPO Amt | **E&O OPO Amt** |
+| `OBSOLETE_OHOPO_ALL_AMT_TWD` | Obsolete All OH+OPO Amt | **E&O OH + OPO Amt** |
+| `FG_Intransit_Amt_TWD` | FG on the way Amt | **FG In Transit Amt** |
+| `FG_Hub_Amt_TWD` | FG Hub Stock Amt | **Hub OH Amt** |
+| `FACTORY_STOCK_AMT_TWD` | Available OH Amt (exclude TP75 & TP80 / TP70 & TP82) | **Non-TP70 & Non-TP75 OH Amt** |
+| `ACTION_PLAN_DUE_DATE` | Due Date for Sales' Action | **Sales AP Due Date** |
+| `ALLOCATED_AMT_TWD` + `PLANNED_AMT_TWD` | Allocated Amt **(C)** and **(E)**, plus a total | **Allocated Amt** (total only) |
+| `ProjectName` / `AliasProjectNAme` | Project Name, **two columns** | Project Name, **one** |
+
+`FROZEN_DATE` is a data column in MC and a **sheet header** in the Sales
+workbook — the API returns it in both views, because a row with no period is
+meaningless.
+
+### What Sales does NOT get
+
+The Sales view has no loss evaluation, no excess ageing, and no stock structure
+beyond the headline buckets. If a user is reading the Sales workbook they cannot
+see any of:
+
+| Group | Columns |
+|---|---|
+| Loss evaluation | `OH_unrecoverable`, `OPO_unrecoverable`, `Obsolete_All_OH_EST_Loss_Amt`, `Obsolete_OPO_EST_Loss_Amt`, `SALES_OBSOLETE_OH_ALL_AMT`, `SALES_OBSOLETE_OPO_AMT`, `Cust_Liable_Amt` |
+| Unrecoverable block | `UNRECOVERABLE_AMT`, `BUYDOWN_AMT`, `RESERVED_AMT`, Balance |
+| Excess ageing | the six `EXCESS_{OH,OPO,OHOPO}_AMT_{26W,52W}_TWD` |
+| E&O breakdown | the `_TP70` / `_TP75` / `_PLUSAMT` / `Non_TP70 & TP75` variants |
+| Stock structure | `TP80_Amt`, `ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, Total INV Amt |
+| Reference | `LOCK_QTY`, `MSIC` |
+| Goal | `TARGET_AMT` (Meeting Goals) |
+
+### Asking for a view
+
+`query_dw_eo_summary` takes a **`view`** argument: `mc` (default, everything) or
+`sales`. The response reports `view`, and `masked_columns` when anything was
+dropped. A caller granted `eo:read:scoped` is served `sales` whatever they ask
+for, with `view_downgraded: true` — so if a number a user expects is absent,
+check that flag before assuming the data is missing.
+
+The machine-readable mapping is the `eo://data-dictionary` MCP resource, served
+from `GET /api/v1/eo/field-dictionary`. Canonical source:
+`app/services/eo_field_views.py`.
+
+Columns Y onward in the Sales workbook (`Management Mandate`, `Category`,
+`Rax's reply`, `Type`, dated notes like `20260315lc`) are **not report columns** —
+they are MC/IT annotations typed into Excel for issue tracking, and exist in no
+database.
 
 ## Amount families
 
