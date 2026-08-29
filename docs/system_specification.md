@@ -1494,6 +1494,11 @@ Sales 工作表 Y 欄之後（`Management Mandate`、`Category`、`Rax's reply`�
 MC 專屬清單」，這些欄位會全數外洩，且日後表上新增的任何欄位也會自動外洩。因此欄位
 必須被字典明確標記為 Sales 可見才會送出。
 
+少數欄位標記為 `plumbing` —— 兩份報表都沒有印、因此沒有顯示名，但 Sales 需要它們：
+`WIP_AMT` 與 `TP75_Amt` 在 Sales view 內且**沒有 `_TWD` 對應欄**（本地幣別），
+少了 `CURRENCY_CODE` 與 `TWD_CURRENCY_RATE` 就無從判讀也無法換算。報表是逐 site 產出的，
+幣別在紙上是隱含的；API 回應沒有那個脈絡。帶上它們不構成外洩 —— 匯率不是 E&O 金額。
+
 欄位比對**一律不分大小寫** —— `SELECT ep.*` 回傳的是來源表自身的大小寫，而來源本身
 就不一致（`FG_Intransit_Amt`、`OBSOLETE_OH_ALL_AMT_TWD`、`ProjectName`、`AliasProjectNAme`）。
 

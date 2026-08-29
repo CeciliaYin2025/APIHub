@@ -57,7 +57,18 @@ def test_view_filter_narrows_the_listing():
 
     assert body["field_count"] == len(eo_field_views.columns_for_view("sales"))
     assert all(f["mc_only"] is False for f in body["fields"])
-    assert all(f["sales_label"] for f in body["fields"])
+    # Every Sales field is nameable except the plumbing ones (CURRENCY_CODE,
+    # TWD_CURRENCY_RATE), which neither report prints.
+    assert all(f["sales_label"] or f["group"] == "plumbing" for f in body["fields"])
+
+
+def test_sales_listing_includes_the_currency_plumbing():
+    body = _client(_user()).get("/eo/field-dictionary", params={"view": "sales"}).json()
+
+    plumbing = {f["db_field"] for f in body["fields"] if f["group"] == "plumbing"}
+    assert plumbing == {"CURRENCY_CODE", "TWD_CURRENCY_RATE"}
+    # They must explain themselves — a nameless column with no note is unreadable.
+    assert all(f["note"] for f in body["fields"] if f["group"] == "plumbing")
 
 
 def test_bad_view_filter_is_a_400():

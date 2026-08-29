@@ -18,10 +18,37 @@ def test_every_field_belongs_to_at_least_one_view():
     assert all(s.views for s in v.FIELD_DICTIONARY)
 
 
-def test_sales_fields_always_carry_a_sales_label():
+def test_sales_fields_carry_a_sales_label_unless_they_are_plumbing():
+    """A Sales column the user cannot name is a bug — except the plumbing ones,
+    which neither report prints and which therefore have no name to carry."""
     for spec in v.FIELD_DICTIONARY:
-        if v.SALES in spec.views:
+        if v.SALES in spec.views and spec.group != "plumbing":
             assert spec.sales_label, f"{spec.db_field} is in the sales view with no sales label"
+
+
+def test_plumbing_entries_carry_no_labels_and_are_in_both_views():
+    """Stops `_plumbing` being used to slip a real report column in unlabelled."""
+    plumbing = [s for s in v.FIELD_DICTIONARY if s.group == "plumbing"]
+    assert plumbing, "the helper exists; something should use it"
+    for spec in plumbing:
+        assert spec.mc_label is None and spec.sales_label is None, spec.db_field
+        assert spec.views == frozenset(v.VIEWS), spec.db_field
+        assert spec.note, f"{spec.db_field} must say why it is carried"
+
+
+def test_sales_can_interpret_its_local_currency_columns():
+    """TP75_Amt and WIP_AMT have no _TWD twin, so Sales needs the code and rate
+    to know what currency they are in — a rendered workbook gets that from the
+    page it is printed on, an API response gets it from nowhere."""
+    sales = v.columns_for_view(v.SALES)
+    assert {"TP75_AMT", "WIP_AMT"} <= sales
+    assert {"CURRENCY_CODE", "TWD_CURRENCY_RATE"} <= sales
+
+
+def test_currency_columns_are_not_amounts():
+    """Carrying them is only defensible because they disclose no E&O figure."""
+    for name in ("CURRENCY_CODE", "TWD_CURRENCY_RATE"):
+        assert v.spec_for_field(name).group == "plumbing"
 
 
 def test_mc_only_fields_have_no_sales_label():
