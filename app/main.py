@@ -15,6 +15,7 @@ from app.db.multi_pool import db_registry
 from app.db.oracle_pool import close_pool, init_pool
 from app.middleware.audit import AuditMiddleware
 from app.middleware.auth_context import AuthContextMiddleware
+from app.middleware.concurrency_limiter import ConcurrencyLimiterMiddleware
 from app.middleware.rate_limiter import RateLimiterMiddleware
 from app.services import oauth_rs
 from app.services.sql_registry import sql_registry
@@ -69,9 +70,10 @@ app = FastAPI(
 
 # ── Middleware ────────────────────────────────────────────────────────────────
 # Order matters. add_middleware stacks last-added = outermost. We want, outer→inner:
-#   CORS → Audit → AuthContext → RateLimiter → routers
-app.add_middleware(RateLimiterMiddleware)  # innermost of ours (reads principal)
-app.add_middleware(AuthContextMiddleware)  # resolves principal before rate limiter
+#   CORS → Audit → AuthContext → RateLimiter → ConcurrencyLimiter → routers
+app.add_middleware(ConcurrencyLimiterMiddleware)  # innermost: holds a slot for the whole call
+app.add_middleware(RateLimiterMiddleware)  # cheap check first — reject floods before queueing
+app.add_middleware(AuthContextMiddleware)  # resolves principal for both limiters
 app.add_middleware(AuditMiddleware)  # times whole chain, sees final principal
 app.add_middleware(
     CORSMiddleware,

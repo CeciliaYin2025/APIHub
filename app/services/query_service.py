@@ -14,6 +14,7 @@ import re
 from typing import Any
 
 from app.db.oracle_pool import get_connection, get_dialect_for
+from app.services import count_cache
 from app.services.sql_registry import SqlDefinition
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ def _fetch_page(
     page_binds = {**binds, **dialect.pagination_binds(offset, page_size)}
 
     with get_connection(db_alias) as conn:
-        total = _get_count(conn, count_sql, binds, dialect)
+        total = _get_count_cached(conn, count_sql, binds, dialect, db_alias)
         columns, data = _execute_and_map(conn, paginated_sql, page_binds, dialect)
 
     return {
@@ -167,7 +168,7 @@ def _fetch_batch(
     page_binds = {**binds, **dialect.pagination_binds(batch_offset, batch_size)}
 
     with get_connection(db_alias) as conn:
-        total = _get_count(conn, count_sql, binds, dialect)
+        total = _get_count_cached(conn, count_sql, binds, dialect, db_alias)
         columns, data = _execute_and_map(conn, paginated_sql, page_binds, dialect)
 
     has_more = (batch_offset + batch_size) < total
@@ -247,6 +248,28 @@ def _fetch_count(
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
+
+
+def _get_count_cached(
+    conn: Any,
+    count_sql: str,
+    binds: dict[str, Any],
+    dialect: Any,
+    db_alias: str | None,
+) -> int:
+    """``_get_count`` with a short-TTL memo, for the modes that page.
+
+    Only ``page`` and ``batch`` go through here: they re-ask the identical count
+    on every page of a walk. ``count`` mode returns the count as its answer and
+    ``all`` runs once, so both stay live. See app/services/count_cache.py.
+    """
+    cached = count_cache.get(db_alias, count_sql, binds)
+    if cached is not None:
+        return cached
+
+    total = _get_count(conn, count_sql, binds, dialect)
+    count_cache.put(db_alias, count_sql, binds, total)
+    return total
 
 
 def _get_count(conn: Any, count_sql: str, binds: dict[str, Any], dialect: Any) -> int:
