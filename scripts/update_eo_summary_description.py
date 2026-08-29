@@ -11,16 +11,16 @@ Reads before it writes, and diffs. The stored text is edited by people through
 the Admin UI, so it is not safe to assume the repo knows what is currently
 there. Dry-run is the default; nothing is written without --apply.
 
+Both fields are updated: `description` gains a sentence naming the `view`
+argument, `result_description` gains the rename table, what the Sales view omits,
+and the meaning of `view_downgraded`. The existing column enumeration and
+currency caveats are preserved verbatim — they are accurate and the model needs
+them; this merges into that text rather than replacing it.
+
 Usage:
     APIHUB_URL=https://ia-dev.sercomm.com/apihub APIHUB_TOKEN=<superuser JWT> \\
         python -m scripts.update_eo_summary_description            # show the diff
         python -m scripts.update_eo_summary_description --apply    # write it
-
-    --also-description   additionally fix `description`, which claims the grain
-                         is "one row per OU + BU + PID". It is not: the real
-                         grain includes CUSTOMERGROUPNAME, and grouping without
-                         it merges ~20% of rows. Opt-in because it is a separate
-                         correction from the view work.
 
 Requires a SUPERUSER credential — definition CRUD is superuser-only.
 Exit codes: 0 nothing to do / applied, 1 differences found in dry-run, 2 error.
@@ -41,56 +41,50 @@ DEFINITION = "eo_summary"
 
 NEW_DESCRIPTION = (
     "E&O (Excess & Obsolete) inventory SUMMARY. One row per OU + BU_NO + PID + CUSTOMERGROUPNAME "
-    "— NOT per OU+BU+PID: grouping without the customer group merges ~20% of rows and double-counts "
-    "amounts, so always SUM. Adds PID_Ref_Cost_TWD (falls back to PID_Ref_Cost * TWD_CURRENCY_RATE). "
-    "All-zero rows are excluded to match the official report. Takes a `view` argument (mc / sales) — "
-    "the two audiences use DIFFERENT NAMES for the same columns; see Returns."
+    "(SUMMARY_ID is unique per row) — NOT per OU + BU + PID, which collapses ~4% of rows. "
+    "Adds PID_Ref_Cost_TWD (falls back to PID_Ref_Cost * TWD_CURRENCY_RATE). All-zero rows are "
+    "excluded to match the official report. Takes a `view` argument (mc / sales): the two audiences "
+    "use DIFFERENT NAMES for the same columns — see Returns."
 )
 
-NEW_RESULT_DESCRIPTION = """One row per OU + BU_NO + PID + CUSTOMERGROUPNAME (1,774 rows on 2026-08-01). \
-Grouping by OU+BU+PID alone collapses to 1,424 — it silently merges ~20% of rows. Always SUM.
+NEW_RESULT_DESCRIPTION = """73 columns, one row per OU + BU_NO + PID + customer group. \
+Keys/labels: SUMMARY_ID, Frozen_Date, OU, BU, BU_NO, PID, ProjectName, AliasProjectNAme, CustomerName, \
+CUSTOMERGROUPNAME, CUSTOMER_NUMBER, MSIC. Amount families: stock (FG_Intransit_Amt, FG_Hub_Amt, TP70_AMT, \
+TP75_Amt, TP80_Amt, FACTORY_STOCK_AMT, WIP_AMT, ALL_OH_AMT, UNAVAILABLE_OH_AMT); commitment (OPO_AMT, \
+ALLOCATED_AMT, PLANNED_ALLOCATED_AMT, PLANNED_AMT); excess (EXCESS_{OH,OPO,OHOPO}_AMT_{26W,52W}); \
+obsolete (OBSOLETE_{OH,OPO,OHOPO}_AMT plus _PLUSAMT / _ALL_AMT / _TP70 / _TP75 variants). 25 columns \
+carry a _TWD suffix, converted from CURRENCY_CODE via TWD_CURRENCY_RATE; the rest are local currency. \
+NO _TWD twin exists for PLANNED_ALLOCATED_AMT, TP75_Amt, UNAVAILABLE_OH_AMT, ALL_OH_AMT, WIP_AMT — do not \
+assume one. Also PID_Ref_Cost, PID_Ref_Cost_F and the derived PID_Ref_Cost_TWD, LOCK_QTY, LAST_UPDATE_DATE.
 
-TWO AUDIENCE VIEWS, selected by the `view` argument. The same row is published to MC and to Sales \
-UNDER DIFFERENT COLUMN NAMES, and a user quotes whichever one they were shown. Resolve the name \
-before answering.
+TWO AUDIENCE VIEWS, selected by the `view` argument. The same row is published to MC and to Sales UNDER \
+DIFFERENT COLUMN NAMES, and a user quotes whichever one they were shown — resolve the name before answering.
 
-view='mc' (default) — the full "MC E&O Summary by Site" report.
+view='mc' (default) — the full "MC E&O Summary by Site" report, i.e. every column above.
 view='sales' — the narrower set in the "E&O Summary - Sales" workbook.
 
 RENAMES — same column, two names (Sales renames "Obsolete" to "E&O" throughout):
-  OBSOLETE_OH_ALL_AMT_TWD     MC "Obsolete All OH Amt"      = Sales "E&O OH (All) Amt"
-  OBSOLETE_OPO_AMT_TWD        MC "Obsolete OPO Amt"         = Sales "E&O OPO Amt"
-  OBSOLETE_OHOPO_ALL_AMT_TWD  MC "Obsolete All OH+OPO Amt"  = Sales "E&O OH + OPO Amt"
-  FG_Intransit_Amt_TWD        MC "FG on the way Amt"        = Sales "FG In Transit Amt"
-  FG_Hub_Amt_TWD              MC "FG Hub Stock Amt"         = Sales "Hub OH Amt"
+  OBSOLETE_OH_ALL_AMT_TWD     MC "Obsolete All OH Amt"       = Sales "E&O OH (All) Amt"
+  OBSOLETE_OPO_AMT_TWD        MC "Obsolete OPO Amt"          = Sales "E&O OPO Amt"
+  OBSOLETE_OHOPO_ALL_AMT_TWD  MC "Obsolete All OH+OPO Amt"   = Sales "E&O OH + OPO Amt"
+  FG_Intransit_Amt_TWD        MC "FG on the way Amt"         = Sales "FG In Transit Amt"
+  FG_Hub_Amt_TWD              MC "FG Hub Stock Amt"          = Sales "Hub OH Amt"
   FACTORY_STOCK_AMT_TWD       MC "Available OH Amt (exclude TP75 & TP80 / TP70 & TP82)" \
 = Sales "Non-TP70 & Non-TP75 OH Amt"
   ACTION_PLAN_DUE_DATE        MC "Due Date for Sales' Action" = Sales "Sales AP Due Date"
-  ALLOCATED_AMT_TWD + PLANNED_AMT_TWD  MC shows "Allocated Amt (C)" and "(E)" separately; \
-Sales shows only the combined "Allocated Amt".
+  ALLOCATED_AMT_TWD + PLANNED_AMT_TWD  MC shows "Allocated Amt (C)" and "(E)" separately; Sales shows \
+only the combined "Allocated Amt".
 
-IN BOTH VIEWS: OU, BU, BU_NO (Division Code), CUSTOMERGROUPNAME, ProjectName, AliasProjectNAme, PID, \
-FROZEN_DATE, PID_Ref_Cost / PID_Ref_Cost_TWD, FG_Intransit_Amt_TWD, FG_Hub_Amt_TWD, WIP_AMT, TP75_Amt, \
-TP70_Amt_TWD (TP70 & TP82), FACTORY_STOCK_AMT_TWD, OPO_AMT_TWD, ALLOCATED_AMT_TWD, PLANNED_AMT_TWD, \
-OBSOLETE_OH_ALL_AMT_TWD, OBSOLETE_OPO_AMT_TWD, OBSOLETE_OHOPO_ALL_AMT_TWD.
+MC ONLY — absent from view='sales': the loss evaluation (OH_unrecoverable, OPO_unrecoverable, the two \
+EST_Loss columns, the two Sales'-Reply columns, Cust_Liable_Amt); the unrecoverable block \
+(UNRECOVERABLE_AMT, BUYDOWN_AMT, RESERVED_AMT, Balance); all six EXCESS_* columns; the _TP70 / _TP75 / \
+_PLUSAMT / Non_TP70&TP75 obsolete breakdown; TP80_Amt, ALL_OH_AMT, UNAVAILABLE_OH_AMT, Total INV Amt; \
+LOCK_QTY; MSIC; TARGET_AMT (Meeting Goals); and the identity/plumbing columns SUMMARY_ID, CustomerName, \
+CUSTOMER_NUMBER, LAST_UPDATE_DATE, CURRENCY_CODE, TWD_CURRENCY_RATE.
 
-MC ONLY — absent from view='sales':
-  Loss evaluation: OH_unrecoverable, OPO_unrecoverable, Obsolete_All_OH_EST_Loss_Amt, \
-Obsolete_OPO_EST_Loss_Amt, SALES_OBSOLETE_OH_ALL_AMT, SALES_OBSOLETE_OPO_AMT, Cust_Liable_Amt
-  Unrecoverable block: UNRECOVERABLE_AMT, BUYDOWN_AMT, RESERVED_AMT, Balance
-  Excess ageing: the six EXCESS_{OH,OPO,OHOPO}_AMT_{26W,52W}_TWD
-  Obsolete breakdown: the _TP70 / _TP75 / _PLUSAMT / Non_TP70&TP75 variants
-  Stock structure: TP80_Amt, ALL_OH_AMT, UNAVAILABLE_OH_AMT, Total INV Amt
-  Reference: LOCK_QTY (WO/PO lock Qty for APS), MSIC (Non Work Order transaction Y/N)
-  Goal: TARGET_AMT (Meeting Goals)
-
-The response reports the `view` actually applied and lists `masked_columns`. \
-`view_downgraded: true` means the caller's own permission (eo:read:scoped) narrowed the request — \
-the columns are restricted for that caller, NOT missing from the data. Do not report them as absent.
-
-CURRENCY: columns ending _TWD are TWD. No _TWD twin exists for PLANNED_ALLOCATED_AMT, TP75_Amt, \
-UNAVAILABLE_OH_AMT, ALL_OH_AMT or WIP_AMT — those are in local currency and must not be added to \
-TWD figures.
+The response reports the `view` actually applied and lists `masked_columns`. `view_downgraded: true` \
+means the CALLER'S OWN PERMISSION (eo:read:scoped) narrowed the request — those columns are restricted \
+for that caller, NOT missing from the data. Never report them as absent or zero.
 
 BUYDOWN_AMT and RESERVED_AMT are BU-level values repeated on every customer-group row; summing them \
 across rows overstates RESERVED by ~10.6x. Take one value per BU_NO."""
@@ -123,11 +117,6 @@ def _diff(label: str, old: str, new: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Write the change (default: dry run)")
-    parser.add_argument(
-        "--also-description",
-        action="store_true",
-        help="Also correct `description`, which misstates the row grain",
-    )
     args = parser.parse_args()
 
     base = os.environ.get("APIHUB_URL")
@@ -151,14 +140,8 @@ def main() -> int:
         if changed:
             payload["result_description"] = NEW_RESULT_DESCRIPTION
 
-        if args.also_description:
-            if _diff("description", current.get("description", ""), NEW_DESCRIPTION):
-                payload["description"] = NEW_DESCRIPTION
-        elif (current.get("description") or "").strip() != NEW_DESCRIPTION.strip():
-            print(
-                "\nNOTE: `description` also differs from the corrected text "
-                "(the stored one misstates the row grain). Re-run with --also-description to fix it."
-            )
+        if _diff("description", current.get("description", ""), NEW_DESCRIPTION):
+            payload["description"] = NEW_DESCRIPTION
 
         if not payload:
             print("\nNothing to change.")

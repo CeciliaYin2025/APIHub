@@ -120,7 +120,14 @@ def main() -> int:
     mapped = {s.db_field.upper(): s for s in v.FIELD_DICTIONARY}
 
     missing = sorted(set(mapped) - set(live_upper) - EXPECTED_ABSENT)
-    unmapped = sorted(set(live_upper) - set(mapped))
+    unmapped_all = set(live_upper) - set(mapped)
+
+    # Most unmapped columns are the local-currency twin of a column that IS
+    # mapped (OPO_AMT next to OPO_AMT_TWD). Neither report shows them — both
+    # print TWD — so their absence is correct, not an oversight. Separating them
+    # keeps the actionable residue small enough to actually read.
+    twins = sorted(c for c in unmapped_all if f"{c}_TWD" in mapped)
+    unmapped = sorted(unmapped_all - set(twins))
 
     print(f"\neo_summary returned {len(live)} columns; dictionary maps {len(mapped)}.\n")
 
@@ -132,17 +139,29 @@ def main() -> int:
             print(f"  {spec.db_field:<34} {spec.mc_label}{flag}")
         print()
 
+    if twins:
+        print(f"local-currency twins of mapped columns ({len(twins)}) — expected, not an error:")
+        print(f"  {', '.join(live_upper[t] for t in twins)}")
+        print()
+
     if unmapped:
-        print(f"UNMAPPED — returned but not in the dictionary ({len(unmapped)}):")
-        print("  (invisible to the Sales view and unresolvable by display name)")
+        print(f"UNMAPPED — returned but not in either report ({len(unmapped)}):")
+        print("  MC callers still receive them (the MC view passes everything through);")
+        print("  Sales callers never do, and they cannot be resolved by display name.")
+        print("  Review when this list changes — a new column lands here first.")
         for name in unmapped:
             print(f"  {live_upper[name]}")
         print()
 
-    if not missing and not unmapped:
-        print("Clean: every mapped field exists and every returned column is mapped.")
+    if missing:
+        # The only failure that silently loses data.
+        return 1
+    if unmapped:
+        print("No mapped field is missing — nothing is being silently dropped from the Sales view.")
+        print("The unmapped list above is informational; review it and re-run.")
         return 0
-    return 1
+    print("Clean: every mapped field exists and every returned column is accounted for.")
+    return 0
 
 
 if __name__ == "__main__":

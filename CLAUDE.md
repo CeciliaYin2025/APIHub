@@ -51,7 +51,7 @@ python -m scripts.verify_eo_field_dictionary
 
 # Refresh the eo_summary tool description for the MC/Sales views (reads and
 # diffs first; --apply to write). Needs a SUPERUSER APIHUB_TOKEN.
-python -m scripts.update_eo_summary_description [--apply] [--also-description]
+python -m scripts.update_eo_summary_description [--apply]
 
 # Same init inside Docker
 docker-compose exec api python -m scripts.init_db
