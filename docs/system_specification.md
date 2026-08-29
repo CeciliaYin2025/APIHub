@@ -1428,6 +1428,100 @@ Authorization: Bearer <token>
 
 ---
 
+### 5.9.1 MCP resources
+
+除工具外，MCP server 另提供 **resources**。目前只有一個：
+
+| URI | mimeType | 內容 |
+|-----|----------|------|
+| `eo://data-dictionary` | `application/json` | E&O 欄位字典（見 §5.10），外加一段 `guidance` 說明 Obsolete/E&O 改名規則 |
+
+做成 resource 而非 tool，是因為它是**參考資料而非動作**：模型可在對話開始時取用一次，
+就知道「E&O OH (All) Amt」與「Obsolete All OH Amt」是同一欄，不必花一次 tool call，
+操作者也不必在 prompt 裡重述對照表。
+
+實作在 `mcp_server/resources.py`，內容仍**經由 REST API 取得**（`GET /eo/field-dictionary`）
+—— MCP server 永不 import `app/`。**不快取**：payload 內的 `caller_view` 是 per-principal，
+而 HTTP transport 下同一個行程服務所有呼叫者，快取會把某位呼叫者的視角交給下一位。
+
+`resources` capability 由 SDK 依 handler table 自動推導（`Server.get_capabilities`），
+註冊 `list_resources` / `read_resource` 兩個 handler 即為宣告。清單是程式碼寫死的單一 URI，
+故 `listChanged` 與 `subscribe` 皆為 false。
+
+工具端則是：有 view 的定義（definitions 端點回傳 `views` 陣列者）其工具會多一個 `view`
+參數。MCP server 藉此得知哪些工具有 view，**而不需要 import `app/`**。與 `fetch_mode` 同理，
+enum 只是給模型的建議，`dispatch_tool` 才是邊界：送給沒有 view 的工具的 `view` 會被丟棄
+（否則會被當成 bind 參數送進查詢深處才失敗），不合法的值直接回 400。
+
+### 5.10 E&O 欄位字典端點 (`/api/v1/eo`)
+
+同一列 `INV_EO_PID_SUMMARY_F` 會以兩種樣貌發佈，**且兩者對同一個欄位使用不同名稱**：
+
+- **MC view** —— 線上報表「MC E&O Summary by Site」（`EO_Summary_v4.0.cpt`），內部技術名稱，含 TP70/TP75 排除條件與損失評估區塊。
+- **Sales view** —— 寄給 Sales 的 Excel（「E&O Summary - Sales」，A~X 欄），欄位較少、名稱較白話，並且**把「Obsolete」統一改稱「E&O」**。
+
+因此 `OBSOLETE_OH_ALL_AMT_TWD` 在 MC 叫「Obsolete All OH Amt」、在 Sales 叫
+「E&O OH (All) Amt」—— **這是使用者提問時最容易混淆的一點**，也是本端點存在的理由。
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/api/v1/eo/field-dictionary` | 全部欄位的 `db_field` × `mc_label` × `sales_label` 對照，附 `views` 歸屬 |
+
+查詢參數 `view=mc|sales` 可只列出該 view 看得到的欄位；值不合法回 400。
+
+**回應一律列出全部欄位，含 MC 專屬者，不因呼叫者的 view 而遮蔽。** 名稱不是金額：
+知道 MC 有一欄叫「Obsolete OPO Actual Loss Amt」不洩漏任何數字，反過來若把名稱藏起來，
+被限縮的呼叫者將無法理解自己在會議上看過的欄位為何不在資料裡。真正的存取控制在
+`/queries/execute`，不在這裡。回應中的 `caller_view` 告知該呼叫者實際拿得到哪個 view。
+
+canonical 定義在 `app/services/eo_field_views.py`；MCP server 以 `eo://data-dictionary`
+resource 代理本端點（見 §5.9 與 MCP 章節）。**API response 一律回 DB 欄名**，顯示名交給前端／AI。
+
+Sales 工作表 Y 欄之後（`Management Mandate`、`Category`、`Rax's reply`、`Type`，
+以及 `20260315lc` 這類當期註記）為 MC/IT 在 Excel 上追 Issue 的人工加註，**非報表欄位、
+亦非資料庫欄位**，故不在字典內。
+
+#### 5.10.1 view 投影與欄位級授權
+
+`POST /{db}/queries/execute` 新增選用參數 **`view`**（`mc` 預設 / `sales`）。目前只有
+`eo_summary` 有 view（`GOVERNED_DEFINITIONS`），其餘定義完全不受影響。
+
+**投影在執行後於 API 層做，不在 SQL 裡。** 定義是 `SELECT ep.*`，而 MSSQL 無法在不使用
+動態 SQL 的前提下切換欄位清單；在 API 層投影可讓同一份定義服務兩種對象。
+
+**Sales view 是白名單，不是黑名單。** `SELECT ep.*` 會回傳整張表，包含兩個 view 都沒
+列出的欄位（原始 QTY、`SUMMARY_ID`、非 `_TWD` 對應欄）。若把 Sales 定義成「全部扣掉
+MC 專屬清單」，這些欄位會全數外洩，且日後表上新增的任何欄位也會自動外洩。因此欄位
+必須被字典明確標記為 Sales 可見才會送出。
+
+欄位比對**一律不分大小寫** —— `SELECT ep.*` 回傳的是來源表自身的大小寫，而來源本身
+就不一致（`FG_Intransit_Amt`、`OBSOLETE_OH_ALL_AMT_TWD`、`ProjectName`、`AliasProjectNAme`）。
+
+兩個權限（action 皆為 `read`）：
+
+| 權限 | 效果 |
+|------|------|
+| `eo:read:scoped` | 該呼叫者固定拿 Sales view，無法自行放寬 |
+| `eo:read:full` | 明確授予 MC view，優先於 `eo:read:scoped` |
+
+**兩者都沒有 = 維持現狀（MC 全欄）。** 這是刻意的預設：既有的十二個 `query_dw_eo_*`
+MCP 工具、Admin UI 與所有 API key 都早於本字典存在，且僅持有 `query:eo_*`；若預設遮蔽，
+部署當下會無聲地從所有既有呼叫者手上抽走欄位。遮蔽採 per-principal opt-in，與
+`auth_source` 預設 `local` 而非直接擋掉 SSO 是同一套理由（見 §7）。注意 `query:*` 萬用字元
+**不會**授予這兩者 —— 萬用比對是 resource 前綴，而這兩個 resource 以 `eo:` 開頭。
+
+被權限限縮時**回 200 而非 403**，並在回應標記 `view_downgraded: true`。這些工具由 LLM 驅動，
+硬失敗只會換來重試而非修正後的請求；回傳較窄的資料並明講縮了什麼，才是誠實且可用的作法。
+
+回應中的 `view` / `view_downgraded` / `masked_columns` 三個欄位**只在該定義有 view 時才出現**。
+沒有 view 的定義其回應形狀與過去完全相同 —— 否則等於改動每一個既有端點的契約
+（包含 §5.4 count 模式那份被客戶端斷言的形狀）。
+
+**字典是人工轉錄的，不是從 schema 產生的**，而白名單的失誤是無聲的：拼錯一個 `db_field`
+不會報錯，只會讓該欄位永遠到不了 Sales 呼叫者。`python -m scripts.verify_eo_field_dictionary`
+會實際跑一次 `eo_summary` 並雙向比對（字典有但查詢沒回傳 / 查詢回傳但字典沒收錄），
+新增或修改欄位後應執行。
+
 ## 6. 資料庫設計
 
 ### 6.1 系統內部表（由 SQLAlchemy ORM 管理）

@@ -169,6 +169,15 @@ python -m scripts.extract_query --db DW --query eo_detail \
 - Both use the same bucket key, and both are **process-local** — they do not coordinate across API instances or Celery workers, so with N instances the effective concurrency cap is N × the setting
 - `/admin`, `/docs`, `/static` and `/favicon` are exempt from the concurrency cap: the SPA loads assets in parallel and they never touch a data source
 
+### 9b. E&O MC / Sales views (`/api/v1/eo/field-dictionary`)
+- The same `INV_EO_PID_SUMMARY_F` row is published to two audiences under **different column names** — MC says "Obsolete All OH Amt", the Sales workbook says "E&O OH (All) Amt". The dictionary maps `db_field` × `mc_label` × `sales_label` so either name resolves to the same column
+- `POST /{db}/queries/execute` takes an optional `view` (`mc` default / `sales`). Today only `eo_summary` has views; every other definition is untouched and its response shape is unchanged
+- The Sales view is an **allowlist**: a column reaches a Sales caller only if the dictionary names it, so columns nobody has mapped — including ones added to the table later — cannot leak
+- Two permissions (action `read`): `eo:read:scoped` pins a caller to the Sales view, `eo:read:full` grants MC. **Holding neither keeps today's behaviour**, so existing callers are not silently stripped of columns on deploy
+- A narrowed request returns 200 with `view_downgraded: true` rather than 403 — these tools are LLM-driven and a hard failure produces retries, not a corrected request
+- Exposed to MCP clients as the `eo://data-dictionary` resource
+- The dictionary is hand-transcribed from the report definitions, and an allowlist typo fails silently — run `python -m scripts.verify_eo_field_dictionary` after changing it
+
 ### 10. Database Connection Status (`/api/v1/databases/status`)
 - Live per-database connectivity check — `Online` (with latency), `Offline` (with the raw driver error), or `Timeout`
 - Surfaced in the Admin dashboard's Databases card as a **Status** column with a **Refresh** button

@@ -116,6 +116,15 @@ class ApiHubClient:
             params={"permitted_only": "true"},
         )
 
+    async def field_dictionary(self) -> dict:
+        """The E&O db_field x MC label x Sales label mapping (metadata only).
+
+        Backs the ``eo://data-dictionary`` resource. Fetched per read rather
+        than cached: the ``caller_view`` it reports is per-principal, and one
+        MCP process serves every caller on the HTTP transport.
+        """
+        return await self._request("GET", "/eo/field-dictionary")
+
     async def execute_query(
         self,
         db: str,
@@ -125,6 +134,7 @@ class ApiHubClient:
         fetch_mode: str = "page",
         page: int = 1,
         page_size: int = 50,
+        view: str | None = None,
     ) -> dict:
         # page/page_size are always sent: the REST schema carries them for every
         # mode and ignores them outside "page", so there is nothing to branch on.
@@ -136,6 +146,11 @@ class ApiHubClient:
             "page": page,
             "page_size": page_size,
         }
+        # Omitted unless asked for: the REST schema rejects anything outside
+        # mc/sales, and sending null on every call would put the key in front of
+        # definitions that have no view at all.
+        if view is not None:
+            payload["view"] = view
         return await self._request("POST", f"/{db_seg}/queries/execute", json=payload)
 
     async def describe_table(self, db: str, table: str) -> dict:

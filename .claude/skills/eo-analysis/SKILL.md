@@ -89,6 +89,13 @@ period was re-run.
 These are the traps that produce plausible, wrong answers. Each is documented in
 the tool's own `Returns:` text — read it rather than assuming.
 
+- **`eo_summary` serves two audiences under different names.** It takes a `view`
+  argument: `mc` (default, the full report) or `sales` (the narrower set sent to
+  Sales). The two rename the same columns — MC "Obsolete All OH Amt" is Sales
+  "E&O OH (All) Amt" — so when a user quotes a column name, resolve it through
+  the `eo-data-dictionary` skill before answering. The response reports which
+  `view` was applied and lists `masked_columns`; `view_downgraded: true` means the
+  caller's permissions narrowed it, not that data is missing.
 - **`eo_summary` grain is OU + BU_NO + PID + CUSTOMERGROUPNAME.** Grouping by
   OU+BU+PID alone collapses ~4% of rows and double-counts amounts.
 - **`eo_detail` has no unique key.** ~390 of 139k rows repeat even on a nine-column

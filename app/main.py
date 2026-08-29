@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1 import audit, auth, databases, health, mcp, procedures, queries, schemas, writes
+from app.api.v1 import audit, auth, databases, eo, health, mcp, procedures, queries, schemas, writes
 from app.core.config import settings
 from app.db.multi_pool import db_registry
 from app.db.oracle_pool import close_pool, init_pool
@@ -90,6 +90,7 @@ app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(databases.router, prefix=settings.api_prefix)
 app.include_router(audit.router, prefix=settings.api_prefix)
 app.include_router(mcp.router, prefix=settings.api_prefix)
+app.include_router(eo.router, prefix=settings.api_prefix)
 
 # These routers contain both global paths (e.g. /queries/definitions)
 # and database-scoped paths (e.g. /{db}/queries/execute)
