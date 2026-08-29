@@ -398,11 +398,23 @@ cx_Oracle.SessionPool(
 
 | 模式 | 參數 | 說明 | 是否計算 COUNT |
 |------|------|------|----------------|
-| `page` | `page` + `page_size` | 傳統分頁（預設） | 是 |
-| `all` | — | 回傳全部資料 | 是 |
-| `batch` | `batch_size` + `batch_offset` | 固定批次大小 + 偏移量，適合游標式逐批取用 | 是 |
+| `page` | `page` + `page_size` | 傳統分頁（預設） | 是（可快取） |
+| `all` | — | 回傳全部資料 | 是（永遠即時） |
+| `batch` | `batch_size` + `batch_offset` | 固定批次大小 + 偏移量，適合游標式逐批取用 | 是（可快取） |
 | `top_n` | `top_n` | 取前 N 筆（不做 COUNT，效能最佳） | 否 |
 | `one` | — | 僅取一筆，無資料時回傳 400 | 否 |
+
+> **COUNT(\*) 快取（`app/services/count_cache.py`）：** `page` 與 `batch` 每次請求都會送出兩道語句
+> —— 一道 `COUNT(*)`、一道取資料。逐頁掃描同一個定義時，那道 `COUNT(*)` 的答案不會改變卻被
+> 重算了幾百次；以未加過濾條件的 `eo_detail`（45,014 列，MSSQL）實測，計數佔單次請求約 60%
+> 的時間，一次 439 頁的掃描等於重複回答同一個問題約 13 分鐘。因此以
+> `(db_alias, count_sql, binds)` 為鍵快取 `QUERY_COUNT_CACHE_TTL_SECONDS`（預設 60 秒，`0` 停用），
+> 條目數上限為 `QUERY_COUNT_CACHE_MAX_ENTRIES`（預設 512，淘汰最舊者）。
+>
+> `count` 模式的答案本身就是計數，`all` 模式單次執行不會重複，兩者**刻意不使用快取**。
+> 需留意 `batch` 的 `has_more` 由 `total` 推導，故快取有效期內新增的列要等條目過期才會出現
+> —— 逐頁掃描本來就不是單一交易的快照，此處只是把既有性質講明。快取為 process-local，
+> `tests/conftest.py` 會在每個測試之間清空。
 
 **Oracle 11g 相容分頁機制（`page` / `batch` 模式使用 ROWNUM）：**
 
@@ -426,7 +438,7 @@ SELECT * FROM ({原始 SQL}) WHERE ROWNUM <= :_top_n
 
 **共用處理流程：**
 1. 驗證必填參數（缺少則拋 `ValueError`）
-2. 依模式決定是否執行 `SELECT COUNT(*) FROM (sql)`
+2. 依模式決定是否執行 `SELECT COUNT(*) FROM (sql)`（`page` / `batch` 先查計數快取）
 3. 依模式包裝 ROWNUM 或 TOP-N SQL
 4. 將 `cx_Oracle.LOB` 自動轉換為字串
 5. 過濾掉 `RNUM_` 輔助欄位
@@ -2430,6 +2442,41 @@ CORSMiddleware(
 **限制事項：**
 - 記憶體內儲存，各 API 實例獨立計算
 - 多實例部署時應改用 Redis-based 限流器（如 `fastapi-limiter`）
+
+### 11.3 並發限制中介層
+
+**類別：** `ConcurrencyLimiterMiddleware`
+**演算法：** 每個計數桶一個 `asyncio.Semaphore`
+
+滑動視窗計算的是請求的**開始次數**，無法限制單一呼叫者同時「佔住」多少伺服器資源。
+一個 MCP 客戶端以 8 條連線平行翻頁掃描未加過濾條件的定義時，每分鐘請求數遠低於 60，
+卻能同時佔用 8 個 worker thread 與 8 條資料庫連線各數十秒 —— 2026-08-20 與 08-24 的
+事故即為此形態（單一使用者佔掉全站 99.5% 的請求時間）。本中介層即為此而設。
+
+| 參數 | 環境變數 | 預設值 | 說明 |
+|------|----------|--------|------|
+| `max_concurrent` | `MAX_CONCURRENT_REQUESTS_PER_PRINCIPAL` | 4 | 單一呼叫者同時進行中的請求上限；`0` 表示停用 |
+| `wait_seconds` | `CONCURRENCY_WAIT_SECONDS` | 5.0 | 等待空位的秒數上限；`0` 表示不等待，立即拒絕 |
+
+**計數桶：** 與 §11.2 相同，皆由 `app/middleware/principal_key.py::principal_bucket_key`
+決定，確保兩個中介層對「同一個呼叫者」的認定不會分歧。
+
+**處理流程：**
+
+```
+1. max_concurrent <= 0 或路徑屬於豁免前綴 → 直接放行
+2. 取得該桶的 semaphore，等待至多 wait_seconds
+3. 逾時 → 回傳 HTTP 429 + Retry-After: 5
+4. 取得空位 → 執行請求，結束後釋放
+```
+
+**豁免前綴（`EXEMPT_PREFIXES`）：** `/admin`、`/docs`、`/redoc`、`/openapi.json`、
+`/static`、`/favicon`。Admin UI 會平行載入多個靜態資源，且這些路徑不會存取資料來源。
+
+**限制事項：**
+- 同為 process-local：N 個 API 實例時實際上限為 N × 設定值
+- 中介層順序上位於速率限制器之內側，因此洪水流量會先被便宜的視窗檢查擋下，
+  不會先佔住並發名額
 - 匿名桶的來源 IP 透過 `get_client_ip()` 解析，只有在 `TRUSTED_PROXIES` 明確設定時才採信 `X-Forwarded-For`；未設定時一律使用直連對端。**閘道後方若未設定此值，所有匿名請求會共用同一個桶**
 
 ---
@@ -2588,6 +2635,10 @@ curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
 | `API_PREFIX` | `/api/v1` | API 路徑前綴 |
 | `DEBUG` | `false` | 除錯模式（啟用後 log level 為 DEBUG） |
 | `RATE_LIMIT_PER_MINUTE` | `60` | 每個計數桶每分鐘最大請求數（桶的劃分見 §11.2） |
+| `MAX_CONCURRENT_REQUESTS_PER_PRINCIPAL` | `4` | 單一呼叫者同時進行中的請求上限，`0` 停用（見 §11.3） |
+| `CONCURRENCY_WAIT_SECONDS` | `5.0` | 等待並發名額的秒數上限，逾時回 429，`0` 表示立即拒絕（見 §11.3） |
+| `QUERY_COUNT_CACHE_TTL_SECONDS` | `60` | `page`/`batch` 模式重用 `COUNT(*)` 結果的秒數，`0` 停用 |
+| `QUERY_COUNT_CACHE_MAX_ENTRIES` | `512` | 計數快取的條目上限，超出時淘汰最舊者 |
 | `SQL_DEFINITIONS_DIR` | `app/sql_definitions` | SQL 定義檔目錄路徑 |
 | `DATABASE_DEFINITIONS_DIR` | `app/database_definitions` | 資料庫定義檔目錄路徑 |
 | `DB_{ALIAS}_PASSWORD` | — | 覆蓋指定資料庫別名的密碼（如 `DB_HR_DB_PASSWORD`） |

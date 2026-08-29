@@ -159,12 +159,15 @@ python -m scripts.extract_query --db DW --query eo_detail \
 
 - Walks `fetch_mode=batch` and writes CSV incrementally, so neither client nor server holds the whole set (`fetch_mode=all` would build one JSON document for every row first)
 - `--format` inferred from the `--out` suffix: `csv` (stdlib, streaming), `parquet` / `xlsx` (buffered; need `pandas` plus `pyarrow` / `openpyxl`, which are not installed by default)
-- The server recomputes `COUNT(*)` per batch, so per-request cost is nearly flat in batch size — prefer large batches. Measured: 139k rows × 89 columns in ~103 s at `--batch-size 10000`
+- Per-request cost is nearly flat in batch size — prefer large batches. Measured: 139k rows × 89 columns in ~103 s at `--batch-size 10000`. (The server used to recompute `COUNT(*)` on every batch; it is now memoised for `QUERY_COUNT_CACHE_TTL_SECONDS`, which removes most of that fixed cost but does not change the advice)
 - Exit codes: `0` ok, `1` API error, `2` bad usage, `3` missing optional output library
 
-### 9. Rate Limiting
+### 9. Rate Limiting and Concurrency
 - In-memory sliding window, one bucket per caller: per API key (honouring that key's own `rate_limit_per_minute`), per username for human callers, per client IP for anonymous requests
-- **Process-local** — it does not coordinate across API instances or Celery workers
+- A second, independent cap limits how many requests one caller may have **in flight** at the same time (`MAX_CONCURRENT_REQUESTS_PER_PRINCIPAL`, default 4). A request waits up to `CONCURRENCY_WAIT_SECONDS` (default 5) for a slot, then gets `429` with `Retry-After`
+- The two answer different questions: the window caps request *volume*, the concurrency cap stops one caller occupying the server with a handful of slow queries. A client fanning out 8 parallel page requests against a heavy definition stays under 60/min while starving everyone else
+- Both use the same bucket key, and both are **process-local** — they do not coordinate across API instances or Celery workers, so with N instances the effective concurrency cap is N × the setting
+- `/admin`, `/docs`, `/static` and `/favicon` are exempt from the concurrency cap: the SPA loads assets in parallel and they never touch a data source
 
 ### 10. Database Connection Status (`/api/v1/databases/status`)
 - Live per-database connectivity check — `Online` (with latency), `Offline` (with the raw driver error), or `Timeout`
@@ -505,6 +508,10 @@ Or use the **Export YAML** / **Upload YAML** buttons on the Admin UI SQL Definit
 | `SECRET_KEY` | JWT signing key | (change this!) |
 | `CELERY_BROKER_URL` | Redis URL for Celery | `redis://localhost:6379/1` |
 | `RATE_LIMIT_PER_MINUTE` | Max requests per client per minute | `60` |
+| `MAX_CONCURRENT_REQUESTS_PER_PRINCIPAL` | Max requests one caller may have in flight at once; `0` disables the cap | `4` |
+| `CONCURRENCY_WAIT_SECONDS` | How long a request waits for a concurrency slot before `429`; `0` rejects immediately | `5.0` |
+| `QUERY_COUNT_CACHE_TTL_SECONDS` | How long a `COUNT(*)` is reused across `page`/`batch` requests with identical binds; `0` disables | `60` |
+| `QUERY_COUNT_CACHE_MAX_ENTRIES` | Cap on cached count entries (oldest evicted first) | `512` |
 | `DB_HEALTH_CHECK_TIMEOUT` | Total seconds for `GET /databases/status` — shared across all aliases, not per-alias | `5.0` |
 | `AUDIT_RETENTION_DAYS` | Default retention window for `python -m scripts.purge_audit_logs` | `365` |
 | `AUDIT_PARAMS_INLINE_LIMIT` | Bytes of serialized params inlined in `GET /audit/logs`; larger ones are omitted and fetched per row from `GET /audit/logs/{id}` | `4096` |

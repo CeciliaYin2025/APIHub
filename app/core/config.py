@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     # Rate limiting
     rate_limit_per_minute: int = 60
 
+    # Per-principal concurrency cap. The sliding-window rate limiter counts request
+    # STARTS, so it cannot stop one caller holding N slow queries open at once — an MCP
+    # client walking a large definition page by page fans out ~8 parallel full scans and
+    # starves everyone else (seen 2026-08-20/24). 0 disables the cap entirely.
+    max_concurrent_requests_per_principal: int = 4
+    # How long a request waits for a slot before giving up with 429. Kept short and
+    # finite for the same reason as the DB pool's acquire timeout: queueing forever just
+    # pins worker threads. 0 = never wait, reject immediately.
+    concurrency_wait_seconds: float = 5.0
+
     # Comma-separated CIDRs/IPs of trusted reverse proxies (e.g. the ISAP gateway).
     # When the direct peer matches one of these, X-Forwarded-For is consulted to recover
     # the real client IP for the API-key IP allowlist and audit logging. SCOPE TO THE
@@ -141,6 +151,15 @@ class Settings(BaseSettings):
     # params omitted in the detail list; the UI fetches them per row on
     # expand. Guards the API response size, not the stored size.
     audit_params_inline_limit: int = 4096
+
+    # Query engine: how long a COUNT(*) result stays reusable for identical
+    # (definition + binds + alias) in the `page` and `batch` fetch modes. Paging a
+    # definition re-runs the same count on every page — on a 45k-row unfiltered
+    # eo_detail that was ~60% of each request. 0 disables the cache (always recount).
+    query_count_cache_ttl_seconds: int = 60
+    # Hard cap on cached count entries, so a wide variety of bind combinations cannot
+    # grow the cache without bound. Oldest entries are evicted first.
+    query_count_cache_max_entries: int = 512
 
     # extra="ignore" is required, not cosmetic: .env also carries the per-alias
     # DB_{ALIAS_UPPER}_PASSWORD entries, which are consumed directly from os.environ by
