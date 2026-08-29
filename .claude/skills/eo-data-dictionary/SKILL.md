@@ -94,6 +94,11 @@ see any of:
 | Reference | `LOCK_QTY`, `MSIC` |
 | Goal | `TARGET_AMT` (Meeting Goals) |
 
+`WIP_AMT` and `TP75_Amt` are in the Sales view and have **no `_TWD` twin** — they
+are local currency. Sales therefore also carries `CURRENCY_CODE` and
+`TWD_CURRENCY_RATE`, which neither report prints: a workbook is rendered per site
+so its currency is implicit, an API response has no such context.
+
 ### Asking for a view
 
 `query_dw_eo_summary` takes a **`view`** argument: `mc` (default, everything) or

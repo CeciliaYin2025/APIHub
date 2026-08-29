@@ -79,8 +79,9 @@ MC ONLY — absent from view='sales': the loss evaluation (OH_unrecoverable, OPO
 EST_Loss columns, the two Sales'-Reply columns, Cust_Liable_Amt); the unrecoverable block \
 (UNRECOVERABLE_AMT, BUYDOWN_AMT, RESERVED_AMT, Balance); all six EXCESS_* columns; the _TP70 / _TP75 / \
 _PLUSAMT / Non_TP70&TP75 obsolete breakdown; TP80_Amt, ALL_OH_AMT, UNAVAILABLE_OH_AMT, Total INV Amt; \
-LOCK_QTY; MSIC; TARGET_AMT (Meeting Goals); and the identity/plumbing columns SUMMARY_ID, CustomerName, \
-CUSTOMER_NUMBER, LAST_UPDATE_DATE, CURRENCY_CODE, TWD_CURRENCY_RATE.
+LOCK_QTY; MSIC; TARGET_AMT (Meeting Goals); and the identity columns SUMMARY_ID, CustomerName, \
+CUSTOMER_NUMBER, LAST_UPDATE_DATE. Sales DOES get CURRENCY_CODE and TWD_CURRENCY_RATE, because TP75_Amt and \
+WIP_AMT have no _TWD twin and are unreadable without them.
 
 The response reports the `view` actually applied and lists `masked_columns`. `view_downgraded: true` \
 means the CALLER'S OWN PERMISSION (eo:read:scoped) narrowed the request — those columns are restricted \

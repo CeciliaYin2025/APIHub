@@ -22,6 +22,10 @@ of those, and would leak any column added to the table later. The Sales view is
 therefore a positive allowlist: a column reaches a Sales caller only by being
 named here.
 
+A few entries are `_plumbing`: columns neither report prints, but which a Sales
+caller needs because an API response has none of the context a rendered workbook
+has. They carry no display label — there is none to carry.
+
 ## Matching is case-insensitive
 
 `SELECT ep.*` returns the table's own casing, which is inconsistent in the
@@ -72,6 +76,18 @@ def _both(db_field: str, mc_label: str, sales_label: str, group: str, note: str 
 
 def _mc_only(db_field: str, mc_label: str, group: str, note: str | None = None) -> FieldSpec:
     return FieldSpec(db_field, mc_label, None, group, frozenset({MC}), note)
+
+
+def _plumbing(db_field: str, note: str) -> FieldSpec:
+    """A column both views need but neither report prints, so it has no label.
+
+    The reports are rendered per site, so currency is implicit on the page. An
+    API response has no such context: a Sales caller receives TP75_Amt and
+    WIP_AMT, which have no _TWD twin and are therefore in local currency, and
+    without the code and the rate those two numbers cannot be interpreted or
+    converted. Carrying them is not a leak — a rate is not an E&O figure.
+    """
+    return FieldSpec(db_field, None, None, "plumbing", frozenset(VIEWS), note)
 
 
 # ── Section 1: present in both views ─────────────────────────────────────────
@@ -175,6 +191,16 @@ _SHARED: tuple[FieldSpec, ...] = (
         "Sales AP Due Date",
         "feedback",
         "Abbreviated in the Sales workbook.",
+    ),
+    _plumbing(
+        "CURRENCY_CODE",
+        "Needed to read TP75_Amt and WIP_AMT, which the Sales view carries and which have no "
+        "_TWD twin. Not printed by either report — the workbooks are per site, so currency is "
+        "implicit there and explicit here.",
+    ),
+    _plumbing(
+        "TWD_CURRENCY_RATE",
+        "The rate the _TWD columns were converted at; lets a caller convert the local-currency columns the same way.",
     ),
     _both(
         "FROZEN_DATE",
