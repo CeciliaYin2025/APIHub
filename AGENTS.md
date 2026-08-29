@@ -44,6 +44,15 @@ python -m scripts.extract_query --db DW --query eo_detail -p frozen_date=2026-08
 # Register this instance with isap-auth (no-op without a bootstrap token)
 python -m scripts.register_isap_app
 
+# Check the E&O field dictionary against the columns eo_summary really returns.
+# The Sales view is an allowlist, so a mistyped db_field fails SILENTLY — run
+# this after editing app/services/eo_field_views.py. Needs APIHUB_URL + a credential.
+python -m scripts.verify_eo_field_dictionary
+
+# Refresh the eo_summary tool description for the MC/Sales views (reads and
+# diffs first; --apply to write). Needs a SUPERUSER APIHUB_TOKEN.
+python -m scripts.update_eo_summary_description [--apply] [--also-description]
+
 # Same init inside Docker
 docker-compose exec api python -m scripts.init_db
 
