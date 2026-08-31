@@ -187,9 +187,9 @@ python -m scripts.eo_cache fetch ... --refresh # 忽略快取，強制重抓單�
 `scripts/extract_query.py` 串流到檔案——`eo_detail` 單期就有約 139,000 列，
 那種量不屬於快取，也不屬於 AI 的上下文。做法見第 5 節。
 
-> 這一節需要 API Key 或 JWT。若你是純 SSO 使用者（沒有 API Key），MCP 工具
-> 本身已經可以正常使用，只是無法使用這個快取腳本；需要的話請管理者核發一把
-> 服務用 API Key。
+> 這一節需要一個憑證。**你不需要 API Key** —— SSO／SAML 使用者可以用
+> `python -m scripts.apihub_login` 從瀏覽器換一顆 token，做法見第 5 節開頭。
+> API Key 仍然適用於無人值守的排程（那種情境沒有瀏覽器可開）。
 
 ---
 
@@ -246,15 +246,41 @@ MCP 工具會把查到的**每一列都放進 AI 的上下文**。這對「SP �
 翻頁一個沒有篩選條件的定義，吃掉了伺服器 **99.5%** 的處理時間——伺服器現在對
 每個呼叫者有同時在途請求數的上限，就是那次之後加的。
 
-### 正確做法：先抽成檔案
+### 第一步：先拿到憑證（SSO／SAML 使用者看這裡）
+
+抽檔腳本走的是 REST API，需要一個憑證，而你用 SAML 登入 —— 沒有本機密碼可以換
+JWT，也沒有 API Key（那屬於管理者建的服務帳號）。
+
+**但你不需要向管理者要 API Key。** API Hub 本身就是 OAuth 2.1 的 Resource
+Server，所以 isap-auth 發的 token 直接就是 `APIHUB_TOKEN`。
+`scripts/apihub_login.py` 會開瀏覽器讓你用平常那套 SSO 登入，換一顆 token 回來：
+
+```bash
+export APIHUB_URL=https://ia-dev.sercomm.com/apihub
+
+eval "$(python -m scripts.apihub_login --export)"   # 開瀏覽器登入，設好 APIHUB_TOKEN
+python -m scripts.apihub_login --status             # 看還有多久到期
+```
+
+- **瀏覽器那一段就是 SAML 能運作的原因**：身分驗證由你自己在瀏覽器裡完成，跟登入
+  Admin UI 是同一條路徑，這支腳本從頭到尾看不到你的密碼
+- 若你的 SSO session 還活著，整個過程是**靜默的**，瀏覽器一閃就完成
+- token 存在 `~/.config/apihub/oauth.json`（權限 `0600`，可用 `APIHUB_CACHE_DIR`
+  改位置）。**有效期 8 小時**，而且帶了 refresh token，所以之後直接命中快取或自動
+  續期，不會每次都要你登入
+- 同一顆 token 也適用於第 3 節的 `scripts/eo_cache.py`
+- **無人值守的排程仍然要用 API Key** —— 那種情境沒有瀏覽器可以開，請管理者核發一把
+  服務帳號金鑰
+
+> 腳本只從 `APIHUB_URL` 出發自動探索：先讀 API Hub 的 RFC 9728 資源描述文件找出
+> 授權伺服器，再讀它的 RFC 8414 描述文件取得各端點。換一套環境不需要改設定。
+
+### 第二步：抽成檔案
 
 `scripts/extract_query.py` 走 REST API 的 `batch` 模式串流寫檔，兩邊都不會一次
 持有整份結果：
 
 ```bash
-export APIHUB_URL=https://ia-dev.sercomm.com/apihub
-export APIHUB_API_KEY=ahk_...            # 或 APIHUB_TOKEN=<JWT>
-
 python -m scripts.extract_query --db DW --query eo_detail \
     -p frozen_date=2026-08-01 --out ~/eo/eo_detail_2026-08-01.csv
 ```
@@ -266,7 +292,7 @@ python -m scripts.extract_query --db DW --query eo_detail \
 
 一期抽一次就好。**封閉期別的資料不會再變**，重抽只會拿到一模一樣的東西。
 
-### 然後讓 AI 自己建一份 skill 去讀那個檔案
+### 第三步：讓 AI 自己建一份 skill 去讀那個檔案
 
 抽完檔案，分析的形狀就從「把列讀進上下文」變成「對本機檔案跑程式」。這件事不該
 每次重講一遍，讓 AI 把它寫成一份自己的 skill。可以直接這樣要求它：
@@ -307,6 +333,7 @@ python -m scripts.extract_query --db DW --query eo_detail \
 - `deploy/apihub/README.md` — 伺服器端部署與 OAuth 設定
 - `.claude/skills/eo-*/SKILL.md` — 五份 skill 本體（全文見下方附錄 A～E）
 - `.claude/skills/new-sql-definition/SKILL.md` — 新增 SQL 定義的規則（給開發者，未收錄於附錄）
+- `scripts/apihub_login.py` — SSO／SAML 使用者用瀏覽器換取 token（第 5 節）
 - `scripts/extract_query.py` — 大量資料抽檔（第 5 節），`--help` 有完整參數
 - `scripts/eo_cache.py` — 封閉期別的本機快取（第 3 節）
 

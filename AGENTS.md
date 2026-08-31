@@ -37,6 +37,11 @@ python -m scripts.migrate_sql_def_db_alias
 # Trim the audit trail (nothing does this automatically; schedule it)
 python -m scripts.purge_audit_logs [--days N] [--dry-run]
 
+# Sign in through the browser and cache a token (client-side; for SSO/SAML users
+# who have no API key — the Hub is an OAuth RS, so an isap-auth token IS the
+# APIHUB_TOKEN). Discovers everything from APIHUB_URL.
+eval "$(python -m scripts.apihub_login --export)"
+
 # Bulk-extract a definition to a local file (client-side; needs APIHUB_URL +
 # APIHUB_API_KEY or APIHUB_TOKEN)
 python -m scripts.extract_query --db DW --query eo_detail -p frozen_date=2026-08-01 --out out.csv
@@ -177,6 +182,8 @@ Aggregation depends on PostgreSQL-only constructs (`JSONB`, `COUNT(*) FILTER`, `
 ### Bulk Extraction
 
 `scripts/extract_query.py` is the bulk counterpart to the MCP tools: MCP returns rows into an LLM's context, which does not fit a six-figure row count, so this walks the REST API's `batch` fetch mode and streams to CSV (or buffers to Parquet/XLSX). It is a **client-side** tool — it talks to the API over HTTP and is not part of the server image's runtime.
+
+It needs a credential, and an SSO/SAML user has neither a password to exchange for a JWT nor an API key — which left exactly the people who use MCP unable to do the one job MCP is wrong for. `scripts/apihub_login.py` closes that: the Hub is an OAuth RS (`OAUTH_RS_ENABLED`), so an isap-auth access token *is* an `APIHUB_TOKEN`, and the script runs the same authorization-code + PKCE flow an MCP client runs against a loopback redirect. Everything is discovered from `APIHUB_URL` (RFC 9728 → RFC 8414), the client self-registers via DCR, and the browser leg is what makes SAML work — the script never sees a password. Tokens cache to `~/.config/apihub/oauth.json` created `0600`. Refresh rotation replaces the stored token, but a response *without* a new refresh token keeps the old one — that is not a revocation, and dropping it would send the user back through the browser for nothing. Unattended callers (Celery, cron) still use API keys: there is no browser to open.
 
 Two things worth knowing before changing it: `batch` is used rather than `all` because `all` builds one JSON document for every row before the client sees anything (~105 MB for a 139k-row set), and `_fetch_batch` recomputes `COUNT(*)` on every batch, so per-request cost is nearly flat in batch size — larger batches are dramatically cheaper, which is why the default is 5000 of the allowed 10000.
 
