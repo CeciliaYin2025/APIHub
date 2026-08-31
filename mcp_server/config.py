@@ -43,7 +43,14 @@ class McpSettings(BaseSettings):
     # Audience this server accepts in incoming tokens. Empty = use public_url.
     # A token whose aud/resource claim does not name us is rejected (MCP spec:
     # servers MUST validate that tokens were issued specifically for them).
+    # Note this only bites when the AS actually returns an audience claim —
+    # isap-auth returns none, see mcp_server/oauth.py::token_is_for_this_server.
     oauth_audience: str = ""
+    # Fallback for an authorization server that returns no audience claim at
+    # all: accept only these client_ids (space- or comma-separated). Empty =
+    # accept any active token, which is the only workable default while clients
+    # register through DCR and get a fresh client_id per install.
+    oauth_allowed_client_ids: str = ""
     # Scopes advertised in the resource metadata and the 401 challenge, so
     # clients request these rather than everything the AS offers. Space- or
     # comma-separated; empty means advertise none.

@@ -15,6 +15,7 @@ def _settings(monkeypatch):
     monkeypatch.setattr(mcp_settings, "introspection_secret", "isecret")
     monkeypatch.setattr(mcp_settings, "bridge_secret", "bsecret")
     monkeypatch.setattr(mcp_settings, "api_hub_url", "http://api:8000")
+    monkeypatch.setattr(mcp_settings, "oauth_allowed_client_ids", "")
 
 
 def test_metadata_and_challenge():
@@ -94,7 +95,10 @@ async def test_inactive_token_returns_none():
 
 @pytest.mark.asyncio
 async def test_token_issued_for_another_resource_is_rejected():
-    """An active isap-auth token minted for a different app on the same gateway."""
+    """An active isap-auth token minted for a different app on the same gateway.
+
+    Also the proof that the check tightens back up on its own the day the AS
+    starts supplying an audience — no config change, no redeploy."""
     calls: list[str] = []
     exchanger = TokenExchanger(
         transport=_transport(
@@ -108,9 +112,31 @@ async def test_token_issued_for_another_resource_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_token_without_any_audience_claim_is_rejected():
+async def test_token_without_any_audience_claim_is_accepted():
+    """isap-auth returns no aud/resource claim of any kind, so rejecting
+    audience-less tokens rejects every caller — which is exactly what took the
+    MCP server down. With nothing to enforce, the audience check stands down;
+    see mcp_server/oauth.py::token_is_for_this_server."""
     exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice"}))
-    assert (await exchanger.exchange("audience-less-token")).status == 401
+    assert (await exchanger.exchange("audience-less-token")).jwt == "local-jwt"
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_audience_less_token_gated_on_client_id_allowlist(monkeypatch):
+    """The opt-in fallback for a deployment whose clients are statically
+    registered (DCR clients cannot be listed — they mint an id per install)."""
+    monkeypatch.setattr(mcp_settings, "oauth_allowed_client_ids", "apihub-mcp, other-client")
+    calls: list[str] = []
+    exchanger = TokenExchanger(
+        transport=_transport({"active": True, "username": "alice", "client_id": "someone-else"}, calls=calls)
+    )
+    assert (await exchanger.exchange("stranger-token")).status == 401
+    assert not [c for c in calls if "sso-token" in c]  # never reached the identity bridge
+
+    allowed = TokenExchanger(transport=_transport({"active": True, "username": "alice", "client_id": "apihub-mcp"}))
+    assert (await allowed.exchange("listed-token")).jwt == "local-jwt"
+    await allowed.aclose()
     await exchanger.aclose()
 
 
