@@ -87,11 +87,51 @@ def _audience_values(claims: dict) -> set[str]:
 
 
 def audience_matches(claims: dict) -> bool:
-    """True when the token names this server in an audience claim."""
+    """True when the token names this server in an audience claim.
+
+    Only meaningful when the claims actually carry one — see
+    ``token_is_for_this_server`` for the case where they do not.
+    """
     expected = (mcp_settings.oauth_audience or mcp_settings.public_url).rstrip("/")
     if not expected:
         return False  # nothing to compare against — fail closed
     return expected in {v.rstrip("/") for v in _audience_values(claims)}
+
+
+def _allowed_client_ids() -> set[str]:
+    raw = mcp_settings.oauth_allowed_client_ids.replace(",", " ").split()
+    return {c for c in raw if c}
+
+
+def token_is_for_this_server(claims: dict) -> bool:
+    """Whether this token may be used against *this* resource server.
+
+    Audience binding is the check the MCP spec asks for, and it is enforced
+    whenever the authorization server gives us something to enforce it with.
+    **isap-auth does not**: it ignores the ``resource`` parameter clients send
+    and its introspection response carries no ``aud``/``resource`` claim at all
+    (verified 2026-08-31 against a live token). Rejecting audience-less claims
+    therefore rejected *every* caller — the MCP server answered 401 to every
+    request from the moment this check shipped, which is not a security posture,
+    just an outage.
+
+    So the rule is: enforce the audience when the AS supplies one, and when it
+    supplies none, fall back to ``MCP_OAUTH_ALLOWED_CLIENT_IDS``. The fallback
+    is deliberately opt-in and empty by default, because clients that register
+    through DCR — Claude Code among them — mint a fresh ``client_id`` per
+    install and cannot be listed in advance. With an empty list any active
+    isap-auth token is accepted here, which is the pre-3221ed0 behaviour; what
+    limits the damage is that authorization still comes from the API Hub's own
+    RBAC for that user, never from the token.
+
+    The day isap-auth starts echoing an audience, this tightens back up on its
+    own — no config change, no redeploy.
+    """
+    if (allowed := _allowed_client_ids()) and str(claims.get("client_id") or "") not in allowed:
+        return False
+    if not _audience_values(claims):
+        return True
+    return audience_matches(claims)
 
 
 def challenge_header() -> str:
@@ -166,7 +206,7 @@ class TokenExchanger:
             # The AS could not answer — a misconfigured introspection secret
             # lands here too, and neither is the caller's fault.
             return Exchange(status=503)
-        if not claims.get("active") or not audience_matches(claims):
+        if not claims.get("active") or not token_is_for_this_server(claims):
             return Exchange(status=401)
         if not mcp_settings.bridge_secret:
             return Exchange(jwt=bearer_token)
