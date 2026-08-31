@@ -86,6 +86,26 @@ def _audience_values(claims: dict) -> set[str]:
     return values
 
 
+def _names_this_server(expected: str, value: str) -> bool:
+    """Whether one audience value names this server.
+
+    Exact match, or anything *below* our resource identifier. The second half
+    is not laxity, it is the two URLs this server legitimately answers to: RFC
+    9728 makes the identifier the ``resource`` from our metadata
+    (``.../apihub/mcp``), while a client that takes the MCP spec's "canonical
+    URI of the server" literally sends the endpoint it actually posts to
+    (``.../apihub/mcp/mcp/``). Both name us; rejecting the second would lock
+    out whichever clients read it that way, and we cannot tell in advance which
+    those are.
+
+    The boundary is a path segment, so a sibling never slips through: with
+    ``.../apihub/mcp`` expected, ``.../apihub-test/mcp`` and ``.../apihub/mcpx``
+    both fail — which is what keeps the two stacks separate.
+    """
+    value = value.rstrip("/")
+    return value == expected or value.startswith(expected + "/")
+
+
 def audience_matches(claims: dict) -> bool:
     """True when the token names this server in an audience claim.
 
@@ -95,7 +115,7 @@ def audience_matches(claims: dict) -> bool:
     expected = (mcp_settings.oauth_audience or mcp_settings.public_url).rstrip("/")
     if not expected:
         return False  # nothing to compare against — fail closed
-    return expected in {v.rstrip("/") for v in _audience_values(claims)}
+    return any(_names_this_server(expected, v) for v in _audience_values(claims))
 
 
 def _allowed_client_ids() -> set[str]:

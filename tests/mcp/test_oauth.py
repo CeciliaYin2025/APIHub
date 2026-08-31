@@ -141,6 +141,35 @@ async def test_audience_less_token_gated_on_client_id_allowlist(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_audience_accepted_from_the_endpoint_url_below_the_resource_id():
+    """Our resource identifier is https://isap.example.com/apihub/mcp, but the
+    endpoint clients actually post to is .../apihub/mcp/mcp/. A client that
+    reads the MCP spec's "canonical URI of the MCP server" as the latter is
+    still naming us, and Claude Code sends whichever it picked at BOTH the
+    authorize and the token leg — so getting this wrong locks it out at its
+    next login, with the stand-down unable to help because an aud is present."""
+    exchanger = TokenExchanger(
+        transport=_transport({"active": True, "username": "alice", "aud": "https://isap.example.com/apihub/mcp/mcp/"})
+    )
+    assert (await exchanger.exchange("endpoint-url-aud")).jwt == "local-jwt"
+    await exchanger.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sibling_resources_do_not_slip_through_the_prefix():
+    """The prefix stops at a path segment, which is the whole reason the two
+    stacks stay separate: apihub must not accept apihub-test's tokens."""
+    for stranger in (
+        "https://isap.example.com/apihub-test/mcp",
+        "https://isap.example.com/apihub/mcpx",
+        "https://isap.example.com/apihub",
+    ):
+        exchanger = TokenExchanger(transport=_transport({"active": True, "username": "alice", "aud": stranger}))
+        assert (await exchanger.exchange(f"tok-{stranger}")).status == 401, stranger
+        await exchanger.aclose()
+
+
+@pytest.mark.asyncio
 async def test_audience_accepted_from_list_valued_aud():
     exchanger = TokenExchanger(
         transport=_transport(
