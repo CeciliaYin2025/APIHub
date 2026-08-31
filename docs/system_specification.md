@@ -1527,6 +1527,12 @@ MCP 工具、Admin UI 與所有 API key 都早於本字典存在，且僅持有 
 會實際跑一次 `eo_summary` 並雙向比對（字典有但查詢沒回傳 / 查詢回傳但字典沒收錄），
 新增或修改欄位後應執行。
 
+字典改動後還有第二件事要做：`eo_summary` 的工具描述是 LLM 唯一會讀到的 view 說明，
+但它存在資料庫的定義列裡，不會跟著程式碼一起部署。
+`python -m scripts.update_eo_summary_description [--apply]` 會先讀出現況並列出差異，
+加 `--apply` 才寫入；它**合併**進既有描述而非整段取代，因此不會蓋掉定義本身的說明。
+需要 **superuser** 的 `APIHUB_TOKEN`（改的是定義，不是查詢）。
+
 ## 6. 資料庫設計
 
 ### 6.1 系統內部表（由 SQLAlchemy ORM 管理）
@@ -2293,10 +2299,17 @@ Skill 為純 Markdown（`SKILL.md` + YAML frontmatter），不依賴特定 clien
 - **端點格式**：`/<app>/mcp/mcp/` 為兩層路徑（gateway 前綴 + Streamable HTTP 掛載點）
   且結尾斜線必要；授權伺服器可能位於**不同主機**，由 RS metadata 指示
 - **連線失敗判讀表**：工具清單為空 / 403 / 404 各自對應的原因
-- 附錄收錄 `eo-analysis` skill 全文，供無法取得 repo 的使用者複製
+- **`eo_summary` 的 MC / Sales 兩套欄位名稱**：同一欄在兩份報表下叫不同名字
+  （MC「Obsolete All OH Amt」= Sales「E&O OH (All) Amt」），列為使用者最容易
+  問錯的事項之一，完整對照表在附錄 B
+- **大量資料改走檔案**：MCP 會把每一列放進模型的 context，六位數的結果集不屬於
+  那裡。指南要求改用 `scripts/extract_query.py` 抽成本機檔案（見 §9.13），並建議
+  使用者請 AI 自行建立一份讀取該檔案的 skill —— 先聚合再回 context，加總規則仍以
+  `eo-data-dictionary` 為準
+- 附錄收錄五份 E&O skill 全文（A～E），供無法取得 repo 的使用者複製
 
-該附錄為副本，存在漂移風險，因此 `tests/test_docs_skill_sync.py` 會在附錄與
-`.claude/skills/eo-analysis/SKILL.md` 不一致時使建置失敗 —— 過期的副本對照著它操作
+該附錄為副本，存在漂移風險，因此 `tests/test_docs_skill_sync.py` 會在任一附錄與
+其 `.claude/skills/<name>/SKILL.md` 不一致時使建置失敗 —— 過期的副本對照著它操作
 的讀者是不可見的。
 
 > **本規格書不列出個別 SQL 定義。** 定義儲存於平台庫的 `api_hub_sql_definitions`
@@ -2337,6 +2350,29 @@ Skill 為純 Markdown（`SKILL.md` + YAML frontmatter），不依賴特定 clien
 API 為 `PUT /{db}/queries/definitions/{name}`，body `{"enabled": false}`。
 
 ---
+
+---
+
+### 9.13 批次抽檔 — `scripts/extract_query.py`
+
+MCP 工具的結果會進入模型的 context，因此工具只開放 `page`／`count`／`one`，
+刻意不開放 `all` 與 `batch`（見 §4.12）。六位數的結果集由這支**客戶端**腳本負責 —— 它不在伺服器映像的執行路徑上，
+只透過 HTTP 呼叫 REST API。
+
+- 走 REST 的 **`batch` 模式**而非 `all`：`all` 會在客戶端看到第一個位元組之前，
+  先為每一列組出單一 JSON 文件（E&O 明細集約 105 MB）
+- 逐批寫檔（CSV 串流；Parquet／XLSX 需先在記憶體組裝），兩端都不會一次持有整份
+  結果
+- `--batch-size` 預設 5000、上限 10000（`app/schemas/query.py` 的伺服器端上限）。
+  伺服器**每批都會重算一次 `COUNT(*)`**，故單次請求成本幾乎與批次大小無關，
+  批次調大幾乎純賺 —— 預設值刻意接近上限
+- 認證用 `APIHUB_URL` + `APIHUB_API_KEY`／`APIHUB_TOKEN`（見 §14 的客戶端變數）。isap-auth
+  沒有 `client_credentials` grant，無人值守的呼叫者仍使用 API 金鑰
+- 結束碼：0 成功、1 API 拒絕或失敗、2 用法錯誤、3 所選輸出格式缺少對應套件
+
+抽出的檔案要如何分析不屬於本系統的職責，但 `docs/eo-mcp-setup.md` §5 對終端
+使用者給了明確建議：請 AI 建立一份讀取該檔案的 skill，**先聚合再把結果帶回
+context**，而不是把整份資料印出來 —— 否則等於繞一圈又把資料塞回 context。
 
 ---
 
@@ -2861,10 +2897,16 @@ Oracle-api-hub/
 │   ├── purge_audit_logs.py              # 稽核軌跡保留期限清理（分批 DELETE）
 │   ├── register_isap_app.py             # 向 isap-auth 註冊本應用的 redirect_uris
 │   ├── extract_query.py                 # 客戶端：批次串流完整結果集至 CSV/Parquet/XLSX
-│   └── eo_cache.py                      # 客戶端：依凍結期別快取結果（最新一期永不快取，見 §9.9）
+│   ├── eo_cache.py                      # 客戶端：依凍結期別快取結果（最新一期永不快取，見 §9.9）
+│   ├── verify_eo_field_dictionary.py    # 客戶端：比對 E&O 欄位字典與 eo_summary 實際回傳的欄位
+│   └── update_eo_summary_description.py # 客戶端：更新 eo_summary 的 MC/Sales view 工具描述（需 superuser）
 ├── .claude/
 │   └── skills/                          # Agent Skills（純 Markdown，見 §9.10）
-│       ├── eo-analysis/SKILL.md         # 資料判讀方法與陷阱清單
+│       ├── eo-analysis/SKILL.md         # 資料判讀方法與陷阱清單（E&O 進入點）
+│       ├── eo-data-dictionary/SKILL.md  # 欄位參考：金額家族、可否加總、MC/Sales 兩套名稱
+│       ├── eo-business-rules/SKILL.md   # 歸屬邏輯與已知規則變更
+│       ├── eo-monthly-review/SKILL.md   # 月度檢視工作流
+│       ├── eo-issue-investigation/SKILL.md  # 單一料號／PID 的爭議追查工作流
 │       ├── new-sql-definition/SKILL.md  # 撰寫同時滿足 REST 與 MCP 的定義
 │       └── update-spec/SKILL.md         # 維持文件與程式碼同步
 ├── tests/
