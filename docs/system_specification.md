@@ -2370,6 +2370,36 @@ MCP 工具的結果會進入模型的 context，因此工具只開放 `page`／`
   沒有 `client_credentials` grant，無人值守的呼叫者仍使用 API 金鑰
 - 結束碼：0 成功、1 API 拒絕或失敗、2 用法錯誤、3 所選輸出格式缺少對應套件
 
+
+**SSO／SAML 使用者如何取得憑證 — `scripts/apihub_login.py`**
+
+以 SAML 登入的人兩種憑證都沒有：沒有本機密碼可換 JWT，API 金鑰又屬於管理者建立的
+服務帳號。在此之前這些人能用 MCP 問問題，卻無法批次抽檔 —— 正好是 MCP 最不適合的
+那件事。
+
+由於 API Hub 本身是 OAuth 2.1 Resource Server（`OAUTH_RS_ENABLED`），**isap-auth
+發出的存取權杖就是 `APIHUB_TOKEN`**。該腳本執行與 MCP 客戶端相同的
+authorization code + PKCE 流程，重導向指向 loopback：
+
+- **僅從 `APIHUB_URL` 探索**：先取 API Hub 的 RFC 9728 資源描述文件
+  （`/.well-known/oauth-protected-resource`）得到授權伺服器，再取其 RFC 8414
+  描述文件得到 authorize／token／register 端點。除此之外沒有任何 isap-auth 專屬假設
+- **公開客戶端**：無密鑰，PKCE S256，經 DCR（`registration_endpoint`）自我註冊，
+  重導向固定為 `http://127.0.0.1:<隨機埠>/callback` —— 公開客戶端無法保管密鑰，
+  重導向就必須落在只有本機收得到的位置
+- **瀏覽器那一段正是 SAML 得以運作的關鍵**：身分提供者由使用者在自己的瀏覽器中操作，
+  與 Admin UI 同一條路徑；腳本不接觸密碼
+- 帶 `resource`（RFC 8707），因此權杖綁定本 API Hub，無法被重放到共用同一 issuer
+  的其他資源伺服器
+- 權杖存於 `~/.config/apihub/oauth.json`，**以 `0600` 建立**（而非事後收窄權限，
+  否則 refresh token 會有一瞬間是全域可讀的）。`APIHUB_CACHE_DIR` 可改位置
+- 續期會**輪替** refresh token，新的必須取代舊的（isap-auth 對重放會撤銷整個 family）；
+  但回應若未帶新的 refresh token，則保留原有的 —— 那不是撤銷，清掉只會讓下一次
+  執行白白再跑一次瀏覽器登入
+- 過期或已撤銷的 refresh token 會退回完整登入流程，而不是報錯
+
+**無人值守的排程仍使用 API 金鑰** —— 那些情境沒有瀏覽器可開，這是 API 金鑰不會被
+OAuth 取代的原因（見 §7.1.2）。
 抽出的檔案要如何分析不屬於本系統的職責，但 `docs/eo-mcp-setup.md` §5 對終端
 使用者給了明確建議：請 AI 建立一份讀取該檔案的 skill，**先聚合再把結果帶回
 context**，而不是把整份資料印出來 —— 否則等於繞一圈又把資料塞回 context。
@@ -2798,8 +2828,8 @@ curl -X POST http://localhost:8000/api/v1/hr_db/queries/execute \
 
 ### 14.1 客戶端工具環境變數
 
-以下變數**不由伺服器讀取**，僅供 `scripts/extract_query.py` 與 `scripts/eo_cache.py`
-等客戶端腳本使用，設定在執行這些腳本的機器上。
+以下變數**不由伺服器讀取**，僅供 `scripts/extract_query.py`、`scripts/eo_cache.py`
+與 `scripts/apihub_login.py` 等客戶端腳本使用，設定在執行這些腳本的機器上。
 
 | 環境變數 | 預設值 | 說明 |
 |----------|--------|------|
@@ -2896,6 +2926,7 @@ Oracle-api-hub/
 │   ├── backfill_sql_def_group.py        # 一次性遷移：由定義名稱推導 group_name
 │   ├── purge_audit_logs.py              # 稽核軌跡保留期限清理（分批 DELETE）
 │   ├── register_isap_app.py             # 向 isap-auth 註冊本應用的 redirect_uris
+│   ├── apihub_login.py                  # 客戶端：SSO/SAML 使用者以瀏覽器取得存取權杖（PKCE + DCR）
 │   ├── extract_query.py                 # 客戶端：批次串流完整結果集至 CSV/Parquet/XLSX
 │   ├── eo_cache.py                      # 客戶端：依凍結期別快取結果（最新一期永不快取，見 §9.9）
 │   ├── verify_eo_field_dictionary.py    # 客戶端：比對 E&O 欄位字典與 eo_summary 實際回傳的欄位
