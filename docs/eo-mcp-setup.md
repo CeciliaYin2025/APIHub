@@ -185,7 +185,7 @@ python -m scripts.eo_cache fetch ... --refresh # 忽略快取，強制重抓單�
 
 **超過約 5 萬列的結果不會進快取**，腳本會直接擋下並要你改用
 `scripts/extract_query.py` 串流到檔案——`eo_detail` 單期就有約 139,000 列，
-那種量不屬於快取，也不屬於 AI 的上下文。
+那種量不屬於快取，也不屬於 AI 的上下文。做法見第 5 節。
 
 > 這一節需要 API Key 或 JWT。若你是純 SSO 使用者（沒有 API Key），MCP 工具
 > 本身已經可以正常使用，只是無法使用這個快取腳本；需要的話請管理者核發一把
@@ -202,7 +202,7 @@ python -m scripts.eo_cache fetch ... --refresh # 忽略快取，強制重抓單�
 |---|---|
 | `eo_frozen_dates` / `eo_max_frozen_date` | 有哪些期別 / 最新一期 |
 | `eo_dimensions` | OU / BU / PID / 客戶 / 專案 的有效代碼 |
-| `eo_summary` | 依 OU+BU+PID+客戶群的彙總金額 |
+| `eo_summary` | 依 OU+BU+PID+客戶群的彙總金額。**有 `view` 參數**：`mc`（預設，完整報表）或 `sales`（給 Sales 的較窄欄位集） |
 | `eo_detail` | 料號級明細 |
 | `eo_red_items` | 紅燈料號，可比較兩期新增／移除 |
 | `eo_item_history` | 某料號的歸屬異動軌跡與異動時點 |
@@ -212,7 +212,7 @@ python -m scripts.eo_cache fetch ... --refresh # 忽略快取，強制重抓單�
 | `eo_feedback` | 料號級 Action Plan 與人工註記 |
 | `eo_feedback_summary` | PID 級 MC 註記 |
 
-### 三件最容易問錯的事
+### 四件最容易問錯的事
 
 **期別是「週」不是「月」。** 快照是每週四加上月底補一筆，不是月結。問「上個月」
 時請說清楚是哪一期，或讓 AI 先查 `eo_frozen_dates`。傳入一個不存在的凍結日
@@ -224,6 +224,80 @@ python -m scripts.eo_cache fetch ... --refresh # 忽略快取，強制重抓單�
 **數字要看金額占比，不是列數占比。** 未歸屬的料號集中在高金額品項，例如 SN 站
 只有 6.5% 的列沒有 PID，卻占了 54.9% 的呆滯金額。只看列數會嚴重低估問題。
 
+**「Obsolete」和「E&O」是同一個欄位的兩個名字。** 同一筆 `INV_EO_PID_SUMMARY_F`
+資料同時供給兩份報表，而**兩份用不同的顯示名稱**：MC 報表寫「Obsolete All OH
+Amt」，寄給 Sales 的 Excel 寫「E&O OH (All) Amt」，兩者都是
+`OBSOLETE_OH_ALL_AMT_TWD`。Sales 那份把所有「Obsolete」一律改成「E&O」。所以當
+對方引用一個欄位名稱時，**先確認他看的是哪一份報表**，否則會很有信心地回答錯的
+欄位。完整對照表在附錄 B。`eo_summary` 的回應會告訴你套用了哪個 view，以及
+`masked_columns` 有哪些；`view_downgraded: true` 代表是呼叫者的權限把欄位收窄
+了，不是資料缺漏。
+
+---
+
+## 5. 大量資料：走檔案，不要走 MCP
+
+MCP 工具會把查到的**每一列都放進 AI 的上下文**。這對「SP 站這期呆滯金額多少」
+很合適，對「把這期全站明細撈出來自己算」則是錯的工具——不是慢，是形狀就不對。
+
+具體的數字：`eo_detail` 單一期別約 **139,000 列**。MCP 的 `page_size` 有上限
+（`MCP_PAGE_SIZE_MAX`，本站 prod 是 100），所以那是 **1,390 次工具呼叫**，而且
+每一次的結果都留在上下文裡。實際發生過：2026-08-20 與 08-24，單一 MCP 客戶端
+翻頁一個沒有篩選條件的定義，吃掉了伺服器 **99.5%** 的處理時間——伺服器現在對
+每個呼叫者有同時在途請求數的上限，就是那次之後加的。
+
+### 正確做法：先抽成檔案
+
+`scripts/extract_query.py` 走 REST API 的 `batch` 模式串流寫檔，兩邊都不會一次
+持有整份結果：
+
+```bash
+export APIHUB_URL=https://ia-dev.sercomm.com/apihub
+export APIHUB_API_KEY=ahk_...            # 或 APIHUB_TOKEN=<JWT>
+
+python -m scripts.extract_query --db DW --query eo_detail \
+    -p frozen_date=2026-08-01 --out ~/eo/eo_detail_2026-08-01.csv
+```
+
+- `--out` 的副檔名決定格式：`.csv` / `.parquet` / `.xlsx`（後兩者需要額外套件）
+- `--batch-size` 預設 5000，上限 10000。**調大幾乎純賺**：伺服器每個 batch 都會
+  重算一次 `COUNT(*)`，所以每次請求的成本幾乎與筆數無關
+- 這是**客戶端工具**，不在伺服器映像的執行路徑上；需要 API Key 或 JWT
+
+一期抽一次就好。**封閉期別的資料不會再變**，重抽只會拿到一模一樣的東西。
+
+### 然後讓 AI 自己建一份 skill 去讀那個檔案
+
+抽完檔案，分析的形狀就從「把列讀進上下文」變成「對本機檔案跑程式」。這件事不該
+每次重講一遍，讓 AI 把它寫成一份自己的 skill。可以直接這樣要求它：
+
+> 幫我建一份 skill，讀 `~/eo/` 底下用 `scripts/extract_query.py` 抽出來的 E&O
+> 明細檔。原則：用 pandas 或 duckdb 讀檔，**先聚合再把結果帶回上下文**，不要把
+> 整份資料印出來。欄位語意、哪些欄位不能跨列加總、金額家族的定義，一律以
+> `eo-data-dictionary` 為準。
+
+一份堪用的 skill 至少要寫清楚這四件事：
+
+1. **檔案在哪、代表哪一期。** 檔名要帶 `frozen_date`，因為期別是週不是月，事後
+   分不出來的檔案等於廢的
+2. **先聚合，再回上下文。** `groupby().sum()` 之後回傳幾十列，不要 `df.to_string()`
+   整份、也不要 `cat` 那個 CSV——那等於繞一大圈又把資料塞回上下文，白抽了
+3. **加總規則不因為換成本機檔案而改變。** 比率欄、已經是彙總的欄位、沒有 `_TWD`
+   雙生欄的本地幣別欄，該不能加總的還是不能——判斷依據仍然是 `eo-data-dictionary`，
+   不是 pandas 能不能算出一個數字
+4. **要重算就重抽，不要改檔。** 就地編輯過的抽出檔沒有辦法追溯來源
+
+### 兩者怎麼分工
+
+| 情境 | 用什麼 |
+|---|---|
+| 問一個數字、一個排名、一個期別的比較 | **MCP 工具** |
+| 重跑同一個封閉期別的慢查詢 | **`scripts/eo_cache`**（第 3 節） |
+| 需要全站明細、要自己跑統計、要跨多期迴歸 | **`scripts/extract_query.py` + 自建 skill** |
+
+判準很簡單：**答案需要幾列，就用 MCP 拿幾列。需要幾萬列才算得出來的東西，先抽成
+檔案。**
+
 ---
 
 ## 相關文件
@@ -233,6 +307,8 @@ python -m scripts.eo_cache fetch ... --refresh # 忽略快取，強制重抓單�
 - `deploy/apihub/README.md` — 伺服器端部署與 OAuth 設定
 - `.claude/skills/eo-*/SKILL.md` — 五份 skill 本體（全文見下方附錄 A～E）
 - `.claude/skills/new-sql-definition/SKILL.md` — 新增 SQL 定義的規則（給開發者，未收錄於附錄）
+- `scripts/extract_query.py` — 大量資料抽檔（第 5 節），`--help` 有完整參數
+- `scripts/eo_cache.py` — 封閉期別的本機快取（第 3 節）
 
 ---
 
