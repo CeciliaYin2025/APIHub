@@ -16,6 +16,12 @@ class McpSettings(BaseSettings):
     db_aliases: str = ""
     # Hard cap for the page_size argument on query tools (REST itself allows up to 1000)
     page_size_max: int = 100
+    # How long a caller's tool list may be reused (keyed by credential and gated
+    # on the Hub's catalog fingerprint, see catalog.ToolCatalog). Bounds how
+    # long a ROLE change can go unnoticed — the fingerprint does not cover
+    # roles. 0 disables the cache: every tools/list then refetches every alias,
+    # and each of those fetches counts against the caller's REST rate limit.
+    catalog_ttl_seconds: float = 60.0
     # Seconds to wait for one REST call before giving up. The ceiling matters
     # more than it looks: when it expires the MCP client reports a failure and
     # the model typically re-issues the same tool call, while the Hub is still

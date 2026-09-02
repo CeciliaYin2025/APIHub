@@ -6,6 +6,8 @@ self-describing tools instead of a generic execute(name, params) black box.
 """
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from mcp.types import Tool, ToolAnnotations
@@ -17,6 +19,9 @@ from mcp_server.naming import (  # noqa: F401  (sanitize/tool_name re-exported: 
     tool_name,
     untruncated_tool_name,
 )
+
+# Sentinel for _load(): "no version fetched yet" is distinct from "the Hub has none" (None).
+_UNFETCHED = object()
 
 logger = logging.getLogger(__name__)
 
@@ -221,24 +226,33 @@ class ToolCatalog:
 
     Two kinds of state with deliberately different lifetimes:
 
-    - **The tool list is never held.** It is permission-filtered per caller
-      (``permitted_only``), and one process serves every caller on the HTTP
-      transport, so a cached copy would hand whichever caller populated it to
-      everyone else — the names, descriptions and parameters of tools they
-      cannot run. ``tools()`` therefore fetches on every call and returns the
-      result without storing it; there is no field here for a later change to
-      accidentally start sharing.
+    - **The tool list is held per credential, never per process.** It is
+      permission-filtered per caller (``permitted_only``), and one process
+      serves every caller on the HTTP transport, so a process-wide copy would
+      hand whichever caller populated it to everyone else — the names,
+      descriptions and parameters of tools they cannot run. The cache is keyed
+      by ``cache_key_provider()`` (a fingerprint of the caller's credential; a
+      constant on stdio, where there is one caller) and is only ever consulted
+      for the key that populated it. It is also gated on the Hub's catalog
+      fingerprint: every ``tools()`` still costs one ``catalog-version``
+      request, and a hit requires the fingerprint to match *and* the entry to
+      be younger than ``ttl_seconds``. The fingerprint covers aliases and
+      definitions but not roles, so the TTL is what bounds how long a role
+      change can go unnoticed — 60 s by default, the same lag as OAuth
+      introspection. ``ttl_seconds=0`` disables the cache and every call
+      reloads.
     - **The name → target map is shared and cumulative.** It is derived from
       naming alone, discloses nothing, and executing a target the caller lacks
       permission for still 403s at the REST layer. It must accumulate rather
       than be replaced: a restricted caller's load would otherwise erase the
       entries a privileged caller needs to dispatch.
 
-    Not caching the list costs one ``/databases`` plus one ``definitions`` fetch
-    per alias, per ``tools/list`` — a handful of requests to a service on the
-    same network, and clients ask about once per connection. The fingerprint
-    endpoint still earns its keep on the stdio watcher, which polls it rather
-    than refetching every definition to notice a change.
+    Why this matters: a full load is one ``catalog-version``, one ``/databases``
+    (unless ``db_aliases`` is set) and one ``definitions`` fetch per alias —
+    and every one of those counts against the caller's REST rate limit, the
+    same bucket their actual queries draw from. Clients such as Open WebUI open
+    a fresh MCP session and re-list tools on every chat turn, so without the
+    cache the catalog, not the queries, was what exhausted the limit.
     """
 
     def __init__(
@@ -247,10 +261,16 @@ class ToolCatalog:
         *,
         db_aliases: list[str] | None = None,
         page_size_max: int = 100,
+        cache_key_provider: Callable[[], str] | None = None,
+        ttl_seconds: float = 0.0,
     ):
         self._client = client
         self._db_aliases = db_aliases
         self._page_size_max = page_size_max
+        self._cache_key_provider = cache_key_provider or (lambda: "static")
+        self._ttl = ttl_seconds
+        # credential fingerprint -> (loaded_at, catalog version, tool list)
+        self._cache: dict[str, tuple[float, str, list[Tool]]] = {}
         self._targets: dict[str, QueryTarget] = {}
         self._version: str | None = None
         self._last_refresh_names: set[str] | None = None
@@ -268,13 +288,23 @@ class ToolCatalog:
         return self._targets.get(name)
 
     async def tools(self, force: bool = False) -> list[Tool]:
-        """The tool list for the *current* caller. Always fresh; never shared.
+        """The tool list for the *current* caller — this credential's cache entry
+        when it is fresh, a full reload otherwise.
 
-        ``force`` is accepted for callers that mean "rebuild now"
-        (``refresh_query_tools``, the stdio watcher) and is a no-op: every call
-        already rebuilds.
+        ``force`` bypasses the cache (``refresh_query_tools``, the stdio watcher).
         """
-        tools, _ = await self._load()
+        if force or self._ttl <= 0:
+            tools, _ = await self._load()
+            return tools
+
+        key = self._cache_key_provider()
+        version = await self._fetch_version()
+        entry = self._cache.get(key)
+        if entry is not None and version is not None:
+            loaded_at, cached_version, tools = entry
+            if cached_version == version and (time.monotonic() - loaded_at) < self._ttl:
+                return tools
+        tools, _ = await self._load(version=version)
         return tools
 
     async def refresh(self) -> dict:
@@ -302,16 +332,21 @@ class ToolCatalog:
         self._last_refresh_names = names
         return {**diagnostics, "changed": changed}
 
-    async def _load(self) -> tuple[list[Tool], dict]:
+    async def _fetch_version(self) -> str | None:
+        try:
+            return await self._client.catalog_version()
+        except ApiHubError as e:
+            logger.debug("catalog-version unavailable (%s); catalog will always fully reload", e)
+            return None
+
+    async def _load(self, version: str | None | object = _UNFETCHED) -> tuple[list[Tool], dict]:
         # Read the fingerprint *before* the definitions: a change landing
         # mid-load then leaves a stale-looking version and costs one redundant
         # reload later. The other order would record a version newer than the
-        # data and skip that reload entirely.
-        try:
-            version = await self._client.catalog_version()
-        except ApiHubError as e:
-            logger.debug("catalog-version unavailable (%s); catalog will always fully reload", e)
-            version = None
+        # data and skip that reload entirely. tools() passes the one it already
+        # fetched for the cache check so a miss does not pay for it twice.
+        if version is _UNFETCHED:
+            version = await self._fetch_version()
 
         if self._db_aliases:
             aliases = self._db_aliases
@@ -369,4 +404,19 @@ class ToolCatalog:
         # its own entry from a previous load.
         self._targets.update(targets)
         self._version = version
+        self._store(tools, version)
         return tools, {"query_tools": len(tools), "shadowed": shadowed, "truncated": truncated}
+
+    def _store(self, tools: list[Tool], version: str | None) -> None:
+        """Remember this load for the current credential.
+
+        A load from a Hub without the version endpoint is never stored: with no
+        fingerprint to compare against, the only safe cache lifetime is zero.
+        """
+        if self._ttl <= 0 or version is None:
+            return
+        now = time.monotonic()
+        # Expired entries are dropped here rather than on a timer, so an idle
+        # process is not left holding every credential that ever called it.
+        self._cache = {k: v for k, v in self._cache.items() if (now - v[0]) < self._ttl}
+        self._cache[self._cache_key_provider()] = (now, version, tools)

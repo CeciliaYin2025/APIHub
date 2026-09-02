@@ -6,7 +6,7 @@ import contextlib
 import httpx
 import pytest
 
-from mcp_server.http_app import CredentialPassthroughMiddleware, passthrough_headers
+from mcp_server.http_app import CredentialPassthroughMiddleware, credential_fingerprint, passthrough_headers
 
 
 def _app_with_backend(monkeypatch, backend):
@@ -463,3 +463,22 @@ async def test_request_without_origin_header_is_accepted(monkeypatch):
     """Non-browser MCP clients send no Origin — they must keep working."""
     resp = await _post_mcp(_guarded_app(monkeypatch), {})
     assert resp.status_code == 200
+
+
+def test_credential_fingerprint_separates_callers_without_holding_the_token():
+    from mcp_server.http_app import _request_headers
+
+    token = _request_headers.set({"Authorization": "Bearer secret-a"})
+    try:
+        a = credential_fingerprint()
+        _request_headers.set({"Authorization": "Bearer secret-b"})
+        b = credential_fingerprint()
+        _request_headers.set({"authorization": "Bearer secret-a"})
+        a_again = credential_fingerprint()
+    finally:
+        _request_headers.reset(token)
+
+    assert a != b
+    assert a == a_again  # header-name casing is not a second caller
+    assert "secret" not in a
+    assert credential_fingerprint() != a  # anonymous is its own key

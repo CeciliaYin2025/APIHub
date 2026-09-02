@@ -79,6 +79,8 @@ async def main() -> None:
         client,
         db_aliases=aliases,
         page_size_max=mcp_settings.page_size_max,
+        # One caller on stdio, so the default constant key is correct here.
+        ttl_seconds=mcp_settings.catalog_ttl_seconds,
     )
     tracker = SessionTracker()
     server = create_server(client, catalog, tracker)

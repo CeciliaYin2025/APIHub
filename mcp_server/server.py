@@ -277,19 +277,36 @@ def _reject_unknown_tools_as_protocol_errors(server: Server, catalog: ToolCatalo
     to sit in front of it: ``McpError`` raised here reaches ``_handle_request``,
     which turns it into a real error response.
 
+    The check consults the static names and the catalog's name → target map,
+    and loads the catalog only when the name is not there yet (a client working
+    from a list it cached across a server restart). It must NOT rebuild the
+    tool list on every call: a rebuild is one REST request per alias plus two,
+    every one of them charged to the caller's rate limit — which at five
+    aliases made a single tool call cost eight requests and let a user burn the
+    default 60/min in seven calls. The map is shared and cumulative, so a
+    name another caller loaded resolves here too; that is fine — the REST
+    layer still 403s an execution the caller is not permitted.
+
+    A name the map holds for a definition that has since been deleted is
+    dispatched and comes back as a 404 ``isError`` rather than -32602 — the
+    bucket a model can act on, so the cheaper side to err on.
+
     If the catalog cannot be reached the check is skipped rather than guessed
     at — a REST outage is a tool execution error, and the inner handler already
     reports it as one.
     """
     inner = server.request_handlers[CallToolRequest]
+    static_names = {tool.name for tool in STATIC_TOOLS}
 
     async def handler(req: CallToolRequest):
-        try:
-            known = {tool.name for tool in await list_all_tools(catalog)}
-        except ApiHubError:
-            known = None
-        if known is not None and req.params.name not in known:
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=f"Unknown tool: {req.params.name}"))
+        name = req.params.name
+        if name not in static_names and catalog.target(name) is None:
+            try:
+                await catalog.tools()
+            except ApiHubError:
+                return await inner(req)
+            if catalog.target(name) is None:
+                raise McpError(ErrorData(code=INVALID_PARAMS, message=f"Unknown tool: {name}"))
         return await inner(req)
 
     server.request_handlers[CallToolRequest] = handler
