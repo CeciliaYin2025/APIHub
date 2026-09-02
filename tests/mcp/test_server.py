@@ -2,6 +2,8 @@
 
 import httpx
 import pytest
+from mcp.shared.exceptions import McpError
+from mcp.types import INVALID_PARAMS, CallToolRequest, CallToolRequestParams, ListToolsRequest
 
 from mcp_server.catalog import ToolCatalog
 from mcp_server.client import ApiHubClient, ApiHubError
@@ -232,4 +234,72 @@ async def test_refresh_reports_whether_the_tool_set_actually_changed():
     third = await dispatch_tool(client, catalog, "refresh_query_tools", {})
     assert third["query_tools"] == 2
     assert third["changed"] is True
+    await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# tools/call must not rebuild the catalog on every call
+# ---------------------------------------------------------------------------
+
+DEFINITIONS_PATH = "/api/v1/pg_test/queries/definitions"
+
+
+def _catalog_fetches(seen):
+    return [path for _, path, _ in seen if path == DEFINITIONS_PATH]
+
+
+async def _call(server, name, arguments=None):
+    req = CallToolRequest(method="tools/call", params=CallToolRequestParams(name=name, arguments=arguments or {}))
+    return await server.request_handlers[CallToolRequest](req)
+
+
+@pytest.mark.asyncio
+async def test_a_known_tool_call_does_not_reload_the_catalog():
+    """One tool call used to cost one full catalog load plus the execute — at
+    five aliases, eight rate-limited REST requests for one user action. After
+    tools/list has run, a call must reach the Hub as the execute alone."""
+    seen: list = []
+    client, catalog = _fixture(seen)
+    server = create_server(client, catalog)
+    await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
+    assert len(_catalog_fetches(seen)) == 1
+
+    result = await _call(server, "query_pg_test_order_summary", {"status": "OPEN"})
+
+    assert result.root.isError is not True
+    assert len(_catalog_fetches(seen)) == 1
+    assert [path for _, path, _ in seen if path.endswith("/queries/execute")] == ["/api/v1/pg_test/queries/execute"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_tool_is_still_a_protocol_error():
+    seen: list = []
+    client, catalog = _fixture(seen)
+    server = create_server(client, catalog)
+
+    with pytest.raises(McpError) as exc:
+        await _call(server, "query_pg_test_no_such_thing")
+
+    assert exc.value.error.code == INVALID_PARAMS
+    # It did check with the Hub once before saying so — a client may be working
+    # from a list it cached across a server restart.
+    assert len(_catalog_fetches(seen)) == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_call_after_a_restart_loads_the_map_once_then_dispatches():
+    """The name → target map starts empty; the first call fills it and goes through."""
+    seen: list = []
+    client, catalog = _fixture(seen)
+    server = create_server(client, catalog)
+    await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
+    catalog._targets.clear()  # as if this process had just started
+    seen.clear()
+
+    result = await _call(server, "query_pg_test_order_summary", {"status": "OPEN"})
+
+    assert result.root.isError is not True
+    assert len(_catalog_fetches(seen)) == 1
     await client.aclose()

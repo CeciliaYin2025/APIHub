@@ -67,19 +67,32 @@ change, which is what makes a 30-second interval affordable. A Hub too old to
 answer simply never matches, so the watcher reloads each tick rather than going
 silent.
 
-### The tool list is not cached
+### The tool list is cached per credential, gated on the fingerprint
 
-`ToolCatalog` fetches on every `tools/list` and returns the result without
-holding it. The list is permission-filtered per caller (`permitted_only`) and
-one process serves every HTTP caller, so a process-wide copy served whichever
-caller populated it to everyone else — handing a restricted user the names,
-descriptions and parameters of tools they cannot run. Execution was gated
-throughout, so that was disclosure rather than escalation, but it defeated
-`permitted_only` on the transport that has more than one user.
+`ToolCatalog` keeps one entry per caller credential (a SHA-256 of the
+passthrough headers on HTTP; a constant on stdio, which has one caller) and
+only ever serves an entry to the key that populated it. The list is
+permission-filtered per caller (`permitted_only`) and one process serves every
+HTTP caller, so a **process-wide** copy would serve whichever caller populated
+it to everyone else — handing a restricted user the names, descriptions and
+parameters of tools they cannot run. Keying on the credential is what makes
+holding it safe.
 
-The cost is one `/databases` plus one `definitions` fetch per alias, per
-`tools/list` — a few requests on the local network, and clients ask about once
-per connection. There is no `MCP_CATALOG_TTL_SECONDS` any more.
+Every `tools/list` still costs one `catalog-version` request; a hit needs the
+fingerprint to match *and* the entry to be younger than
+`MCP_CATALOG_TTL_SECONDS` (default 60). The fingerprint does not cover roles,
+so the TTL is the role-change lag — the same 60 s OAuth introspection already
+imposes. `0` disables the cache. A Hub without the version endpoint is never
+cached.
+
+Why it matters: a full load is `catalog-version` + `/databases` (skipped when
+`MCP_DB_ALIASES` is set) + one `definitions` per alias, and **every one of those
+counts against the caller's REST rate limit** — the same bucket their queries
+draw from. Open WebUI opens a fresh session and re-lists tools on every chat
+turn, so at five aliases the catalog, not the queries, was what exhausted the
+default 60/min. `tools/call` consults the name → target map and does not
+rebuild the list either; it used to, which made one tool call cost eight REST
+requests.
 
 The name → target map *is* shared and accumulates across callers. It is derived
 from naming alone, discloses nothing, and dispatching a target without
@@ -128,19 +141,6 @@ Tool names are capped at 128 characters (the current spec's limit; it was 64,
 inherited from a superseded one, which is what used to truncate long names into
 collisions). Collisions are still resolved first-wins — see the Admin UI's
 **MCP Tools** page for which definitions lose.
-
-## Tool catalog caching
-
-The catalog is cached per caller, not once per process: `GET
-/queries/definitions` is RBAC-filtered, so one shared cache would serve
-whichever caller loaded it first to everyone else until the TTL expired. The
-cache key is a hash of the caller's credential, which means a caller whose token
-rotates reloads the catalog — one extra fetch, in exchange for never showing
-someone another caller's definitions.
-
-`refresh_query_tools` rebuilds only the calling caller's view and emits
-`notifications/tools/list_changed` when the set actually changed, so a client
-that cached `tools/list` learns about a newly registered definition.
 
 ## Transports & auth
 

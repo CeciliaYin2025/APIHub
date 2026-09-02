@@ -340,11 +340,10 @@ async def test_explicit_aliases_skip_the_databases_call():
 
 @pytest.mark.asyncio
 async def test_every_call_refetches_for_the_current_caller():
-    """No cache by design — see the ToolCatalog docstring.
+    """With no TTL there is no cache — see the ToolCatalog docstring.
 
-    The list is permission-filtered, so holding one copy in a process that
-    serves every caller is what leaked it. The cost is a handful of requests on
-    the local network, once per connection.
+    The list is permission-filtered, so holding one process-wide copy is what
+    leaked it; ttl_seconds=0 is the conservative mode and the class default.
     """
     counter: list[str] = []
     client = _mock_client({"pg_test": [DEFINITION]}, counter=counter)
@@ -475,4 +474,129 @@ async def test_version_is_read_before_the_definitions():
     catalog = ToolCatalog(client, db_aliases=["pg_test"])
     await catalog.tools()
     assert counter.index(VERSION_PATH) < counter.index("/api/v1/pg_test/queries/definitions")
+    await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Per-credential, fingerprint-gated cache
+# ---------------------------------------------------------------------------
+
+
+def _caching_catalog(client, creds, ttl=60.0):
+    return ToolCatalog(
+        client, db_aliases=["pg_test"], cache_key_provider=lambda: creds.get("X-API-Key", ""), ttl_seconds=ttl
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_entry_costs_only_the_version_request():
+    """Second tools/list for the same caller: one catalog-version, no definitions.
+
+    Every definitions fetch is charged to the caller's REST rate limit, and
+    Open WebUI re-lists tools on every chat turn — this is what stops the
+    catalog from eating the budget the queries need.
+    """
+    counter: list[str] = []
+    creds = {"X-API-Key": "admin"}
+    client = _per_caller_client(lambda: creds, counter)
+    catalog = _caching_catalog(client, creds)
+
+    first = await catalog.tools()
+    second = await catalog.tools()
+
+    assert [t.name for t in second] == [t.name for t in first]
+    assert counter.count(VERSION_PATH) == 2
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_cache_never_crosses_credentials():
+    """The whole reason the cache is per credential: admin's entry must not be
+    what the limited caller gets, even at the same fingerprint."""
+    creds: dict = {"X-API-Key": "admin"}
+    client = _per_caller_client(lambda: creds)
+    catalog = _caching_catalog(client, creds)
+
+    admin = {t.name for t in await catalog.tools()}
+    creds["X-API-Key"] = "limited"
+    limited = {t.name for t in await catalog.tools()}
+
+    assert "query_pg_test_salary_detail" in admin
+    assert "query_pg_test_salary_detail" not in limited
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_changed_fingerprint_reloads_within_the_ttl():
+    versions = ["v1"]
+    counter: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        counter.append(request.url.path)
+        if request.url.path == VERSION_PATH:
+            return httpx.Response(200, json={"version": versions[-1]})
+        return httpx.Response(200, json=[DEFINITION])
+
+    creds = {"X-API-Key": "k"}
+    client = ApiHubClient("http://hub", transport=httpx.MockTransport(handler))
+    catalog = _caching_catalog(client, creds)
+
+    await catalog.tools()
+    versions.append("v2")  # a definition was edited on the Hub
+    await catalog.tools()
+
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_entry_expires_after_the_ttl_even_at_the_same_fingerprint(monkeypatch):
+    """The fingerprint does not cover roles; the TTL is what bounds a role change."""
+    import mcp_server.catalog as catalog_module
+
+    counter: list[str] = []
+    creds = {"X-API-Key": "admin"}
+    client = _per_caller_client(lambda: creds, counter)
+    catalog = _caching_catalog(client, creds, ttl=60.0)
+
+    clock = [1000.0]
+    monkeypatch.setattr(catalog_module.time, "monotonic", lambda: clock[0])
+
+    await catalog.tools()
+    clock[0] += 59
+    await catalog.tools()
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 1
+    clock[0] += 2
+    await catalog.tools()
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_force_and_refresh_bypass_the_cache():
+    counter: list[str] = []
+    creds = {"X-API-Key": "admin"}
+    client = _per_caller_client(lambda: creds, counter)
+    catalog = _caching_catalog(client, creds)
+
+    await catalog.tools()
+    await catalog.tools(force=True)  # the stdio watcher saw the fingerprint move
+    await catalog.refresh()  # refresh_query_tools means "rebuild now"
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 3
+    # ...and the rebuild is what the next plain call reuses.
+    await catalog.tools()
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 3
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_hub_without_a_fingerprint_is_never_cached():
+    """No version to compare against means no safe lifetime — reload every time."""
+    counter: list[str] = []
+    client = _mock_client({"pg_test": [DEFINITION]}, counter=counter, version=None)
+    catalog = ToolCatalog(client, db_aliases=["pg_test"], ttl_seconds=60.0)
+    await catalog.tools()
+    await catalog.tools()
+    assert counter.count("/api/v1/pg_test/queries/definitions") == 2
     await client.aclose()

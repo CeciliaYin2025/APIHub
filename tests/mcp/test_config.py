@@ -11,9 +11,10 @@ def test_defaults():
     assert s.oauth_enabled is False
 
 
-def test_there_is_no_catalog_ttl():
-    """Removed with the shared tool-list cache — a knob that did nothing would mislead."""
-    assert not hasattr(McpSettings(_env_file=None), "catalog_ttl_seconds")
+def test_catalog_ttl_defaults_to_the_introspection_lag():
+    """60 s: the fingerprint does not cover roles, so this is the role-change lag —
+    the same one OAuth introspection already imposes."""
+    assert McpSettings(_env_file=None).catalog_ttl_seconds == 60.0
 
 
 def test_env_prefix(monkeypatch):

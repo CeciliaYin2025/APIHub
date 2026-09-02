@@ -672,9 +672,11 @@ sanitize(text) = 轉小寫，[a-zA-Z0-9_-] 以外的連續字元換成單一 "_"
 
 stdio 的背景輪詢用它來判斷是否有變動，而不必每 30 秒重抓所有定義 —— 這正是讓短輪詢間隔變得划算的原因。若 Hub 版本較舊沒有此端點，雜湊永遠對不上，輪詢會每次都重載，而非靜默失效。
 
-**工具清單不做快取。** `ToolCatalog` 每次 `tools/list` 都重新抓取並直接回傳，不留在實例上。清單是**按呼叫者過濾**的（`permitted_only`），而 HTTP transport 下整個 process 共用一個 catalog —— 快取一份等於把「先填快取那個人」的清單發給所有人，讓低權限使用者看到自己無法執行的工具名稱、描述與參數。執行端始終有 `PermissionChecker` 把關，所以那是**資訊揭露而非越權**，但它讓 `permitted_only` 在唯一有多使用者的那條路上失效。
+**工具清單按憑證快取，並以指紋把關。** `ToolCatalog` 為每個呼叫者憑證保留一份（HTTP 下是 passthrough header 的 SHA-256；stdio 只有一個呼叫者，用固定 key），且只把該份回給填入它的那個 key。清單是**按呼叫者過濾**的（`permitted_only`），而 HTTP transport 下整個 process 共用一個 catalog —— 若快取是 process 層級的一份，等於把「先填快取那個人」的清單發給所有人，讓低權限使用者看到自己無法執行的工具名稱、描述與參數；以憑證為 key 正是讓保留它變得安全的原因。
 
-代價是每次 `tools/list` 多一次 `/databases` 加每個 alias 一次 `definitions` —— 都是同網段的小請求，而 client 大約每次連線才問一次。`MCP_CATALOG_TTL_SECONDS` 已移除。
+每次 `tools/list` 仍固定付一次 `catalog-version` 請求；命中需指紋相同**且**該份未超過 `MCP_CATALOG_TTL_SECONDS`（預設 60 秒）。指紋不涵蓋角色，所以 TTL 就是角色異動的延遲上限，與 OAuth introspection 既有的 60 秒一致。設 `0` 即停用；Hub 若無此端點則一律不快取。
+
+為何重要：一次完整載入 = `catalog-version` + `/databases`（設定 `MCP_DB_ALIASES` 時省略）+ 每個 alias 一次 `definitions`，而**每一個都計入呼叫者的 REST 限流額度**，與其真正的查詢共用同一個桶。Open WebUI 每輪對話都新開 session 並重列工具，在五個 alias 的部署下，耗盡預設 60/分鐘的是目錄而非查詢。`tools/call` 亦只查 name → target 對照表，不再重建清單 —— 過去它每次都重建，使一次工具呼叫要付 8 個 REST 請求。
 
 name → target 對照表**則是共用且累積的**：它純粹由命名衍生、不揭露任何資訊，且派送到無權限的 target 仍會在 REST 層 403。它必須累積而非覆寫，否則低權限呼叫者的載入會抹掉高權限呼叫者派送所需的項目。
 

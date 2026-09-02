@@ -14,6 +14,7 @@ without replacing the passthrough with per-session credential binding
 
 import contextlib
 import contextvars
+import hashlib
 from urllib.parse import urlparse
 
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -34,6 +35,17 @@ _request_headers: contextvars.ContextVar[dict] = contextvars.ContextVar("mcp_req
 def passthrough_headers() -> dict:
     """Header provider: whatever credential the current HTTP request carried."""
     return _request_headers.get()
+
+
+def credential_fingerprint() -> str:
+    """Cache key for the catalog: a digest of the credential this request carries.
+
+    A digest rather than the credential itself so the cache never holds a
+    usable token; sorted so header order cannot split one caller into two keys.
+    """
+    cred = _request_headers.get()
+    material = "\n".join(f"{k.lower()}:{v}" for k, v in sorted(cred.items()))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 class CredentialPassthroughMiddleware:
@@ -160,6 +172,8 @@ def create_http_app():
         client,
         db_aliases=aliases,
         page_size_max=mcp_settings.page_size_max,
+        cache_key_provider=credential_fingerprint,
+        ttl_seconds=mcp_settings.catalog_ttl_seconds,
     )
     server = create_server(client, catalog)
     session_manager = StreamableHTTPSessionManager(
