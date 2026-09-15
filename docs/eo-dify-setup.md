@@ -19,7 +19,7 @@
 使用者 ──ISAP SSO──► Open WebUI ──dify pipe──► Dify Chatflow「E&O Analyst」
                                                   │
                                     Start → Agent（Function Calling）→ Answer
-                                                  │  12 個 API 工具（apihub_eo）
+                                                  │  13 個 API 工具（apihub_eo）
                                                   ▼  X-API-Key（服務帳號 svc_dify_eo）
                              https://ia-dev.sercomm.com/apihub/api/v1/DW/tools/<definition>
                                                   │
@@ -37,7 +37,7 @@
 ### 為什麼不直接用 `/queries/execute`
 
 Dify 從 OpenAPI 匯入工具時，**只會依 request body 的第一層屬性組 body**，而且每個
-工具需要自己的 path。`/queries/execute` 是 12 個定義共用一個 path、參數包在
+工具需要自己的 path。`/queries/execute` 是所有定義共用一個 path、參數包在
 `params` 底下，Dify 填不進去。所以 API Hub 加了一層轉接：
 
 - `POST /{db}/tools/{name}` 收扁平 body（參數 + `fetch_mode`／`page`／`page_size`／
@@ -90,7 +90,7 @@ Dify 從 OpenAPI 匯入工具時，**只會依 request body 的第一層屬性�
 export APIHUB=https://ia-dev.sercomm.com/apihub/api/v1
 export APIHUB_API_KEY=ahk_...
 
-# 工具文件 -> 應為 200，12 個 operation
+# 工具文件 -> 應為 200，13 個 operation
 curl -ks -H "X-API-Key: $APIHUB_API_KEY" "$APIHUB/DW/tools/openapi.json?group=eo" \
   | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d['paths']),d['servers'])"
 
@@ -127,7 +127,7 @@ DSL 已把它列為相依套件，匯入時 Dify 也會提示安裝。
 1. 用上一節的 curl 抓 `openapi.json?group=eo`，存成檔案
 2. Dify → 工具 → 自訂 → **建立自訂工具**
    - 名稱：`apihub_eo`
-   - Schema：貼上整份 JSON，下方應列出 **12 個工具**，名稱都是 `query_dw_eo_*`
+   - Schema：貼上整份 JSON，下方應列出 **13 個工具**，名稱都是 `query_dw_eo_*`
    - 認證方法：**API Key**，標頭 `X-API-Key`，前綴 **無**，值填金鑰
 3. 儲存。任選 `query_dw_eo_max_frozen_date` 按「測試」，應回一筆日期
 
@@ -153,7 +153,7 @@ Dify → 建立應用 → **匯入 DSL 檔案** → 選 `eo-analyst.yml`。
 **B. 匯入 repo 裡的檔案再手動修正**
 
 匯入 `docs/dify/eo-analyst.yml` 後打開 Agent 節點：模型改成實際存在的模型；
-工具清單刪掉 12 個工具後，從「自訂 → apihub_eo」重新全選加入。
+工具清單刪掉原有工具後，從「自訂 → apihub_eo」重新全選加入。
 
 ### 2.4 檢查並發布
 
@@ -163,9 +163,10 @@ Dify → 建立應用 → **匯入 DSL 檔案** → 選 `eo-analyst.yml`。
 |---|---|
 | Agent 策略 | FunctionCalling |
 | 模型 | 支援 tool call 的模型（本台 `gb10/qwen3.8-27b`） |
-| 工具清單 | 12 個 `query_dw_eo_*`，全部啟用 |
+| 工具清單 | 13 個 `query_dw_eo_*`，全部啟用 |
 | 指令 | 以 `# Role` 開頭，約 4 萬字元 |
-| 最大迭代次數 | 20（月度檢視一次約要 10 次工具呼叫，預設 3 會做到一半就停） |
+| 最大迭代次數 | 12（月度檢視一次約要 10 次工具呼叫；再高只會讓上下文更容易爆掉） |
+| 錯誤處理 | 預設值：失敗時輸出一段「請縮小範圍」的說明，而不是外掛的錯誤堆疊 |
 | 記憶 | 開啟，視窗 20 |
 
 右上「預覽」問「列出可用的 E&O 凍結日期」，應看到呼叫 `query_dw_eo_frozen_dates`

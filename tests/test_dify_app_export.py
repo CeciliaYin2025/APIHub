@@ -71,10 +71,10 @@ def test_agent_strategy_plugin_is_declared_as_a_dependency(dsl):
     assert agent["agent_strategy_name"] == "function_calling"
 
 
-def test_tools_are_the_twelve_eo_operations(dsl):
+def test_tools_are_the_eo_operations(dsl):
     tools = _agent(dsl)["agent_parameters"]["tools"]["value"]
     assert [t["tool_name"] for t in tools] == EO_TOOLS
-    assert len(set(EO_TOOLS)) == 12
+    assert len(set(EO_TOOLS)) == 13
     assert all(t["type"] == "api" and t["enabled"] for t in tools)
     assert all(t["parameters"] == {} for t in tools), "a pinned parameter would apply to every call"
 
@@ -86,8 +86,23 @@ def test_every_tool_in_the_skill_tool_map_is_attached():
     text = (SKILLS_DIR / "eo-analysis" / "SKILL.md").read_text(encoding="utf-8")
     tool_map = text.split("## Tool map", 1)[1].split("\n## ", 1)[0]
     listed = {f"query_dw_{m}" for m in re.findall(r"`(eo_[a-z_]+)`", tool_map)}
-    assert len(listed) == 12, f"tool map shape changed: {sorted(listed)}"
+    assert len(listed) == 13, f"tool map shape changed: {sorted(listed)}"
     assert listed == set(EO_TOOLS)
+
+
+def test_agent_failure_yields_guidance_not_a_stack_trace(dsl):
+    # A context-window overflow otherwise surfaces as a raw PluginInvokeError. The
+    # default value must land on the variable the Answer node reads.
+    agent = _agent(dsl)
+    assert agent["error_strategy"] == "default-value"
+    assert agent["default_value"] == [{"key": "text", "type": "string", "value": agent["default_value"][0]["value"]}]
+    assert "縮小範圍" in agent["default_value"][0]["value"]
+
+
+def test_iteration_cap_bounds_context_growth(dsl):
+    # Every iteration resends all earlier tool results; 20 let one question reach
+    # the model's 131k window.
+    assert _agent(dsl)["agent_parameters"]["maximum_iterations"]["value"] <= 12
 
 
 def test_placeholders_are_obvious(dsl):
