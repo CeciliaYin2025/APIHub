@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # pins worker threads. 0 = never wait, reject immediately.
     concurrency_wait_seconds: float = 5.0
 
+    # Page-size cap on POST /{db}/tools/{name}, the flat per-definition endpoint LLM
+    # platforms import through OpenAPI (Dify). Same reasoning and value as the MCP
+    # server's MCP_PAGE_SIZE_MAX: every row lands in a model's context.
+    tool_page_size_max: int = 100
+
     # Comma-separated CIDRs/IPs of trusted reverse proxies (e.g. the ISAP gateway).
     # When the direct peer matches one of these, X-Forwarded-For is consulted to recover
     # the real client IP for the API-key IP allowlist and audit logging. SCOPE TO THE
