@@ -62,6 +62,11 @@ python -m scripts.update_eo_summary_description [--apply]
 # five E&O skills into one importable system prompt. --check fails when stale.
 python -m scripts.build_openwebui_model [--check]
 
+# Rebuild the Dify Chatflow export (docs/dify/eo-analyst.yml) — Agent node with the
+# twelve E&O API tools and the same skills-derived instruction. Placeholders for the
+# tool provider id and model; --stdout --provider-id --model renders one instance's copy.
+python -m scripts.build_dify_app [--check]
+
 # Same init inside Docker
 docker-compose exec api python -m scripts.init_db
 
@@ -90,6 +95,14 @@ celery -A app.tasks.celery_app flower --port=5555
   `list_resources`/`read_resource` handlers is what declares the capability; the SDK derives
   it from the handler table. Nothing is cached: the payload's `caller_view` is per-principal
   and one process serves every caller on the HTTP transport.
+- **Tool endpoints** (`app/api/v1/tools.py`, `app/services/tool_openapi.py`): the same
+  per-definition tools for LLM platforms that import OpenAPI instead of speaking MCP (Dify).
+  `GET /{db}/tools/openapi.json[?group=]` is authenticated and permission-filtered;
+  `POST /{db}/tools/{name}` takes a **flat** body because Dify builds bodies from top-level
+  properties only, then hands a `QueryRequest` to `queries.execute` — never a second
+  execution path. It enforces the MCP boundary itself (no `all`/`batch`, `TOOL_PAGE_SIZE_MAX`,
+  400 on undeclared arguments), and operationIds are the MCP tool names capped at 64.
+  Guide: `docs/eo-dify-setup.md`.
 
 ### Data Source Databases vs Platform Store
 

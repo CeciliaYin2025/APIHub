@@ -5,6 +5,10 @@
 
 本文的端點與前置條件都是在 PRD 上實測過的，不是照抄設定檔。
 
+> **不想自己裝 MCP？** 同一套 E&O 分析也以 Dify Chatflow 提供，資料走 API Hub 的
+> web API 而不是 MCP，一般使用者在 Open WebUI 選 `dify/E&O Analyst` 即可。
+> 建置方式見 `docs/eo-dify-setup.md`。
+
 ---
 
 ## 0. 你需要先有帳號
@@ -391,6 +395,7 @@ python -m scripts.extract_query --db DW --query eo_detail \
 - `scripts/apihub_login.py` — SSO／SAML 使用者用瀏覽器換取 token（第 5 節）
 - `scripts/extract_query.py` — 大量資料抽檔（第 5 節），`--help` 有完整參數
 - `scripts/eo_cache.py` — 封閉期別的本機快取（第 3 節）
+- `docs/eo-dify-setup.md` — Dify Chatflow 版：Agent + API Hub web API，不經 MCP
 
 ---
 
