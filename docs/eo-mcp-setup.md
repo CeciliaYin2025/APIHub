@@ -79,6 +79,21 @@ Hermes 是標準 MCP client，需要的資訊與上面完全相同：
 > MCP client 都需要的值；若 Hermes 的設定畫面要求填 `client_id` 而不支援動態
 > 註冊，請聯絡 Hermes 管理者，因為這個 MCP 服務是以動態註冊為前提部署的。
 
+### Open WebUI
+
+Open WebUI 沒有 MCP 的「安裝」概念，工具是掛在 **Settings → Tools（工具伺服器）**
+底下，整台實例共用，通常由管理者設定一次：
+
+- 較新的版本可以直接填 MCP 的 **Streamable HTTP** URL（同上）
+- 較舊的版本只吃 OpenAPI，需要管理者用 `mcpo` 之類的代理把這個 MCP 轉成 OpenAPI
+  再掛上來
+
+> **本文未能實機驗證 Open WebUI 的 OAuth 行為。** 這個 MCP 服務以動態註冊
+> （RFC 7591）為前提部署，若 Open WebUI 的工具設定畫面要求填固定的 `client_id`
+> 或只支援 Bearer token，請聯絡管理者；後者可以改用 API Key／`apihub_login` 換到
+> 的 token（第 5 節）當作靜態憑證，但那條路上**所有人共用同一個身分**，稽核記錄
+> 會全部記在那個帳號底下。
+
 ### 連不上時的判讀
 
 在**公司網路內**執行以下指令，可以定位問題出在哪一段：
@@ -150,6 +165,45 @@ Skill 是純 Markdown（`SKILL.md` + YAML frontmatter），不依賴任何 Claud
 
 skill 之間以 `[[skill-name]]` 互相引用。若你只貼其中幾份，那些指向未安裝 skill
 的連結會失效 —— 不影響運作，AI 會忽略它們，但該處的知識就缺了。
+
+### Open WebUI（直接匯入現成的模型）
+
+Open WebUI 的對應物是 **workspace model**：一個 base model 加一段存好的系統提示。
+五份 skill 已經合併成一份可直接匯入的 JSON：
+
+```
+docs/openwebui/eo-analyst.json
+```
+
+匯入方式：**Workspace → Models → Import**（右上角），選這個檔案。
+
+匯入後**一定要確認兩個地方**，否則模型會匯入成功但一問就失敗：
+
+1. **Base model** — 檔案裡是 `CHANGE_ME`，改成這台實例上實際存在的模型。故意留成
+   一個明顯錯誤的值，因為填一個看起來合理但不存在的 id 會安靜地匯入、直到第一則
+   訊息才爆掉
+2. **Tools** — JSON 已經把 `toolIds` 綁成 `API Hub — E&O`，也就是這台實例上工具
+   伺服器的名稱（注意中間是破折號 `—`，不是連字號）。若你的實例上不是這個名字，
+   請在模型設定裡改掉。這一項沒有 `CHANGE_ME` 那麼明顯：**對不上的 id 會被安靜
+   忽略**，模型照常回答，只是一個數字都查不到——看起來就像它自己決定不呼叫工具
+
+系統提示的第一節是硬規則：**任何 E&O 數字都必須來自當回合的 `query_dw_eo_*` 呼叫**，
+先鎖期別（`eo_max_frozen_date`／`eo_frozen_dates`）、代碼一律問 `eo_dimensions`、
+工具掛不上就直說而不是憑常識作答。這一段是必要的——後面那五份 skill 讀起來就像一份
+參考文件，而參考文件正好會誘使模型直接照著回答。
+
+其餘預設值：`temperature` 0.2、可見範圍為全實例公開（要限縮請在 UI 的 Access
+Control 改）。系統提示約 39,000 字元（≈1 萬 token），每則訊息都會送出。
+
+skill 更新後重新產生：
+
+```bash
+python -m scripts.build_openwebui_model            # 重新產生 JSON
+python -m scripts.build_openwebui_model --check    # 檢查是否過期（CI 用）
+```
+
+已匯入的模型**不會自動更新**——重新產生後要再匯入一次（同 `id` 會覆蓋）。
+`tests/test_openwebui_model_export.py` 會在 JSON 與 skill 不一致時讓建置失敗。
 
 ---
 
@@ -332,6 +386,7 @@ python -m scripts.extract_query --db DW --query eo_detail \
 - `docs/system_specification.md` — 系統規格
 - `deploy/apihub/README.md` — 伺服器端部署與 OAuth 設定
 - `.claude/skills/eo-*/SKILL.md` — 五份 skill 本體（全文見下方附錄 A～E）
+- `docs/openwebui/eo-analyst.json` — Open WebUI 可直接匯入的模型（第 2 節），由 `scripts/build_openwebui_model.py` 產生
 - `.claude/skills/new-sql-definition/SKILL.md` — 新增 SQL 定義的規則（給開發者，未收錄於附錄）
 - `scripts/apihub_login.py` — SSO／SAML 使用者用瀏覽器換取 token（第 5 節）
 - `scripts/extract_query.py` — 大量資料抽檔（第 5 節），`--help` 有完整參數

@@ -58,6 +58,10 @@ python -m scripts.verify_eo_field_dictionary
 # diffs first; --apply to write). Needs a SUPERUSER APIHUB_TOKEN.
 python -m scripts.update_eo_summary_description [--apply]
 
+# Rebuild the Open WebUI model export (docs/openwebui/eo-analyst.json) — folds the
+# five E&O skills into one importable system prompt. --check fails when stale.
+python -m scripts.build_openwebui_model [--check]
+
 # Same init inside Docker
 docker-compose exec api python -m scripts.init_db
 
