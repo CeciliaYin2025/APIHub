@@ -25,7 +25,7 @@ API Hub 裡沒有對應的本地帳號，MCP 連線就會拿到 **403 Not provis
 | Username | **必須與 isap-auth 送出的完全一致**，含前導零（例如 `00049` 不是 `49`） |
 | 姓名 | 顯示用 |
 
-`eo_reader` 的權限是 `query:eo_*`，只看得到 12 個 E&O 定義，看不到 HR/RD 的任何資料。
+`eo_reader` 的權限是 `query:eo_*`，只看得到 13 個 E&O 定義，看不到 HR/RD 的任何資料。
 之後新增的 E&O 定義會自動涵蓋，不需要再調權限。
 
 ---
@@ -253,7 +253,7 @@ python -m scripts.eo_cache fetch ... --refresh # 忽略快取，強制重抓單�
 
 ## 4. 可用的工具
 
-裝好之後你會看到 12 個 `query_dw_eo_*` 工具。不需要背，AI 會自己挑，但知道有
+裝好之後你會看到 13 個 `query_dw_eo_*` 工具。不需要背，AI 會自己挑，但知道有
 哪些能幫你問得更精準：
 
 | 工具 | 回答什麼 |
@@ -422,7 +422,7 @@ description: Query and analyse Sercomm E&O (Excess & Obsolete) inventory data th
 
 # E&O Analysis
 
-Answer E&O questions using the twelve `query_dw_eo_*` MCP tools, reusing locally
+Answer E&O questions using the thirteen `query_dw_eo_*` MCP tools, reusing locally
 cached results for closed periods instead of re-running slow queries.
 
 **Question / task:** $ARGUMENTS
@@ -454,6 +454,7 @@ latest period.
 | How much E&O by OU+BU+PID+customer group? | `eo_summary` |
 | Item-level detail for a period | `eo_detail` |
 | Which items are red-flagged, and what changed vs another period? | `eo_red_items` |
+| Which items' E&O amount moved most between two periods (for a customer / BU / PID / site)? | `eo_item_diff` |
 | Why is this item attributed to X? When did it move? | `eo_item_history` |
 | How is E&O trending month to month? | `eo_trends` |
 | How much E&O has no PID / no customer / a TBC BU? | `eo_data_quality` |
@@ -463,6 +464,17 @@ latest period.
 
 Always resolve codes with `eo_dimensions` before filtering. `BU_NO` looks like
 `S3B`, `PID` like `DYT` — a guessed value silently returns nothing.
+
+**Never page through a tool to search for something.** Every page you fetch stays
+in the context for the rest of the question, and a handful of 100-row pages of
+`eo_dimensions` or `eo_detail` is enough to overflow it — the run then fails with
+no answer at all. Fetch at most two pages of any one tool per question. If what
+you need is not there, narrow the filter instead: to find a customer's items, look
+the customer group up with `eo_dimensions` `dim='CUSTOMER'` (sorted by amount, so it
+is on page 1) and pass it as a filter. For "which items changed most between two
+periods", use `eo_item_diff`: it ranks server-side, so page 1 *is* the answer. If a
+question genuinely needs thousands of rows, say so and hand over the
+`scripts/extract_query.py` command rather than walking pages.
 
 ## Caching closed periods
 
@@ -704,8 +716,17 @@ Most amounts have a `_TWD` twin converted from `CURRENCY_CODE` via
 - `INV_EO_PID_SUMMARY_F` — 25 `_TWD` columns. **No twin** for `PLANNED_ALLOCATED_AMT`,
   `TP75_Amt`, `UNAVAILABLE_OH_AMT`, `ALL_OH_AMT`, `WIP_AMT`
 - Detail TVF — 21 `_TWD` columns, 26 `*QTY*` columns. **No twin** for `ALLOCATED_AMT`,
-  `ALL_OH_AMT`, `OBSOLETE_OH_TP75_AMT`, `UNAVAILABLE_OH_AMT`, `OBSOLETE_OH_ALL_AMT`,
-  `OH_UNRECOVERABLE_AMT`, `OPO_UNRECOVERABLE_AMT`, `WIP_AMT`
+  `ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, `OH_UNRECOVERABLE_AMT`, `OPO_UNRECOVERABLE_AMT`,
+  `WIP_AMT`
+- **Already TWD despite the name** — `OBSOLETE_OH_TP75_AMT` and `OBSOLETE_OH_ALL_AMT`
+  in the detail source have no `_TWD` suffix but hold TWD values. **Do not multiply
+  them by `TWD_CURRENCY_RATE`.** Verified 2026-09-15 on the PHP / INR / CNY sites:
+  `OBSOLETE_OH_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD + OBSOLETE_OH_TP75_AMT` equals
+  `OBSOLETE_OH_ALL_AMT` exactly, and applying the rate to either side breaks it. The
+  item-level "E&O OH + OPO Amt" (`OBSOLETE_OHOPO_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD +
+  OBSOLETE_OH_TP75_AMT`, what `eo_item_diff` sums) reconciles to the summary's
+  `OBSOLETE_OHOPO_ALL_AMT_TWD` to the cent. The `eo_detail` tool text still lists both
+  as local currency; this entry supersedes it
 
 Detail also carries `DOS_CURRENCY_RATE` alongside `TWD_CURRENCY_RATE`.
 

@@ -5,7 +5,7 @@ description: Query and analyse Sercomm E&O (Excess & Obsolete) inventory data th
 
 # E&O Analysis
 
-Answer E&O questions using the twelve `query_dw_eo_*` MCP tools, reusing locally
+Answer E&O questions using the thirteen `query_dw_eo_*` MCP tools, reusing locally
 cached results for closed periods instead of re-running slow queries.
 
 **Question / task:** $ARGUMENTS
@@ -37,6 +37,7 @@ latest period.
 | How much E&O by OU+BU+PID+customer group? | `eo_summary` |
 | Item-level detail for a period | `eo_detail` |
 | Which items are red-flagged, and what changed vs another period? | `eo_red_items` |
+| Which items' E&O amount moved most between two periods (for a customer / BU / PID / site)? | `eo_item_diff` |
 | Why is this item attributed to X? When did it move? | `eo_item_history` |
 | How is E&O trending month to month? | `eo_trends` |
 | How much E&O has no PID / no customer / a TBC BU? | `eo_data_quality` |
@@ -46,6 +47,17 @@ latest period.
 
 Always resolve codes with `eo_dimensions` before filtering. `BU_NO` looks like
 `S3B`, `PID` like `DYT` — a guessed value silently returns nothing.
+
+**Never page through a tool to search for something.** Every page you fetch stays
+in the context for the rest of the question, and a handful of 100-row pages of
+`eo_dimensions` or `eo_detail` is enough to overflow it — the run then fails with
+no answer at all. Fetch at most two pages of any one tool per question. If what
+you need is not there, narrow the filter instead: to find a customer's items, look
+the customer group up with `eo_dimensions` `dim='CUSTOMER'` (sorted by amount, so it
+is on page 1) and pass it as a filter. For "which items changed most between two
+periods", use `eo_item_diff`: it ranks server-side, so page 1 *is* the answer. If a
+question genuinely needs thousands of rows, say so and hand over the
+`scripts/extract_query.py` command rather than walking pages.
 
 ## Caching closed periods
 

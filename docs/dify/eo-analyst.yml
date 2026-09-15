@@ -1,5 +1,5 @@
 app:
-  description: Sercomm E&O 庫存分析。經 API Hub web API 查詢 12 個 query_dw_eo_* 工具，並依 E&O skill 的欄位語意與歸屬追查流程解讀結果。
+  description: Sercomm E&O 庫存分析。經 API Hub web API 查詢 13 個 query_dw_eo_* 工具，並依 E&O skill 的欄位語意與歸屬追查流程解讀結果。
   icon: 📦
   icon_background: '#E0F2FE'
   mode: advanced-chat
@@ -95,6 +95,19 @@ workflow:
         agent_strategy_label: FunctionCalling
         plugin_unique_identifier: langgenius/agent:0.0.47@b14b5a5259094510a272e5b7facd09aa63352511c13fabcde36a4cac57d1da94
         tool_node_version: '2'
+        error_strategy: default-value
+        default_value:
+        - key: text
+          type: string
+          value: |-
+            抱歉，這個問題這次沒能完成：查詢需要的資料量超過模型一次能處理的範圍（或查詢過程發生錯誤）。
+
+            可以這樣縮小範圍再問一次：
+            - 指定站別（OU）、BU、PID 或客戶群，例如「只看 SP 站」「只看 Charter」
+            - 指定兩個明確的凍結日期，例如「2026-09-01 對 2026-08-01」
+            - 需要全站明細或自行統計時，請改用 `scripts/extract_query.py` 抽成檔案
+
+            若縮小範圍後仍然失敗，請把問題與時間回報給管理者。
         memory:
           query_prompt_template: '{{#sys.query#}}'
           window:
@@ -173,6 +186,16 @@ workflow:
               settings: {}
               tool_label: query_dw_eo_red_items
               tool_name: query_dw_eo_red_items
+              type: api
+            - enabled: true
+              extra:
+                description: ''
+              parameters: {}
+              provider_name: CHANGE_ME_API_TOOL_PROVIDER_ID
+              provider_show_name: apihub_eo
+              settings: {}
+              tool_label: query_dw_eo_item_diff
+              tool_name: query_dw_eo_item_diff
               type: api
             - enabled: true
               extra:
@@ -306,7 +329,7 @@ workflow:
 
               ### E&O Analysis
 
-              Answer E&O questions using the twelve `query_dw_eo_*` MCP tools, reusing locally
+              Answer E&O questions using the thirteen `query_dw_eo_*` MCP tools, reusing locally
               cached results for closed periods instead of re-running slow queries.
 
               #### Before anything else: pin the period
@@ -336,6 +359,7 @@ workflow:
               | How much E&O by OU+BU+PID+customer group? | `eo_summary` |
               | Item-level detail for a period | `eo_detail` |
               | Which items are red-flagged, and what changed vs another period? | `eo_red_items` |
+              | Which items' E&O amount moved most between two periods (for a customer / BU / PID / site)? | `eo_item_diff` |
               | Why is this item attributed to X? When did it move? | `eo_item_history` |
               | How is E&O trending month to month? | `eo_trends` |
               | How much E&O has no PID / no customer / a TBC BU? | `eo_data_quality` |
@@ -345,6 +369,17 @@ workflow:
 
               Always resolve codes with `eo_dimensions` before filtering. `BU_NO` looks like
               `S3B`, `PID` like `DYT` — a guessed value silently returns nothing.
+
+              **Never page through a tool to search for something.** Every page you fetch stays
+              in the context for the rest of the question, and a handful of 100-row pages of
+              `eo_dimensions` or `eo_detail` is enough to overflow it — the run then fails with
+              no answer at all. Fetch at most two pages of any one tool per question. If what
+              you need is not there, narrow the filter instead: to find a customer's items, look
+              the customer group up with `eo_dimensions` `dim='CUSTOMER'` (sorted by amount, so it
+              is on page 1) and pass it as a filter. For "which items changed most between two
+              periods", use `eo_item_diff`: it ranks server-side, so page 1 *is* the answer. If a
+              question genuinely needs thousands of rows, say so and hand over the
+              `scripts/extract_query.py` command rather than walking pages.
 
               #### Caching closed periods
 
@@ -579,8 +614,17 @@ workflow:
               - `INV_EO_PID_SUMMARY_F` — 25 `_TWD` columns. **No twin** for `PLANNED_ALLOCATED_AMT`,
                 `TP75_Amt`, `UNAVAILABLE_OH_AMT`, `ALL_OH_AMT`, `WIP_AMT`
               - Detail TVF — 21 `_TWD` columns, 26 `*QTY*` columns. **No twin** for `ALLOCATED_AMT`,
-                `ALL_OH_AMT`, `OBSOLETE_OH_TP75_AMT`, `UNAVAILABLE_OH_AMT`, `OBSOLETE_OH_ALL_AMT`,
-                `OH_UNRECOVERABLE_AMT`, `OPO_UNRECOVERABLE_AMT`, `WIP_AMT`
+                `ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, `OH_UNRECOVERABLE_AMT`, `OPO_UNRECOVERABLE_AMT`,
+                `WIP_AMT`
+              - **Already TWD despite the name** — `OBSOLETE_OH_TP75_AMT` and `OBSOLETE_OH_ALL_AMT`
+                in the detail source have no `_TWD` suffix but hold TWD values. **Do not multiply
+                them by `TWD_CURRENCY_RATE`.** Verified 2026-09-15 on the PHP / INR / CNY sites:
+                `OBSOLETE_OH_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD + OBSOLETE_OH_TP75_AMT` equals
+                `OBSOLETE_OH_ALL_AMT` exactly, and applying the rate to either side breaks it. The
+                item-level "E&O OH + OPO Amt" (`OBSOLETE_OHOPO_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD +
+                OBSOLETE_OH_TP75_AMT`, what `eo_item_diff` sums) reconciles to the summary's
+                `OBSOLETE_OHOPO_ALL_AMT_TWD` to the cent. The `eo_detail` tool text still lists both
+                as local currency; this entry supersedes it
 
               Detail also carries `DOS_CURRENCY_RATE` alongside `TWD_CURRENCY_RATE`.
 
@@ -1083,7 +1127,7 @@ workflow:
             value: '{{#sys.query#}}'
           maximum_iterations:
             type: constant
-            value: 20
+            value: 12
       height: 120
       id: '1757900000002'
       position:

@@ -4,7 +4,7 @@ Dify has no skill mechanism and does not need MCP: it imports tools from an
 OpenAPI document, which API Hub serves at ``GET /api/v1/DW/tools/openapi.json``
 (one operation per definition, see ``app/services/tool_openapi.py``). This emits
 the app that sits on top of those tools: Start -> Agent (function calling, the
-twelve ``query_dw_eo_*`` tools, the five E&O skills folded into its instruction)
+thirteen ``query_dw_eo_*`` tools, the five E&O skills folded into its instruction)
 -> Answer.
 
 The checked-in copy at ``docs/dify/eo-analyst.yml`` carries two placeholders,
@@ -48,7 +48,7 @@ OUTPUT = REPO_ROOT / "docs" / "dify" / "eo-analyst.yml"
 DSL_VERSION = "0.7.0"  # Dify 1.17.x (api/constants/dsl_version.py)
 APP_NAME = "E&O Analyst"
 
-# The twelve E&O definitions, by the operationId API Hub gives them. Must match
+# The thirteen E&O definitions, by the operationId API Hub gives them. Must match
 # what GET /DW/tools/openapi.json?group=eo lists for an eo_reader credential;
 # tests/test_dify_app_export.py checks it against the tool names the skills use.
 EO_TOOLS = [
@@ -58,6 +58,7 @@ EO_TOOLS = [
     "query_dw_eo_summary",
     "query_dw_eo_detail",
     "query_dw_eo_red_items",
+    "query_dw_eo_item_diff",
     "query_dw_eo_item_history",
     "query_dw_eo_trends",
     "query_dw_eo_data_quality",
@@ -78,9 +79,23 @@ MODEL_PLUGIN = (
 )
 
 # A monthly review is ~10 tool calls (periods, two trend cuts, red items per site,
-# quality twice, feedback); the strategy's default of 3 stops mid-way.
-MAX_ITERATIONS = 20
+# quality twice, feedback); the strategy's default of 3 stops mid-way. Not higher:
+# every iteration resends every earlier tool result, and on 2026-09-15 a run that
+# paged eo_dimensions four times hit the 131k context window at iteration ~6.
+MAX_ITERATIONS = 12
 MEMORY_WINDOW = 20
+
+# Shown instead of a raw PluginInvokeError when the Agent node fails — in practice
+# almost always a context-window overflow from a question that needs too many rows.
+FAILURE_ANSWER = (
+    "抱歉，這個問題這次沒能完成：查詢需要的資料量超過模型一次能處理的範圍"
+    "（或查詢過程發生錯誤）。\n\n"
+    "可以這樣縮小範圍再問一次：\n"
+    "- 指定站別（OU）、BU、PID 或客戶群，例如「只看 SP 站」「只看 Charter」\n"
+    "- 指定兩個明確的凍結日期，例如「2026-09-01 對 2026-08-01」\n"
+    "- 需要全站明細或自行統計時，請改用 `scripts/extract_query.py` 抽成檔案\n\n"
+    "若縮小範圍後仍然失敗，請把問題與時間回報給管理者。"
+)
 
 START_ID = "1757900000001"
 AGENT_ID = "1757900000002"
@@ -189,6 +204,10 @@ def build_dsl(provider_id: str = PROVIDER_ID_PLACEHOLDER, model: str = MODEL_PLA
         "agent_strategy_label": "FunctionCalling",
         "plugin_unique_identifier": AGENT_STRATEGY_PLUGIN,
         "tool_node_version": "2",
+        # On failure the node emits `text` = FAILURE_ANSWER and the flow still reaches
+        # Answer, so the user gets guidance instead of a plugin stack trace.
+        "error_strategy": "default-value",
+        "default_value": [{"key": "text", "type": "string", "value": FAILURE_ANSWER}],
         "memory": {
             "query_prompt_template": "{{#sys.query#}}",
             "window": {"enabled": True, "size": MEMORY_WINDOW},
@@ -215,7 +234,7 @@ def build_dsl(provider_id: str = PROVIDER_ID_PLACEHOLDER, model: str = MODEL_PLA
     return {
         "app": {
             "description": (
-                "Sercomm E&O 庫存分析。經 API Hub web API 查詢 12 個 query_dw_eo_* 工具，"
+                "Sercomm E&O 庫存分析。經 API Hub web API 查詢 13 個 query_dw_eo_* 工具，"
                 "並依 E&O skill 的欄位語意與歸屬追查流程解讀結果。"
             ),
             "icon": "📦",

@@ -140,8 +140,17 @@ Most amounts have a `_TWD` twin converted from `CURRENCY_CODE` via
 - `INV_EO_PID_SUMMARY_F` — 25 `_TWD` columns. **No twin** for `PLANNED_ALLOCATED_AMT`,
   `TP75_Amt`, `UNAVAILABLE_OH_AMT`, `ALL_OH_AMT`, `WIP_AMT`
 - Detail TVF — 21 `_TWD` columns, 26 `*QTY*` columns. **No twin** for `ALLOCATED_AMT`,
-  `ALL_OH_AMT`, `OBSOLETE_OH_TP75_AMT`, `UNAVAILABLE_OH_AMT`, `OBSOLETE_OH_ALL_AMT`,
-  `OH_UNRECOVERABLE_AMT`, `OPO_UNRECOVERABLE_AMT`, `WIP_AMT`
+  `ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, `OH_UNRECOVERABLE_AMT`, `OPO_UNRECOVERABLE_AMT`,
+  `WIP_AMT`
+- **Already TWD despite the name** — `OBSOLETE_OH_TP75_AMT` and `OBSOLETE_OH_ALL_AMT`
+  in the detail source have no `_TWD` suffix but hold TWD values. **Do not multiply
+  them by `TWD_CURRENCY_RATE`.** Verified 2026-09-15 on the PHP / INR / CNY sites:
+  `OBSOLETE_OH_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD + OBSOLETE_OH_TP75_AMT` equals
+  `OBSOLETE_OH_ALL_AMT` exactly, and applying the rate to either side breaks it. The
+  item-level "E&O OH + OPO Amt" (`OBSOLETE_OHOPO_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD +
+  OBSOLETE_OH_TP75_AMT`, what `eo_item_diff` sums) reconciles to the summary's
+  `OBSOLETE_OHOPO_ALL_AMT_TWD` to the cent. The `eo_detail` tool text still lists both
+  as local currency; this entry supersedes it
 
 Detail also carries `DOS_CURRENCY_RATE` alongside `TWD_CURRENCY_RATE`.
 
