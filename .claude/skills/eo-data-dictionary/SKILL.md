@@ -149,8 +149,8 @@ Most amounts have a `_TWD` twin converted from `CURRENCY_CODE` via
   `OBSOLETE_OH_ALL_AMT` exactly, and applying the rate to either side breaks it. The
   item-level "E&O OH + OPO Amt" (`OBSOLETE_OHOPO_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD +
   OBSOLETE_OH_TP75_AMT`, what `eo_item_diff` sums) reconciles to the summary's
-  `OBSOLETE_OHOPO_ALL_AMT_TWD` to the cent. The `eo_detail` tool text still lists both
-  as local currency; this entry supersedes it
+  `OBSOLETE_OHOPO_ALL_AMT_TWD` to the cent. The `eo_detail` tool text says the same
+  since 2026-09-15
 
 Detail also carries `DOS_CURRENCY_RATE` alongside `TWD_CURRENCY_RATE`.
 
