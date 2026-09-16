@@ -167,6 +167,16 @@ async def dispatch_tool(client: ApiHubClient, catalog: ToolCatalog, name: str, a
             view = None
         elif view not in target.views:
             raise ApiHubError(400, f"Unsupported view '{view}' for {name}; allowed: {', '.join(target.views)}")
+    # A model that reads "array of strings" and sends "A, B" anyway is common
+    # enough that splitting here is cheaper than a round trip spent correcting it.
+    raw_columns = args.pop(target.columns_key, None)
+    columns = None
+    if raw_columns is not None:
+        if isinstance(raw_columns, str):
+            raw_columns = raw_columns.split(",")
+        if not isinstance(raw_columns, list):
+            raise ApiHubError(400, f"'{target.columns_key}' must be an array of column names")
+        columns = [str(c).strip() for c in raw_columns if str(c).strip()] or None
     return await client.execute_query(
         target.db_alias,
         target.query_name,
@@ -175,6 +185,7 @@ async def dispatch_tool(client: ApiHubClient, catalog: ToolCatalog, name: str, a
         page=page,
         page_size=page_size,
         view=view,
+        columns=columns,
     )
 
 

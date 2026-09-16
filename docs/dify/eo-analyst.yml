@@ -370,6 +370,14 @@ workflow:
               Always resolve codes with `eo_dimensions` before filtering. `BU_NO` looks like
               `S3B`, `PID` like `DYT` — a guessed value silently returns nothing.
 
+              **Ask for the columns you will read.** Every tool takes a `columns` argument;
+              without it a row arrives with all its columns — 89 of them on `eo_detail`, about
+              2.6 KB per row, so one page of 100 rows is ~258 KB. Naming the five or six
+              columns an answer needs costs a fraction of that and leaves room to keep working.
+              Take the names from the tool's `Returns:` text; an unknown name is rejected with
+              400 and the available columns are listed, so a typo costs one call, not a wrong
+              answer.
+
               **Never page through a tool to search for something.** Every page you fetch stays
               in the context for the rest of the question, and a handful of 100-row pages of
               `eo_dimensions` or `eo_detail` is enough to overflow it — the run then fails with

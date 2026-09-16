@@ -33,6 +33,15 @@ OPERATION_ID_MAX_LEN = 64
 
 PAGE_ARG = "page"
 PAGE_SIZE_ARG = "page_size"
+COLUMNS_ARG = "columns"
+
+COLUMNS_DESCRIPTION = (
+    "Return only these columns, in this order — omit for every column. Case-insensitive; "
+    "an unknown name is rejected with 400 and the available columns are listed. "
+    "Worth using on wide definitions: a row carrying 89 columns costs ~2.6 KB, so a page of 100 "
+    "rows is ~258 KB, while the five or six columns an answer actually needs cost a fraction of that. "
+    "Pick the columns from the tool's Returns: text before calling."
+)
 
 _PARAM_TYPES = {
     "string": {"type": "string"},
@@ -73,6 +82,11 @@ def pagination_arg_names(definition: SqlDefinition) -> tuple[str, str]:
     """
     declared = set(definition.params)
     return _free_arg_name(PAGE_ARG, declared), _free_arg_name(PAGE_SIZE_ARG, declared)
+
+
+def columns_arg_name(definition: SqlDefinition) -> str:
+    """Name for the projection knob, stepping aside for a declared bind called ``columns``."""
+    return _free_arg_name(COLUMNS_ARG, set(definition.params))
 
 
 def operation_id(db_alias: str, definition_name: str) -> str:
@@ -117,6 +131,12 @@ def request_schema(definition: SqlDefinition, page_size_max: int) -> dict[str, A
         # No default on purpose: an importer fills defaults into every call, and an
         # explicit 'mc' is not the same request as no view at all.
         properties["view"] = {"type": "string", "enum": list(eo_field_views.VIEWS), "description": VIEW_DESCRIPTION}
+
+    properties[columns_arg_name(definition)] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": COLUMNS_DESCRIPTION,
+    }
 
     page_arg, page_size_arg = pagination_arg_names(definition)
     properties[page_arg] = {"type": "integer", "minimum": 1, "default": 1, "description": "Result page number"}

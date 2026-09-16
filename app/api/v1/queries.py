@@ -22,6 +22,7 @@ from app.schemas.query import QueryRequest, QueryResponse
 from app.schemas.sql_definition import SqlDefinitionCreate, SqlDefinitionOut, SqlDefinitionUpdate
 from app.services import eo_field_views
 from app.services.auth_service import PermissionChecker, get_current_user, has_permission
+from app.services.column_selection import select_columns
 from app.services.query_service import execute_query
 from app.services.sql_registry import sql_registry
 
@@ -445,6 +446,8 @@ def execute(
     audit_params = {"params": payload.params, "fetch_mode": payload.fetch_mode}
     if payload.view is not None:
         audit_params["view"] = payload.view
+    if payload.columns:
+        audit_params["columns"] = payload.columns
     record_audit(request, "query", payload.query_name, params=audit_params)
     definition = sql_registry.get(payload.query_name, db_alias=db)
     if not definition:
@@ -496,6 +499,19 @@ def execute(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         columns, rows, masked = eo_field_views.apply_view(payload.query_name, columns, rows, view)
+
+    # Caller-requested projection, AFTER the view: a column the view masked is
+    # already gone, so asking for it is indistinguishable from a typo (400) and
+    # this parameter cannot be used to probe what the view hid.
+    #
+    # Skipped for count mode, which returns no rows and no column list — the
+    # projection would otherwise reject every requested name as "unknown"
+    # against an empty list, turning a harmless argument into a 400.
+    if payload.fetch_mode != "count":
+        try:
+            columns, rows = select_columns(payload.columns, columns, rows)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     # count mode returns no rows, so the matching total is the meaningful
     # volume figure for the report.

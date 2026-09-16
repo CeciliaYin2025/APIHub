@@ -141,13 +141,26 @@ def test_arguments_are_flat_top_level_properties(monkeypatch):
         "schema"
     ]
     props = schema["properties"]
-    assert set(props) == {"frozen_date", "ou", "fetch_mode", "view", "page", "page_size"}
+    assert set(props) == {"frozen_date", "ou", "fetch_mode", "view", "columns", "page", "page_size"}
     assert schema["required"] == ["frozen_date"]
     assert props["frozen_date"]["format"] == "date"
     assert "YYYY-MM-DD" in props["frozen_date"]["description"]
     assert props["fetch_mode"]["enum"] == ["page", "count", "one"]
     assert props["page_size"]["maximum"] == settings.tool_page_size_max
     assert "default" not in props["view"], "a default would turn every call into an explicit view request"
+
+
+def test_columns_is_offered_as_an_optional_array(monkeypatch):
+    # The point of the parameter: a page of 89-column rows costs ~258 KB, so a
+    # model that can ask for five columns keeps the answer inside its window.
+    schema = _doc(monkeypatch)["paths"]["/DW/tools/eo_detail"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    prop = schema["properties"]["columns"]
+
+    assert prop["type"] == "array"
+    assert prop["items"] == {"type": "string"}
+    assert "columns" not in schema.get("required", [])
 
 
 def test_view_is_offered_only_where_a_definition_has_one(monkeypatch):
@@ -188,6 +201,41 @@ def test_flat_body_becomes_bind_params(monkeypatch):
             "db_alias": "DW",
         }
     ]
+
+
+def test_columns_projects_the_response(monkeypatch):
+    client, _ = _client(monkeypatch, EO_READER)
+    body = client.post("/DW/tools/eo_detail", json={"frozen_date": "2026-08-01", "columns": ["OU"]}).json()
+
+    assert body["columns"] == ["OU"]
+    assert body["data"] == [{"OU": "SP"}]
+
+
+def test_columns_accepts_a_comma_separated_string(monkeypatch):
+    # Models send "A, B" for an array often enough that rejecting it would spend
+    # a tool call on formatting instead of on the question.
+    client, _ = _client(monkeypatch, EO_READER)
+    body = client.post(
+        "/DW/tools/eo_detail", json={"frozen_date": "2026-08-01", "columns": "OU, OH_unrecoverable"}
+    ).json()
+
+    assert body["columns"] == ["OU", "OH_unrecoverable"]
+
+
+def test_unknown_column_is_refused(monkeypatch):
+    client, _ = _client(monkeypatch, EO_READER)
+    resp = client.post("/DW/tools/eo_detail", json={"frozen_date": "2026-08-01", "columns": ["NOPE"]})
+
+    assert resp.status_code == 400
+    assert "NOPE" in resp.json()["detail"]
+
+
+def test_columns_is_listed_among_the_accepted_arguments(monkeypatch):
+    client, _ = _client(monkeypatch, EO_READER)
+    resp = client.post("/DW/tools/eo_detail", json={"frozen_date": "2026-08-01", "bogus": 1})
+
+    assert resp.status_code == 400
+    assert "columns" in resp.json()["detail"]
 
 
 def test_page_size_is_capped(monkeypatch):

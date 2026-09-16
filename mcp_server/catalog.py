@@ -82,6 +82,17 @@ def read_only_annotations() -> ToolAnnotations:
 
 PAGE_ARG = "page"
 PAGE_SIZE_ARG = "page_size"
+COLUMNS_ARG = "columns"
+
+# Mirrors app/services/tool_openapi.py::COLUMNS_DESCRIPTION — the two surfaces
+# describe the same REST parameter and must not drift.
+COLUMNS_DESCRIPTION = (
+    "Return only these columns, in this order — omit for every column. Case-insensitive; "
+    "an unknown name is rejected with 400 and the available columns are listed. "
+    "Worth using on wide definitions: a row carrying 89 columns costs ~2.6 KB, so a page of 100 "
+    "rows is ~258 KB, while the five or six columns an answer actually needs cost a fraction of that. "
+    "Pick the columns from this tool's Returns: text before calling."
+)
 
 
 def _free_arg_name(base: str, declared: set[str]) -> str:
@@ -102,6 +113,11 @@ def pagination_arg_names(definition: dict) -> tuple[str, str]:
     """
     declared = set(definition.get("params") or {})
     return _free_arg_name(PAGE_ARG, declared), _free_arg_name(PAGE_SIZE_ARG, declared)
+
+
+def columns_arg_name(definition: dict) -> str:
+    """Argument name for the projection knob, stepping aside for a declared bind."""
+    return _free_arg_name(COLUMNS_ARG, set(definition.get("params") or {}))
 
 
 def param_schema(pdef: dict) -> dict:
@@ -185,6 +201,12 @@ def build_tool(db_alias: str, definition: dict, page_size_max: int) -> Tool:
             ),
         }
 
+    properties[columns_arg_name(definition)] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": COLUMNS_DESCRIPTION,
+    }
+
     page_arg, page_size_arg = pagination_arg_names(definition)
     properties[page_arg] = {"type": "integer", "minimum": 1, "default": 1, "description": "Result page number"}
     properties[page_size_arg] = {
@@ -216,6 +238,8 @@ class QueryTarget:
     # Which argument names carry paging for this tool — see pagination_arg_names().
     page_key: str = PAGE_ARG
     page_size_key: str = PAGE_SIZE_ARG
+    # Which argument name carries the column projection — see columns_arg_name().
+    columns_key: str = COLUMNS_ARG
     # Audience views this target accepts, empty when it has none. Used to reject
     # a `view` argument at the boundary rather than forwarding it blindly.
     views: tuple[str, ...] = ()
@@ -396,6 +420,7 @@ class ToolCatalog:
                     query_name=definition["name"],
                     page_key=page_key,
                     page_size_key=page_size_key,
+                    columns_key=columns_arg_name(definition),
                     views=tuple(definition.get("views") or ()),
                 )
 
