@@ -564,6 +564,16 @@ the tool's own `Returns:` text — read it rather than assuming.
   means "nobody recorded anything here", never "no issue".
 - **Missing attribution is an empty string, not NULL**, and `TBC` appears only in
   `BU_NO`.
+- **An attribution column from an item-level tool is the MIN of several, and you
+  must say so whenever it is.** `eo_item_diff` and `eo_item_history` aggregate to
+  one row per item, so `BU_NO`, `PID` and `CUSTOMERGROUPNAME` show the smallest
+  value the item has, with `BU_NO_N` / `PID_N` / `CUSTOMER_N` (or
+  `CUSTOMERGROUP_N`) counting how many distinct ones there really are. Print those
+  counts or say "spread across N BUs" in the answer — never a bare single value —
+  whenever the count is above 1. The amount is the item's total and is correct;
+  the attribution beside it is one of several, and a reader who is not told will
+  take it as the owner. On 2026-09-16, SP's largest item (549B000RMR0,
+  1.77bn TWD) sat under **8 BUs and 7 PIDs**, and the answer showed only `E1B`.
 
 ## Investigating an attribution issue
 
