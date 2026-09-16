@@ -370,6 +370,18 @@ workflow:
               Always resolve codes with `eo_dimensions` before filtering. `BU_NO` looks like
               `S3B`, `PID` like `DYT` — a guessed value silently returns nothing.
 
+              **Rank with `order_by`, never with a contrived filter.** Every tool takes an
+              `order_by` argument: `["-OBSOLETE_OHOPO_AMT_TWD"]` sorts largest-first in the
+              database, so page 1 with `page_size=5` *is* the top five. Sorting happens over the
+              whole period, not over the page you fetched.
+
+              Do not approximate a ranking by bending another parameter. Setting
+              `eo_item_diff`'s `compare_date` to a far-away period so the delta resembles the
+              absolute amount looks clever and gets the amounts right, but that tool reports
+              `BU_NO`, `PID` and `CUSTOMERGROUPNAME` as the MIN **across both periods** — so the
+              attribution you report belongs to the older period, and it is wrong without
+              looking wrong. (Seen on 2026-09-16: two of five rows carried the wrong BU and PID.)
+
               **Ask for the columns you will read.** Every tool takes a `columns` argument;
               without it a row arrives with all its columns — 89 of them on `eo_detail`, about
               2.6 KB per row, so one page of 100 rows is ~258 KB. Naming the five or six

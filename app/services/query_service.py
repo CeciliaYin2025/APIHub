@@ -22,15 +22,20 @@ logger = logging.getLogger(__name__)
 _ORDER_COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 
 
-def _build_order_by(definition) -> str | None:
+def _build_order_by(definition, override: list[dict[str, str]] | None = None) -> str | None:
     """Build a safe ORDER BY clause body from a definition's order_by list.
 
     Re-validates each column against the identifier whitelist and direction
     against ASC/DESC (defense in depth vs YAML/DB rows that bypass Pydantic),
     then joins into "COL DIR, COL2 DIR2". Returns None for an empty list.
     Raises ValueError on any invalid column/direction.
+
+    *override* is the caller's ordering (already normalised by
+    ``app/services/order_selection.py``). It replaces the definition's ordering
+    rather than extending it: appending would keep the definition's first key in
+    front, so "the five largest" would still come back ordered by site.
     """
-    items = getattr(definition, "order_by", None) or []
+    items = override if override else (getattr(definition, "order_by", None) or [])
     parts: list[str] = []
     for item in items:
         column = item.get("column")
@@ -65,19 +70,23 @@ def execute_query(
     batch_offset: int = 0,
     top_n: int = 10,
     db_alias: str | None = None,
+    order_by: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Execute a registered SQL definition and return results.
 
     Args:
         db_alias: Database alias to execute against. ``None`` uses the first
                   registered database (backward compatible).
+        order_by: Caller-specified ordering, replacing the definition's own.
+                  ``None`` keeps the definition's, which is what every caller
+                  that predates this parameter gets.
 
     Returns a dict with keys:
         columns, data, total, and mode-specific pagination metadata.
     """
     bind_params = _prepare_binds(definition, params)
     sql = _normalize_sql(definition.sql)
-    order_by = _build_order_by(definition)
+    order_by = _build_order_by(definition, order_by)
 
     if fetch_mode == "page":
         return _fetch_page(sql, bind_params, page, page_size, db_alias, order_by)

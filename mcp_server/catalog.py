@@ -83,6 +83,18 @@ def read_only_annotations() -> ToolAnnotations:
 PAGE_ARG = "page"
 PAGE_SIZE_ARG = "page_size"
 COLUMNS_ARG = "columns"
+ORDER_BY_ARG = "order_by"
+
+# Mirrors app/services/tool_openapi.py::ORDER_BY_DESCRIPTION.
+ORDER_BY_DESCRIPTION = (
+    "Sort the rows before paging, so page 1 is genuinely the top N — omit to keep the "
+    "definition's own order. Write each entry as a column name, with a leading '-' for "
+    "descending: [\"-OBSOLETE_OHOPO_AMT_TWD\"] is 'largest first'. Sorting happens in the "
+    "database over the whole result, not over the page you fetched. "
+    "Use this instead of inventing a workaround: never abuse another parameter (a far-away "
+    "compare_date, say) to approximate a ranking — the other columns then come from the wrong "
+    "period. An unknown column name is rejected with 400."
+)
 
 # Mirrors app/services/tool_openapi.py::COLUMNS_DESCRIPTION — the two surfaces
 # describe the same REST parameter and must not drift.
@@ -118,6 +130,11 @@ def pagination_arg_names(definition: dict) -> tuple[str, str]:
 def columns_arg_name(definition: dict) -> str:
     """Argument name for the projection knob, stepping aside for a declared bind."""
     return _free_arg_name(COLUMNS_ARG, set(definition.get("params") or {}))
+
+
+def order_by_arg_name(definition: dict) -> str:
+    """Argument name for the ordering knob, stepping aside for a declared bind."""
+    return _free_arg_name(ORDER_BY_ARG, set(definition.get("params") or {}))
 
 
 def param_schema(pdef: dict) -> dict:
@@ -206,6 +223,11 @@ def build_tool(db_alias: str, definition: dict, page_size_max: int) -> Tool:
         "items": {"type": "string"},
         "description": COLUMNS_DESCRIPTION,
     }
+    properties[order_by_arg_name(definition)] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": ORDER_BY_DESCRIPTION,
+    }
 
     page_arg, page_size_arg = pagination_arg_names(definition)
     properties[page_arg] = {"type": "integer", "minimum": 1, "default": 1, "description": "Result page number"}
@@ -240,6 +262,8 @@ class QueryTarget:
     page_size_key: str = PAGE_SIZE_ARG
     # Which argument name carries the column projection — see columns_arg_name().
     columns_key: str = COLUMNS_ARG
+    # Which argument name carries the ordering — see order_by_arg_name().
+    order_by_key: str = ORDER_BY_ARG
     # Audience views this target accepts, empty when it has none. Used to reject
     # a `view` argument at the boundary rather than forwarding it blindly.
     views: tuple[str, ...] = ()
@@ -421,6 +445,7 @@ class ToolCatalog:
                     page_key=page_key,
                     page_size_key=page_size_key,
                     columns_key=columns_arg_name(definition),
+                    order_by_key=order_by_arg_name(definition),
                     views=tuple(definition.get("views") or ()),
                 )
 

@@ -34,6 +34,17 @@ OPERATION_ID_MAX_LEN = 64
 PAGE_ARG = "page"
 PAGE_SIZE_ARG = "page_size"
 COLUMNS_ARG = "columns"
+ORDER_BY_ARG = "order_by"
+
+ORDER_BY_DESCRIPTION = (
+    "Sort the rows before paging, so page 1 is genuinely the top N — omit to keep the "
+    "definition's own order. Write each entry as a column name, with a leading '-' for "
+    "descending: [\"-OBSOLETE_OHOPO_AMT_TWD\"] is 'largest first'. Sorting happens in the "
+    "database over the whole result, not over the page you fetched. "
+    "Use this instead of inventing a workaround: never abuse another parameter (a far-away "
+    "compare_date, say) to approximate a ranking — the other columns then come from the wrong "
+    "period. An unknown column name is rejected with 400."
+)
 
 COLUMNS_DESCRIPTION = (
     "Return only these columns, in this order — omit for every column. Case-insensitive; "
@@ -89,6 +100,11 @@ def columns_arg_name(definition: SqlDefinition) -> str:
     return _free_arg_name(COLUMNS_ARG, set(definition.params))
 
 
+def order_by_arg_name(definition: SqlDefinition) -> str:
+    """Name for the ordering knob, stepping aside for a declared bind called ``order_by``."""
+    return _free_arg_name(ORDER_BY_ARG, set(definition.params))
+
+
 def operation_id(db_alias: str, definition_name: str) -> str:
     return tool_name(db_alias, definition_name)[:OPERATION_ID_MAX_LEN]
 
@@ -136,6 +152,11 @@ def request_schema(definition: SqlDefinition, page_size_max: int) -> dict[str, A
         "type": "array",
         "items": {"type": "string"},
         "description": COLUMNS_DESCRIPTION,
+    }
+    properties[order_by_arg_name(definition)] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": ORDER_BY_DESCRIPTION,
     }
 
     page_arg, page_size_arg = pagination_arg_names(definition)

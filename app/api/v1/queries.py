@@ -23,6 +23,7 @@ from app.schemas.sql_definition import SqlDefinitionCreate, SqlDefinitionOut, Sq
 from app.services import eo_field_views
 from app.services.auth_service import PermissionChecker, get_current_user, has_permission
 from app.services.column_selection import select_columns
+from app.services.order_selection import looks_like_unknown_column, parse_order_by
 from app.services.query_service import execute_query
 from app.services.sql_registry import sql_registry
 
@@ -448,6 +449,8 @@ def execute(
         audit_params["view"] = payload.view
     if payload.columns:
         audit_params["columns"] = payload.columns
+    if payload.order_by:
+        audit_params["order_by"] = payload.order_by
     record_audit(request, "query", payload.query_name, params=audit_params)
     definition = sql_registry.get(payload.query_name, db_alias=db)
     if not definition:
@@ -466,6 +469,11 @@ def execute(
     checker(current_user)
 
     try:
+        ordering = parse_order_by(payload.order_by)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
         result = execute_query(
             definition,
             payload.params,
@@ -476,6 +484,7 @@ def execute(
             batch_offset=payload.batch_offset,
             top_n=payload.top_n,
             db_alias=db,
+            order_by=ordering,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -485,6 +494,19 @@ def execute(
         # away and deepening the queue that refused it.
         raise HTTPException(status_code=503, detail=str(e), headers={"Retry-After": "5"})
     except Exception as e:
+        # A column the caller asked to sort by that the result does not have is
+        # their mistake, not ours: the Hub cannot check it up front (that would
+        # mean running the query twice), so the driver is what rejects it. Without
+        # this, a typo in `order_by` reads as a server fault.
+        if ordering and looks_like_unknown_column(e):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"order_by refers to a column the result does not have: "
+                    f"{', '.join(i['column'] for i in ordering)}. "
+                    "Use a column name from the tool's Returns: text."
+                ),
+            )
         raise HTTPException(status_code=500, detail=f"Query execution error: {e}")
 
     # Audience view. Applied AFTER execution, not in the SQL: the definition is

@@ -33,6 +33,17 @@ class QueryRequest(BaseModel):
     batch_offset: int = Field(default=0, ge=0, description="Starting row offset (fetch_mode=batch)")
     # top_n mode
     top_n: int = Field(default=10, ge=1, le=1000, description="Number of rows to return (fetch_mode=top_n)")
+    # Opt-in ordering. Omitted (the default) keeps the definition's own order_by,
+    # which is what every pre-existing caller gets. See app/services/order_selection.py.
+    order_by: list[dict[str, str]] | list[str] | None = Field(
+        default=None,
+        description=(
+            "Sort the result before paging, replacing the definition's own ordering: "
+            '[{"column": "AMT", "direction": "DESC"}] or the shorthand ["-AMT", "Item_No"] '
+            "(leading '-' = descending). Sorting happens in SQL, so page 1 really is the top N. "
+            "Column names must appear in the result; an unknown one is a 400."
+        ),
+    )
     # Opt-in column projection. Omitted (the default) returns every column, which
     # is what every pre-existing caller gets. See app/services/column_selection.py.
     columns: list[str] | None = Field(
