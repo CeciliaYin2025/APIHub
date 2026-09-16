@@ -123,6 +123,9 @@ def call_tool(
     columns_key = tool_openapi.columns_arg_name(definition)
     columns = _as_columns(args.pop(columns_key, None), columns_key)
 
+    order_by_key = tool_openapi.order_by_arg_name(definition)
+    order_by = _as_columns(args.pop(order_by_key, None), order_by_key)
+
     view = args.pop("view", None)
     if view is not None and not eo_field_views.is_governed(definition.name):
         # Dropped, not forwarded: it would otherwise become a bind parameter.
@@ -130,7 +133,7 @@ def call_tool(
 
     unknown = sorted(set(args) - set(definition.params))
     if unknown:
-        accepted = [*definition.params, "fetch_mode", columns_key, page_key, page_size_key]
+        accepted = [*definition.params, "fetch_mode", columns_key, order_by_key, page_key, page_size_key]
         if eo_field_views.is_governed(definition.name):
             accepted.append("view")
         raise HTTPException(
@@ -147,6 +150,7 @@ def call_tool(
             page_size=page_size,
             view=view,
             columns=columns,
+            order_by=order_by,
         )
     except ValidationError as e:
         # 400 with the reason, not a 500: the model sent it and can correct it.

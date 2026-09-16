@@ -136,6 +136,7 @@ class ApiHubClient:
         page_size: int = 50,
         view: str | None = None,
         columns: list[str] | None = None,
+        order_by: list[str] | None = None,
     ) -> dict:
         # page/page_size are always sent: the REST schema carries them for every
         # mode and ignores them outside "page", so there is nothing to branch on.
@@ -156,6 +157,8 @@ class ApiHubClient:
         # stays byte-identical to what every existing caller sends.
         if columns:
             payload["columns"] = columns
+        if order_by:
+            payload["order_by"] = order_by
         return await self._request("POST", f"/{db_seg}/queries/execute", json=payload)
 
     async def describe_table(self, db: str, table: str) -> dict:

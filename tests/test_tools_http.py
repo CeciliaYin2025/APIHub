@@ -141,7 +141,7 @@ def test_arguments_are_flat_top_level_properties(monkeypatch):
         "schema"
     ]
     props = schema["properties"]
-    assert set(props) == {"frozen_date", "ou", "fetch_mode", "view", "columns", "page", "page_size"}
+    assert set(props) == {"frozen_date", "ou", "fetch_mode", "view", "columns", "order_by", "page", "page_size"}
     assert schema["required"] == ["frozen_date"]
     assert props["frozen_date"]["format"] == "date"
     assert "YYYY-MM-DD" in props["frozen_date"]["description"]
@@ -199,8 +199,30 @@ def test_flat_body_becomes_bind_params(monkeypatch):
             "batch_offset": 0,
             "top_n": 10,
             "db_alias": "DW",
+            # Empty, not absent: the knob is always passed through, and an empty
+            # list means "keep the definition's own ordering".
+            "order_by": [],
         }
     ]
+
+
+def test_order_by_is_forwarded_to_the_query(monkeypatch):
+    client, calls = _client(monkeypatch, EO_READER)
+    resp = client.post("/DW/tools/eo_detail", json={"frozen_date": "2026-08-01", "order_by": ["-OU"]})
+
+    assert resp.status_code == 200
+    assert calls[0]["order_by"] == [{"column": "OU", "direction": "DESC"}]
+
+
+def test_order_by_is_listed_in_the_schema_as_an_array(monkeypatch):
+    schema = _doc(monkeypatch)["paths"]["/DW/tools/eo_detail"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    prop = schema["properties"]["order_by"]
+
+    assert prop["type"] == "array"
+    assert prop["items"] == {"type": "string"}
+    assert "compare_date" in prop["description"], "the description must name the workaround it replaces"
 
 
 def test_columns_projects_the_response(monkeypatch):

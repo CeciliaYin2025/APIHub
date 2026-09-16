@@ -98,3 +98,26 @@ def test_dispatch_rejects_a_non_list_value():
 
     with pytest.raises(ApiHubError):
         _dispatch({"frozen_date": "2026-09-01", "columns": 42})
+
+
+def test_schema_offers_order_by_as_an_array_of_strings():
+    from mcp_server.catalog import ORDER_BY_ARG
+
+    prop = build_tool("DW", DEFINITION, 100).inputSchema["properties"][ORDER_BY_ARG]
+
+    assert prop["type"] == "array"
+    assert prop["items"] == {"type": "string"}
+    assert "compare_date" in prop["description"], "the description must name the workaround it replaces"
+
+
+def test_dispatch_forwards_order_by_without_making_it_a_bind():
+    call = _dispatch({"frozen_date": "2026-09-01", "order_by": ["-OBSOLETE_OHOPO_AMT_TWD"]})
+
+    assert call["order_by"] == ["-OBSOLETE_OHOPO_AMT_TWD"]
+    assert call["params"] == {"frozen_date": "2026-09-01"}
+
+
+def test_dispatch_accepts_order_by_as_a_comma_separated_string():
+    call = _dispatch({"frozen_date": "2026-09-01", "order_by": "-AMT, Item_No"})
+
+    assert call["order_by"] == ["-AMT", "Item_No"]

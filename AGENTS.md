@@ -111,6 +111,14 @@ celery -A app.tasks.celery_app flower --port=5555
   case-insensitive (the warehouse's own casing is inconsistent) and output keeps the
   caller's order. It exists for context economy: an `eo_detail` row is ~2.6 KB of JSON
   because 89 column names repeat per row.
+- **`order_by` override** (`app/services/order_selection.py`): the same three surfaces take
+  an optional ordering that **replaces** the definition's own, so "the largest five" is one
+  call. It must go into the SQL wrapper (`dialect.wrap_paginated` and friends) — sorting the
+  returned page would rank 100 rows out of 140k — which means the column name is interpolated
+  into the statement and the identifier whitelist is the only guard; parsing rejects anything
+  that is not a bare identifier. Omitted, the definition's ordering is used, unchanged. The
+  Hub cannot verify the column exists without running the query, so a missing one comes back
+  from the driver and is mapped to 400 rather than 500.
 
 ### Data Source Databases vs Platform Store
 
