@@ -38,6 +38,23 @@ def _server_url(request: Request) -> str:
     return base + settings.api_prefix
 
 
+def _as_columns(value: Any, name: str) -> list[str] | None:
+    """Accept a JSON array or a comma-separated string.
+
+    The schema says array, but models routinely send ``"A, B"`` for an array of
+    strings; rejecting that would spend a tool call teaching the model a format
+    instead of answering the question.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [part for part in value.split(",")]
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail=f"'{name}' must be an array of column names")
+    names = [str(v).strip() for v in value if str(v).strip()]
+    return names or None
+
+
 def _as_int(value: Any, name: str, default: int) -> int:
     if value is None or value == "":
         return default
@@ -103,6 +120,9 @@ def call_tool(
             detail=f"Unsupported fetch_mode '{fetch_mode}'; allowed: {', '.join(tool_openapi.TOOL_FETCH_MODES)}",
         )
 
+    columns_key = tool_openapi.columns_arg_name(definition)
+    columns = _as_columns(args.pop(columns_key, None), columns_key)
+
     view = args.pop("view", None)
     if view is not None and not eo_field_views.is_governed(definition.name):
         # Dropped, not forwarded: it would otherwise become a bind parameter.
@@ -110,7 +130,7 @@ def call_tool(
 
     unknown = sorted(set(args) - set(definition.params))
     if unknown:
-        accepted = [*definition.params, "fetch_mode", page_key, page_size_key]
+        accepted = [*definition.params, "fetch_mode", columns_key, page_key, page_size_key]
         if eo_field_views.is_governed(definition.name):
             accepted.append("view")
         raise HTTPException(
@@ -126,6 +146,7 @@ def call_tool(
             page=page,
             page_size=page_size,
             view=view,
+            columns=columns,
         )
     except ValidationError as e:
         # 400 with the reason, not a 500: the model sent it and can correct it.

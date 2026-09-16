@@ -103,6 +103,14 @@ celery -A app.tasks.celery_app flower --port=5555
   execution path. It enforces the MCP boundary itself (no `all`/`batch`, `TOOL_PAGE_SIZE_MAX`,
   400 on undeclared arguments), and operationIds are the MCP tool names capped at 64.
   Guide: `docs/eo-dify-setup.md`.
+- **`columns` projection** (`app/services/column_selection.py`): every surface — REST,
+  MCP tools, OpenAPI tools — takes an optional `columns` list that narrows the response.
+  **Opt-in: omitted, the result is byte-identical to before**, which is what the ~91k
+  REST calls a month depend on. Applied *after* the audience view, so a masked column
+  reads as "unknown column" (400) and cannot be probed through it. Matching is
+  case-insensitive (the warehouse's own casing is inconsistent) and output keeps the
+  caller's order. It exists for context economy: an `eo_detail` row is ~2.6 KB of JSON
+  because 89 column names repeat per row.
 
 ### Data Source Databases vs Platform Store
 

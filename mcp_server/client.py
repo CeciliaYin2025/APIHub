@@ -135,6 +135,7 @@ class ApiHubClient:
         page: int = 1,
         page_size: int = 50,
         view: str | None = None,
+        columns: list[str] | None = None,
     ) -> dict:
         # page/page_size are always sent: the REST schema carries them for every
         # mode and ignores them outside "page", so there is nothing to branch on.
@@ -151,6 +152,10 @@ class ApiHubClient:
         # definitions that have no view at all.
         if view is not None:
             payload["view"] = view
+        # Same reasoning as `view`: omitted unless asked for, so the default path
+        # stays byte-identical to what every existing caller sends.
+        if columns:
+            payload["columns"] = columns
         return await self._request("POST", f"/{db_seg}/queries/execute", json=payload)
 
     async def describe_table(self, db: str, table: str) -> dict:

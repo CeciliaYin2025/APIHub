@@ -33,6 +33,16 @@ class QueryRequest(BaseModel):
     batch_offset: int = Field(default=0, ge=0, description="Starting row offset (fetch_mode=batch)")
     # top_n mode
     top_n: int = Field(default=10, ge=1, le=1000, description="Number of rows to return (fetch_mode=top_n)")
+    # Opt-in column projection. Omitted (the default) returns every column, which
+    # is what every pre-existing caller gets. See app/services/column_selection.py.
+    columns: list[str] | None = Field(
+        default=None,
+        description=(
+            "Return only these columns, in this order. Case-insensitive; an unknown name is a 400. "
+            "Omit for every column. Applied after the audience view, so a column that view hides "
+            "cannot be recovered through this parameter."
+        ),
+    )
     # Audience view — only meaningful for definitions with an audience-specific
     # column set (today: eo_summary). See app/services/eo_field_views.py.
     view: str | None = Field(
