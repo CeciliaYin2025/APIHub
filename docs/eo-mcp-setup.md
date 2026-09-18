@@ -25,7 +25,7 @@ API Hub 裡沒有對應的本地帳號，MCP 連線就會拿到 **403 Not provis
 | Username | **必須與 isap-auth 送出的完全一致**，含前導零（例如 `00049` 不是 `49`） |
 | 姓名 | 顯示用 |
 
-`eo_reader` 的權限是 `query:eo_*`，只看得到 13 個 E&O 定義，看不到 HR/RD 的任何資料。
+`eo_reader` 的權限是 `query:eo_*`，只看得到 14 個 E&O 定義，看不到 HR/RD 的任何資料。
 之後新增的 E&O 定義會自動涵蓋，不需要再調權限。
 
 ---
@@ -253,7 +253,7 @@ python -m scripts.eo_cache fetch ... --refresh # 忽略快取，強制重抓單�
 
 ## 4. 可用的工具
 
-裝好之後你會看到 13 個 `query_dw_eo_*` 工具。不需要背，AI 會自己挑，但知道有
+裝好之後你會看到 14 個 `query_dw_eo_*` 工具。不需要背，AI 會自己挑，但知道有
 哪些能幫你問得更精準：
 
 | 工具 | 回答什麼 |
@@ -422,7 +422,7 @@ description: Query and analyse Sercomm E&O (Excess & Obsolete) inventory data th
 
 # E&O Analysis
 
-Answer E&O questions using the thirteen `query_dw_eo_*` MCP tools, reusing locally
+Answer E&O questions using the fourteen `query_dw_eo_*` MCP tools, reusing locally
 cached results for closed periods instead of re-running slow queries.
 
 **Question / task:** $ARGUMENTS
@@ -454,6 +454,7 @@ latest period.
 | How much E&O by OU+BU+PID+customer group? | `eo_summary` |
 | Item-level detail for a period | `eo_detail` — always with the narrowest filter you know (`customer` / `ou` / `bu` / `pid`) plus `columns` |
 | Which items are red-flagged, and what changed vs another period? | `eo_red_items` |
+| Which PID / project / BU / customer / site moved most between two periods? | `eo_group_diff` |
 | Which items' E&O amount moved most between two periods (for a customer / BU / PID / site)? | `eo_item_diff` |
 | Why is this item attributed to X? When did it move? | `eo_item_history` |
 | How is E&O trending month to month? | `eo_trends` |
@@ -551,17 +552,29 @@ period was re-run.
 These are the traps that produce plausible, wrong answers. Each is documented in
 the tool's own `Returns:` text — read it rather than assuming.
 
-- **Rank, total and compare in TWD — always.** Every figure you report must come
-  from a `_TWD` column. Five columns have **no `_TWD` twin** and carry each row's
-  local currency: `ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, `WIP_AMT`, `TP75_Amt` and
-  `PLANNED_ALLOCATED_AMT`. Summing one of those across sites adds pesos to yuan to
-  dollars; the total looks ordinary and means nothing. On 2026-09-17 that mistake
-  put `DXR` at the top of Charter's "biggest increase" with +683,864,680 — its
-  `ALL_OH_AMT` that period was PHP 1,727,604,368 + CNY 2,729,814 + TWD 171. Ranked
-  properly on `OBSOLETE_OHOPO_ALL_AMT_TWD` the answer is `DX8` +365,891,158, and
-  DXR's E&O had actually *fallen* 291,181,564 — the wrong answer was not close, it
-  named the wrong project and the wrong direction. If a question truly needs one of
-  those columns, report it per site with the currency named, never as one sum.
+- **Every amount column is already TWD, suffix or no suffix.** Measured 2026-09-18
+  over all 24 base/`_TWD` pairs in `INV_EO_PID_SUMMARY_F`: on rows whose
+  `CURRENCY_CODE` is not TWD, each `_TWD` column equals its unsuffixed twin
+  *exactly*, in every period sampled back to 2025-06, with no exception anywhere in
+  the table. Independently, 586 items are stocked at both a TWD site and a CNY site
+  and their `Unit_Price` ratio clusters at 1.0 (472 of 586 within ±25%), not at the
+  4.66 CNY→TWD rate. `CURRENCY_CODE` and `TWD_CURRENCY_RATE` are metadata the ETL
+  carries through, not a conversion left for you to apply. So `ALL_OH_AMT`,
+  `UNAVAILABLE_OH_AMT`, `WIP_AMT`, `TP75_Amt`, `PLANNED_ALLOCATED_AMT` and detail's
+  `ALLOCATED_AMT` are TWD and **are** summable across sites. **Never multiply any
+  amount column by `TWD_CURRENCY_RATE`** — that inflates a CNY site 4.66x.
+- **"庫存" is ambiguous — name the metric you ranked on.** Physical on-hand
+  (`ALL_OH_AMT`) and E&O (`OBSOLETE_OHOPO_ALL_AMT_TWD`) answer different questions
+  and rank differently. On 2026-09-17, Charter's "biggest increase" came out as
+  `DXR` +407,885,463 on `ALL_OH_AMT` but `DX8` +365,891,158 on
+  `OBSOLETE_OHOPO_ALL_AMT_TWD`, where DXR had in fact *fallen* 291,181,564 — the
+  wrong project and the wrong direction. Both figures are TWD and each is right for
+  its own metric; the error was not saying which question was being answered. That
+  incident was first recorded as a currency bug: DXR's on-hand was described as
+  PHP 1,727,604,368 + CNY 2,729,814 + TWD 171, but those three add to
+  1,730,334,353 — exactly the column's TWD total. The split was a GROUP BY on a
+  metadata field, not three units of account. State the column you ranked on, and
+  when the question is ambiguous say so and default to the E&O metric.
 - **`eo_summary` serves two audiences under different names.** It takes a `view`
   argument: `mc` (default, the full report) or `sales` (the narrower set sent to
   Sales). The two rename the same columns — MC "Obsolete All OH Amt" is Sales
@@ -617,9 +630,9 @@ The common MC question is "why is this item sitting under X?".
 ## Reporting
 
 State the frozen period in every answer — a number without its period is
-meaningless here. Amounts are TWD unless the column name says otherwise; several
-columns have no `_TWD` twin and are in local currency, which each tool's
-`Returns:` text lists explicitly. If a figure came from cache, say which period
+meaningless here. All amounts are TWD — including the columns with no `_TWD`
+suffix — so say so once rather than qualifying each figure, and name the metric
+column you ranked or totalled on. If a figure came from cache, say which period
 and when it was cached.
 ````
 
@@ -724,10 +737,11 @@ see any of:
 | Reference | `LOCK_QTY`, `MSIC` |
 | Goal | `TARGET_AMT` (Meeting Goals) |
 
-`WIP_AMT` and `TP75_Amt` are in the Sales view and have **no `_TWD` twin** — they
-are local currency. Sales therefore also carries `CURRENCY_CODE` and
-`TWD_CURRENCY_RATE`, which neither report prints: a workbook is rendered per site
-so its currency is implicit, an API response has no such context.
+`WIP_AMT` and `TP75_Amt` are in the Sales view and have **no `_TWD` twin** — but
+they are TWD all the same (see *Currency* below). Sales also carries
+`CURRENCY_CODE` and `TWD_CURRENCY_RATE`, which neither report prints: a workbook
+is rendered per site so its currency is implicit, an API response has no such
+context.
 
 ### Asking for a view
 
@@ -762,25 +776,42 @@ the two sources, so check which tool you are reading.
 `OH` = on hand, `OPO` = open PO, `OHOPO` = the two combined. `TP70` / `TP75` /
 `TP80` are stock-status buckets, not amounts of their own family.
 
-### Currency — the `_TWD` suffix is not universal
+### Currency — every amount is already TWD
 
-Most amounts have a `_TWD` twin converted from `CURRENCY_CODE` via
-`TWD_CURRENCY_RATE`. **Some do not**, and assuming otherwise mixes currencies.
+**The `_TWD` suffix marks nothing. Every amount column in both sources holds TWD,
+and none of them needs converting.** The suffixed and unsuffixed columns are the
+same number.
 
-- `INV_EO_PID_SUMMARY_F` — 25 `_TWD` columns. **No twin** for `PLANNED_ALLOCATED_AMT`,
-  `TP75_Amt`, `UNAVAILABLE_OH_AMT`, `ALL_OH_AMT`, `WIP_AMT`
-- Detail TVF — 21 `_TWD` columns, 26 `*QTY*` columns. **No twin** for `ALLOCATED_AMT`,
-  `ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, `OH_UNRECOVERABLE_AMT`, `OPO_UNRECOVERABLE_AMT`,
-  `WIP_AMT`
-- **Already TWD despite the name** — `OBSOLETE_OH_TP75_AMT` and `OBSOLETE_OH_ALL_AMT`
-  in the detail source have no `_TWD` suffix but hold TWD values. **Do not multiply
-  them by `TWD_CURRENCY_RATE`.** Verified 2026-09-15 on the PHP / INR / CNY sites:
-  `OBSOLETE_OH_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD + OBSOLETE_OH_TP75_AMT` equals
-  `OBSOLETE_OH_ALL_AMT` exactly, and applying the rate to either side breaks it. The
-  item-level "E&O OH + OPO Amt" (`OBSOLETE_OHOPO_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD +
-  OBSOLETE_OH_TP75_AMT`, what `eo_item_diff` sums) reconciles to the summary's
-  `OBSOLETE_OHOPO_ALL_AMT_TWD` to the cent. The `eo_detail` tool text says the same
-  since 2026-09-15
+Measured 2026-09-18, and worth repeating before anyone "fixes" this again:
+
+- All 24 base/`_TWD` pairs in `INV_EO_PID_SUMMARY_F` were compared on rows whose
+  `CURRENCY_CODE` is not TWD. Every pair matched **exactly** — `ALLOCATED_AMT` =
+  `ALLOCATED_AMT_TWD`, `OBSOLETE_OHOPO_ALL_AMT` = `OBSOLETE_OHOPO_ALL_AMT_TWD`,
+  and so on for all of them. A full-table scan for any row where the two differ
+  returns **zero rows**, in every period sampled from 2025-06 to 2026-09.
+- 586 items are stocked at both a TWD site and a CNY site in one period. Their
+  `Unit_Price` ratio averages 1.17 and 472 of 586 sit within ±25% of 1.0; only 13
+  are anywhere near the 4.66 CNY→TWD rate. Were the CNY site's figures in yuan,
+  the same physical part would show a systematic 4.66x gap. It does not.
+
+So `CURRENCY_CODE` and `TWD_CURRENCY_RATE` are metadata the ETL carries through
+for traceability, not a conversion left for the caller. **Never multiply an amount
+by `TWD_CURRENCY_RATE`** — on a CNY site that inflates it 4.66x. And these columns,
+long listed as "local currency", are TWD and **are** summable across sites:
+`ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, `WIP_AMT`, `TP75_Amt`, `PLANNED_ALLOCATED_AMT`
+(summary) and `ALLOCATED_AMT`, `OH_UNRECOVERABLE_AMT`, `OPO_UNRECOVERABLE_AMT`
+(detail).
+
+Grouping such a column by `CURRENCY_CODE` still *looks* like a currency split and
+has misled us before: DXR's on-hand was once reported as PHP 1,727,604,368 + CNY
+2,729,814 + TWD 171, which adds to 1,730,334,353 — exactly the column's TWD total.
+That was a GROUP BY on a metadata field, not three units of account.
+
+The internal identities hold because everything is in one unit:
+`OBSOLETE_OH_AMT_TWD + OBSOLETE_OH_TP70_AMT_TWD + OBSOLETE_OH_TP75_AMT` equals
+`OBSOLETE_OH_ALL_AMT` exactly (verified 2026-09-15 on the PHP / INR / CNY sites),
+and the item-level "E&O OH + OPO Amt" that `eo_item_diff` sums reconciles to the
+summary's `OBSOLETE_OHOPO_ALL_AMT_TWD` to the cent.
 
 Detail also carries `DOS_CURRENCY_RATE` alongside `TWD_CURRENCY_RATE`.
 

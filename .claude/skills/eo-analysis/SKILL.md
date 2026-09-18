@@ -5,7 +5,7 @@ description: Query and analyse Sercomm E&O (Excess & Obsolete) inventory data th
 
 # E&O Analysis
 
-Answer E&O questions using the thirteen `query_dw_eo_*` MCP tools, reusing locally
+Answer E&O questions using the fourteen `query_dw_eo_*` MCP tools, reusing locally
 cached results for closed periods instead of re-running slow queries.
 
 **Question / task:** $ARGUMENTS
@@ -37,6 +37,7 @@ latest period.
 | How much E&O by OU+BU+PID+customer group? | `eo_summary` |
 | Item-level detail for a period | `eo_detail` — always with the narrowest filter you know (`customer` / `ou` / `bu` / `pid`) plus `columns` |
 | Which items are red-flagged, and what changed vs another period? | `eo_red_items` |
+| Which PID / project / BU / customer / site moved most between two periods? | `eo_group_diff` |
 | Which items' E&O amount moved most between two periods (for a customer / BU / PID / site)? | `eo_item_diff` |
 | Why is this item attributed to X? When did it move? | `eo_item_history` |
 | How is E&O trending month to month? | `eo_trends` |
@@ -134,17 +135,29 @@ period was re-run.
 These are the traps that produce plausible, wrong answers. Each is documented in
 the tool's own `Returns:` text — read it rather than assuming.
 
-- **Rank, total and compare in TWD — always.** Every figure you report must come
-  from a `_TWD` column. Five columns have **no `_TWD` twin** and carry each row's
-  local currency: `ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, `WIP_AMT`, `TP75_Amt` and
-  `PLANNED_ALLOCATED_AMT`. Summing one of those across sites adds pesos to yuan to
-  dollars; the total looks ordinary and means nothing. On 2026-09-17 that mistake
-  put `DXR` at the top of Charter's "biggest increase" with +683,864,680 — its
-  `ALL_OH_AMT` that period was PHP 1,727,604,368 + CNY 2,729,814 + TWD 171. Ranked
-  properly on `OBSOLETE_OHOPO_ALL_AMT_TWD` the answer is `DX8` +365,891,158, and
-  DXR's E&O had actually *fallen* 291,181,564 — the wrong answer was not close, it
-  named the wrong project and the wrong direction. If a question truly needs one of
-  those columns, report it per site with the currency named, never as one sum.
+- **Every amount column is already TWD, suffix or no suffix.** Measured 2026-09-18
+  over all 24 base/`_TWD` pairs in `INV_EO_PID_SUMMARY_F`: on rows whose
+  `CURRENCY_CODE` is not TWD, each `_TWD` column equals its unsuffixed twin
+  *exactly*, in every period sampled back to 2025-06, with no exception anywhere in
+  the table. Independently, 586 items are stocked at both a TWD site and a CNY site
+  and their `Unit_Price` ratio clusters at 1.0 (472 of 586 within ±25%), not at the
+  4.66 CNY→TWD rate. `CURRENCY_CODE` and `TWD_CURRENCY_RATE` are metadata the ETL
+  carries through, not a conversion left for you to apply. So `ALL_OH_AMT`,
+  `UNAVAILABLE_OH_AMT`, `WIP_AMT`, `TP75_Amt`, `PLANNED_ALLOCATED_AMT` and detail's
+  `ALLOCATED_AMT` are TWD and **are** summable across sites. **Never multiply any
+  amount column by `TWD_CURRENCY_RATE`** — that inflates a CNY site 4.66x.
+- **"庫存" is ambiguous — name the metric you ranked on.** Physical on-hand
+  (`ALL_OH_AMT`) and E&O (`OBSOLETE_OHOPO_ALL_AMT_TWD`) answer different questions
+  and rank differently. On 2026-09-17, Charter's "biggest increase" came out as
+  `DXR` +407,885,463 on `ALL_OH_AMT` but `DX8` +365,891,158 on
+  `OBSOLETE_OHOPO_ALL_AMT_TWD`, where DXR had in fact *fallen* 291,181,564 — the
+  wrong project and the wrong direction. Both figures are TWD and each is right for
+  its own metric; the error was not saying which question was being answered. That
+  incident was first recorded as a currency bug: DXR's on-hand was described as
+  PHP 1,727,604,368 + CNY 2,729,814 + TWD 171, but those three add to
+  1,730,334,353 — exactly the column's TWD total. The split was a GROUP BY on a
+  metadata field, not three units of account. State the column you ranked on, and
+  when the question is ambiguous say so and default to the E&O metric.
 - **`eo_summary` serves two audiences under different names.** It takes a `view`
   argument: `mc` (default, the full report) or `sales` (the narrower set sent to
   Sales). The two rename the same columns — MC "Obsolete All OH Amt" is Sales
@@ -200,7 +213,7 @@ The common MC question is "why is this item sitting under X?".
 ## Reporting
 
 State the frozen period in every answer — a number without its period is
-meaningless here. Amounts are TWD unless the column name says otherwise; several
-columns have no `_TWD` twin and are in local currency, which each tool's
-`Returns:` text lists explicitly. If a figure came from cache, say which period
+meaningless here. All amounts are TWD — including the columns with no `_TWD`
+suffix — so say so once rather than qualifying each figure, and name the metric
+column you ranked or totalled on. If a figure came from cache, say which period
 and when it was cached.

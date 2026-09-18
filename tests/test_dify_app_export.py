@@ -139,7 +139,7 @@ def test_agent_strategy_plugin_is_declared_as_a_dependency(dsl):
 def test_tools_are_the_eo_operations(dsl):
     tools = _agent(dsl)["agent_parameters"]["tools"]["value"]
     assert [t["tool_name"] for t in tools] == EO_TOOLS
-    assert len(set(EO_TOOLS)) == 13
+    assert len(set(EO_TOOLS)) == 14
     assert all(t["type"] == "api" and t["enabled"] for t in tools)
     assert all(t["parameters"] == {} for t in tools), "a pinned parameter would apply to every call"
 
@@ -151,7 +151,7 @@ def test_every_tool_in_the_skill_tool_map_is_attached():
     text = (SKILLS_DIR / "eo-analysis" / "SKILL.md").read_text(encoding="utf-8")
     tool_map = text.split("## Tool map", 1)[1].split("\n## ", 1)[0]
     listed = {f"query_dw_{m}" for m in re.findall(r"`(eo_[a-z_]+)`", tool_map)}
-    assert len(listed) == 13, f"tool map shape changed: {sorted(listed)}"
+    assert len(listed) == 14, f"tool map shape changed: {sorted(listed)}"
     assert listed == set(EO_TOOLS)
 
 
