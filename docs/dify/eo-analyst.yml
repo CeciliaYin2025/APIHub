@@ -66,6 +66,42 @@ workflow:
       targetHandle: target
       type: custom
       zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: answer
+        targetType: if-else
+      id: 1757900000003-source-1757900000004-target
+      source: '1757900000003'
+      sourceHandle: source
+      target: '1757900000004'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: answer
+      id: 1757900000004-true-1757900000005-target
+      source: '1757900000004'
+      sourceHandle: 'true'
+      target: '1757900000005'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: answer
+      id: 1757900000004-errored-1757900000006-target
+      source: '1757900000004'
+      sourceHandle: errored
+      target: '1757900000006'
+      targetHandle: target
+      type: custom
+      zIndex: 0
     nodes:
     - data:
         type: start
@@ -357,7 +393,7 @@ workflow:
               | Which periods exist? | `eo_frozen_dates`, `eo_max_frozen_date` |
               | What are the valid OU / BU / PID / customer / project codes? | `eo_dimensions` |
               | How much E&O by OU+BU+PID+customer group? | `eo_summary` |
-              | Item-level detail for a period | `eo_detail` |
+              | Item-level detail for a period | `eo_detail` — always with the narrowest filter you know (`customer` / `ou` / `bu` / `pid`) plus `columns` |
               | Which items are red-flagged, and what changed vs another period? | `eo_red_items` |
               | Which items' E&O amount moved most between two periods (for a customer / BU / PID / site)? | `eo_item_diff` |
               | Why is this item attributed to X? When did it move? | `eo_item_history` |
@@ -369,6 +405,19 @@ workflow:
 
               Always resolve codes with `eo_dimensions` before filtering. `BU_NO` looks like
               `S3B`, `PID` like `DYT` — a guessed value silently returns nothing.
+
+              **Drill down with the filters you have already earned.** The moment a call tells
+              you which customer, project or BU matters, every later call must carry it.
+              Finding the top project and then fetching that customer's whole detail to look
+              for its components throws the answer away: `eo_summary`, `eo_detail`,
+              `eo_item_diff` and `eo_feedback` all take `customer`, `ou`, `bu` and `pid`, so
+              the last step of a drill-down is `eo_detail` with `pid` **and** `columns` set —
+              a few hundred narrow rows, not 100 rows of 89 columns.
+
+              Measured on 2026-09-16: a run identified `DXR` correctly after nine well-filtered
+              calls, then finished with two unfiltered `eo_detail` pages — 100 rows × 89
+              columns, ~2.6 KB per row — and hit the 131k context window one step short of the
+              answer. The ranking was already done; only the drill-down was wrong.
 
               **Rank with `order_by`, never with a contrived filter.** Every tool takes an
               `order_by` argument: `["-OBSOLETE_OHOPO_AMT_TWD"]` sorts largest-first in the
@@ -443,6 +492,17 @@ workflow:
               These are the traps that produce plausible, wrong answers. Each is documented in
               the tool's own `Returns:` text — read it rather than assuming.
 
+              - **Rank, total and compare in TWD — always.** Every figure you report must come
+                from a `_TWD` column. Five columns have **no `_TWD` twin** and carry each row's
+                local currency: `ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, `WIP_AMT`, `TP75_Amt` and
+                `PLANNED_ALLOCATED_AMT`. Summing one of those across sites adds pesos to yuan to
+                dollars; the total looks ordinary and means nothing. On 2026-09-17 that mistake
+                put `DXR` at the top of Charter's "biggest increase" with +683,864,680 — its
+                `ALL_OH_AMT` that period was PHP 1,727,604,368 + CNY 2,729,814 + TWD 171. Ranked
+                properly on `OBSOLETE_OHOPO_ALL_AMT_TWD` the answer is `DX8` +365,891,158, and
+                DXR's E&O had actually *fallen* 291,181,564 — the wrong answer was not close, it
+                named the wrong project and the wrong direction. If a question truly needs one of
+                those columns, report it per site with the currency named, never as one sum.
               - **`eo_summary` serves two audiences under different names.** It takes a `view`
                 argument: `mc` (default, the full report) or `sales` (the narrower set sent to
                 Sales). The two rename the same columns — MC "Obsolete All OH Amt" is Sales
@@ -1183,6 +1243,81 @@ workflow:
         y: 280
       positionAbsolute:
         x: 680
+        y: 280
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        type: if-else
+        title: Empty answer?
+        desc: ''
+        cases:
+        - case_id: 'true'
+          logical_operator: and
+          conditions:
+          - id: agent-text-empty
+            variable_selector:
+            - '1757900000002'
+            - text
+            comparison_operator: empty
+        - case_id: errored
+          logical_operator: and
+          conditions:
+          - id: agent-text-is-fallback
+            variable_selector:
+            - '1757900000002'
+            - text
+            comparison_operator: contains
+            value: 抱歉，這個問題這次沒能完成
+      height: 120
+      id: '1757900000004'
+      position:
+        x: 980
+        y: 280
+      positionAbsolute:
+        x: 980
+        y: 280
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        type: answer
+        title: Empty answer notice
+        desc: ''
+        answer: |-
+          抱歉，這次沒有產生回答：模型在寫出答案前就用完了單次輸出額度（通常是推理佔滿了預算），因此回傳了空白內容。
+
+          請直接再問一次 —— 同樣的問題常常第二次就會成功。
+          若連續多次都是空白，請把問題與發生時間回報給管理者。
+      height: 120
+      id: '1757900000005'
+      position:
+        x: 1280
+        y: 280
+      positionAbsolute:
+        x: 1280
+        y: 280
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        type: answer
+        title: Failure notice
+        desc: ''
+        answer: '{{#1757900000002.text#}}'
+      height: 120
+      id: '1757900000006'
+      position:
+        x: 1580
+        y: 280
+      positionAbsolute:
+        x: 1580
         y: 280
       selected: false
       sourcePosition: right

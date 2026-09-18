@@ -97,9 +97,29 @@ FAILURE_ANSWER = (
     "若縮小範圍後仍然失敗，請把問題與時間回報給管理者。"
 )
 
+# The opening sentence of FAILURE_ANSWER, used as the if-else probe for "the Agent
+# raised and error_strategy replaced `text`". Matching on the text itself is the only
+# signal available: the node's status is not exposed to a downstream condition.
+FAILURE_MARKER = "抱歉，這個問題這次沒能完成"
+
+# The Agent can also fail *without* raising, which `error_strategy` cannot see: the
+# model returns an empty completion, the strategy reports success, and the Answer
+# node renders an empty string. Measured 2026-09-17 — glm-5.3-flash spent all 8192
+# completion tokens on reasoning in round 1 (finish_reason "length", no content, not
+# one tool call) and Dify recorded the run as succeeded with a 0-character answer.
+EMPTY_ANSWER = (
+    "抱歉，這次沒有產生回答：模型在寫出答案前就用完了單次輸出額度"
+    "（通常是推理佔滿了預算），因此回傳了空白內容。\n\n"
+    "請直接再問一次 —— 同樣的問題常常第二次就會成功。\n"
+    "若連續多次都是空白，請把問題與發生時間回報給管理者。"
+)
+
 START_ID = "1757900000001"
 AGENT_ID = "1757900000002"
 ANSWER_ID = "1757900000003"
+IFELSE_ID = "1757900000004"
+EMPTY_ANSWER_ID = "1757900000005"
+ERROR_ANSWER_ID = "1757900000006"
 
 _DEPLOYMENT_HEADING = "# How this deployment differs from a shell"
 _KNOWLEDGE_HEADING = "# Operating knowledge"
@@ -180,12 +200,14 @@ def _node(node_id: str, data: dict, x: int) -> dict:
     }
 
 
-def _edge(source: str, source_type: str, target: str, target_type: str) -> dict:
+def _edge(source: str, source_type: str, target: str, target_type: str, source_handle: str = "source") -> dict:
+    # `source_handle` matters for if-else: Dify routes on edge_source_handle == the
+    # selected case_id (or "false"), so a branch edge left as "source" never fires.
     return {
         "data": {"isInIteration": False, "isInLoop": False, "sourceType": source_type, "targetType": target_type},
-        "id": f"{source}-source-{target}-target",
+        "id": f"{source}-{source_handle}-{target}-target",
         "source": source,
-        "sourceHandle": "source",
+        "sourceHandle": source_handle,
         "target": target,
         "targetHandle": "target",
         "type": "custom",
@@ -231,6 +253,48 @@ def build_dsl(provider_id: str = PROVIDER_ID_PLACEHOLDER, model: str = MODEL_PLA
             "maximum_iterations": {"type": "constant", "value": MAX_ITERATIONS},
         },
     }
+    # Catches the failure `error_strategy` cannot see: an empty completion is reported
+    # as success, so nothing raises and Answer renders "". Sits *after* Answer rather
+    # than between Agent and Answer, so the normal reply still streams token by token
+    # instead of being held back until a branch can be evaluated.
+    ifelse = {
+        "type": "if-else",
+        "title": "Empty answer?",
+        "desc": "",
+        "cases": [
+            {
+                "case_id": "true",
+                "logical_operator": "and",
+                "conditions": [
+                    {
+                        "id": "agent-text-empty",
+                        "variable_selector": [AGENT_ID, "text"],
+                        "comparison_operator": "empty",
+                    }
+                ],
+            },
+            # The other half of the same problem. When the Agent *raises*,
+            # error_strategy writes FAILURE_ANSWER into `text` — but Answer has
+            # already streamed whatever the agent produced before the exception, so
+            # the guidance never reaches the user. Measured 2026-09-16/17: answers of
+            # 331, 8, 5 and 4 characters where the fallback was sitting in the node's
+            # outputs the whole time. Re-emitting `text` downstream delivers it.
+            # Order matters: `empty` is tested first, so a failure that produced no
+            # text at all takes the empty branch rather than this one.
+            {
+                "case_id": "errored",
+                "logical_operator": "and",
+                "conditions": [
+                    {
+                        "id": "agent-text-is-fallback",
+                        "variable_selector": [AGENT_ID, "text"],
+                        "comparison_operator": "contains",
+                        "value": FAILURE_MARKER,
+                    }
+                ],
+            },
+        ],
+    }
     return {
         "app": {
             "description": (
@@ -275,6 +339,11 @@ def build_dsl(provider_id: str = PROVIDER_ID_PLACEHOLDER, model: str = MODEL_PLA
                 "edges": [
                     _edge(START_ID, "start", AGENT_ID, "agent"),
                     _edge(AGENT_ID, "agent", ANSWER_ID, "answer"),
+                    _edge(ANSWER_ID, "answer", IFELSE_ID, "if-else"),
+                    # Both failure branches are wired; the "false" handle deliberately
+                    # has no edge, so a run that answered normally simply ends here.
+                    _edge(IFELSE_ID, "if-else", EMPTY_ANSWER_ID, "answer", source_handle="true"),
+                    _edge(IFELSE_ID, "if-else", ERROR_ANSWER_ID, "answer", source_handle="errored"),
                 ],
                 "nodes": [
                     _node(START_ID, {"type": "start", "title": "Start", "desc": "", "variables": []}, 80),
@@ -283,6 +352,26 @@ def build_dsl(provider_id: str = PROVIDER_ID_PLACEHOLDER, model: str = MODEL_PLA
                         ANSWER_ID,
                         {"type": "answer", "title": "Answer", "desc": "", "answer": f"{{{{#{AGENT_ID}.text#}}}}"},
                         680,
+                    ),
+                    _node(IFELSE_ID, ifelse, 980),
+                    _node(
+                        EMPTY_ANSWER_ID,
+                        {"type": "answer", "title": "Empty answer notice", "desc": "", "answer": EMPTY_ANSWER},
+                        1280,
+                    ),
+                    # Re-emits the Agent's `text`, which error_strategy has by now
+                    # replaced with FAILURE_ANSWER. Answer (the first one) streamed
+                    # before the exception landed, so this is what actually delivers
+                    # the guidance instead of leaving a truncated reply.
+                    _node(
+                        ERROR_ANSWER_ID,
+                        {
+                            "type": "answer",
+                            "title": "Failure notice",
+                            "desc": "",
+                            "answer": f"{{{{#{AGENT_ID}.text#}}}}",
+                        },
+                        1580,
                     ),
                 ],
                 "viewport": {"x": 0, "y": 0, "zoom": 1},

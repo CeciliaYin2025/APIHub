@@ -17,10 +17,17 @@ import yaml
 
 from scripts.build_dify_app import (
     AGENT_ID,
+    ANSWER_ID,
+    EMPTY_ANSWER,
+    EMPTY_ANSWER_ID,
     EO_TOOLS,
+    ERROR_ANSWER_ID,
+    FAILURE_MARKER,
+    IFELSE_ID,
     MODEL_PLACEHOLDER,
     OUTPUT,
     PROVIDER_ID_PLACEHOLDER,
+    START_ID,
     render,
 )
 from scripts.build_openwebui_model import SKILL_ORDER, SKILLS_DIR
@@ -52,14 +59,72 @@ def test_is_a_chatflow_for_dify_1_17(dsl):
     assert dsl["app"]["mode"] == "advanced-chat"
 
 
-def test_graph_is_start_agent_answer(dsl):
+def test_graph_streams_the_agent_then_guards_both_failure_modes(dsl):
     types = {i: d["type"] for i, d in _nodes(dsl).items()}
-    assert sorted(types.values()) == ["agent", "answer", "start"]
+    assert sorted(types.values()) == ["agent", "answer", "answer", "answer", "if-else", "start"]
     edges = {(e["source"], e["target"]) for e in dsl["workflow"]["graph"]["edges"]}
-    start = next(i for i, t in types.items() if t == "start")
-    answer = next(i for i, t in types.items() if t == "answer")
-    assert edges == {(start, AGENT_ID), (AGENT_ID, answer)}
-    assert _nodes(dsl)[answer]["answer"] == f"{{{{#{AGENT_ID}.text#}}}}"
+    assert edges == {
+        (START_ID, AGENT_ID),
+        (AGENT_ID, ANSWER_ID),
+        (ANSWER_ID, IFELSE_ID),
+        (IFELSE_ID, EMPTY_ANSWER_ID),
+        (IFELSE_ID, ERROR_ANSWER_ID),
+    }
+    # Answer sits directly downstream of the Agent so the reply streams as it is
+    # produced. Moving the if-else between them would hold every token back until
+    # the agent finished, which on a multi-minute run is a blank screen.
+    assert _nodes(dsl)[ANSWER_ID]["answer"] == f"{{{{#{AGENT_ID}.text#}}}}"
+
+
+def test_an_empty_agent_output_is_caught_by_the_first_case(dsl):
+    # error_strategy only fires on an exception. A model that returns an empty
+    # completion is reported as *success*, so without this branch the user gets a
+    # blank reply while every status field still reads healthy (2026-09-17).
+    case = _nodes(dsl)[IFELSE_ID]["cases"][0]
+    assert case["case_id"] == "true"
+    assert case["conditions"][0]["variable_selector"] == [AGENT_ID, "text"]
+    assert case["conditions"][0]["comparison_operator"] == "empty"
+
+
+def test_a_raised_agent_is_caught_by_the_second_case(dsl):
+    # The other half of the same problem: on an exception error_strategy writes
+    # FAILURE_ANSWER into `text`, but Answer has already streamed, so the guidance
+    # never reaches the user (measured 2026-09-16/17: replies of 331, 8, 5 and 4
+    # characters while the fallback sat in the node's outputs). Matching on the text
+    # is the only available signal — a node's status is not visible to a condition.
+    case = _nodes(dsl)[IFELSE_ID]["cases"][1]
+    assert case["case_id"] == "errored"
+    assert case["conditions"][0]["comparison_operator"] == "contains"
+    assert case["conditions"][0]["value"] == FAILURE_MARKER
+    assert FAILURE_MARKER in _agent(dsl)["default_value"][0]["value"], (
+        "the probe must be a substring of the text error_strategy actually writes"
+    )
+
+
+def test_empty_is_tested_before_errored(dsl):
+    # A failure that produced no text at all could match either case; Dify takes the
+    # first match, and the empty notice is the more specific message of the two.
+    assert [c["case_id"] for c in _nodes(dsl)[IFELSE_ID]["cases"]] == ["true", "errored"]
+
+
+def test_each_branch_edge_carries_its_own_case_handle(dsl):
+    # Dify routes on edge_source_handle == the selected case_id; an edge left on the
+    # default "source" handle imports cleanly and then never fires.
+    handles = {e["target"]: e["sourceHandle"] for e in dsl["workflow"]["graph"]["edges"] if e["source"] == IFELSE_ID}
+    assert handles == {EMPTY_ANSWER_ID: "true", ERROR_ANSWER_ID: "errored"}
+
+
+def test_the_empty_branch_tells_the_user_what_to_do(dsl):
+    text = _nodes(dsl)[EMPTY_ANSWER_ID]["answer"]
+    assert text == EMPTY_ANSWER
+    assert "再問一次" in text, "a blank reply needs a next step, not just an apology"
+
+
+def test_the_failure_branch_re_emits_the_agent_text(dsl):
+    # Deliberately not a second copy of FAILURE_ANSWER: re-reading `text` delivers
+    # whatever error_strategy actually wrote, once the first Answer has finished
+    # streaming. A hard-coded copy would drift from default_value.
+    assert _nodes(dsl)[ERROR_ANSWER_ID]["answer"] == f"{{{{#{AGENT_ID}.text#}}}}"
 
 
 def test_agent_strategy_plugin_is_declared_as_a_dependency(dsl):

@@ -452,7 +452,7 @@ latest period.
 | Which periods exist? | `eo_frozen_dates`, `eo_max_frozen_date` |
 | What are the valid OU / BU / PID / customer / project codes? | `eo_dimensions` |
 | How much E&O by OU+BU+PID+customer group? | `eo_summary` |
-| Item-level detail for a period | `eo_detail` |
+| Item-level detail for a period | `eo_detail` — always with the narrowest filter you know (`customer` / `ou` / `bu` / `pid`) plus `columns` |
 | Which items are red-flagged, and what changed vs another period? | `eo_red_items` |
 | Which items' E&O amount moved most between two periods (for a customer / BU / PID / site)? | `eo_item_diff` |
 | Why is this item attributed to X? When did it move? | `eo_item_history` |
@@ -464,6 +464,19 @@ latest period.
 
 Always resolve codes with `eo_dimensions` before filtering. `BU_NO` looks like
 `S3B`, `PID` like `DYT` — a guessed value silently returns nothing.
+
+**Drill down with the filters you have already earned.** The moment a call tells
+you which customer, project or BU matters, every later call must carry it.
+Finding the top project and then fetching that customer's whole detail to look
+for its components throws the answer away: `eo_summary`, `eo_detail`,
+`eo_item_diff` and `eo_feedback` all take `customer`, `ou`, `bu` and `pid`, so
+the last step of a drill-down is `eo_detail` with `pid` **and** `columns` set —
+a few hundred narrow rows, not 100 rows of 89 columns.
+
+Measured on 2026-09-16: a run identified `DXR` correctly after nine well-filtered
+calls, then finished with two unfiltered `eo_detail` pages — 100 rows × 89
+columns, ~2.6 KB per row — and hit the 131k context window one step short of the
+answer. The ranking was already done; only the drill-down was wrong.
 
 **Rank with `order_by`, never with a contrived filter.** Every tool takes an
 `order_by` argument: `["-OBSOLETE_OHOPO_AMT_TWD"]` sorts largest-first in the
@@ -538,6 +551,17 @@ period was re-run.
 These are the traps that produce plausible, wrong answers. Each is documented in
 the tool's own `Returns:` text — read it rather than assuming.
 
+- **Rank, total and compare in TWD — always.** Every figure you report must come
+  from a `_TWD` column. Five columns have **no `_TWD` twin** and carry each row's
+  local currency: `ALL_OH_AMT`, `UNAVAILABLE_OH_AMT`, `WIP_AMT`, `TP75_Amt` and
+  `PLANNED_ALLOCATED_AMT`. Summing one of those across sites adds pesos to yuan to
+  dollars; the total looks ordinary and means nothing. On 2026-09-17 that mistake
+  put `DXR` at the top of Charter's "biggest increase" with +683,864,680 — its
+  `ALL_OH_AMT` that period was PHP 1,727,604,368 + CNY 2,729,814 + TWD 171. Ranked
+  properly on `OBSOLETE_OHOPO_ALL_AMT_TWD` the answer is `DX8` +365,891,158, and
+  DXR's E&O had actually *fallen* 291,181,564 — the wrong answer was not close, it
+  named the wrong project and the wrong direction. If a question truly needs one of
+  those columns, report it per site with the currency named, never as one sum.
 - **`eo_summary` serves two audiences under different names.** It takes a `view`
   argument: `mc` (default, the full report) or `sales` (the narrower set sent to
   Sales). The two rename the same columns — MC "Obsolete All OH Amt" is Sales
