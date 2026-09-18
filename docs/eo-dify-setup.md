@@ -18,7 +18,8 @@
 ```
 使用者 ──ISAP SSO──► Open WebUI ──dify pipe──► Dify Chatflow「E&O Analyst」
                                                   │
-                                    Start → Agent（Function Calling）→ Answer
+                 Start → Agent（Function Calling）→ Answer → If-Else ┬─ true ───► Answer（空白通知）
+                                                  │                 └─ errored ─► Answer（失敗說明）
                                                   │  13 個 API 工具（apihub_eo）
                                                   ▼  X-API-Key（服務帳號 svc_dify_eo）
                              https://ia-dev.sercomm.com/apihub/api/v1/DW/tools/<definition>
@@ -166,7 +167,8 @@ Dify → 建立應用 → **匯入 DSL 檔案** → 選 `eo-analyst.yml`。
 | 工具清單 | 13 個 `query_dw_eo_*`，全部啟用 |
 | 指令 | 以 `# Role` 開頭，約 4 萬字元 |
 | 最大迭代次數 | 12（月度檢視一次約要 10 次工具呼叫；再高只會讓上下文更容易爆掉） |
-| 錯誤處理 | 預設值：失敗時輸出一段「請縮小範圍」的說明，而不是外掛的錯誤堆疊 |
+| 錯誤處理 | 預設值（`default-value`）：Agent 拋例外時把「請縮小範圍」的說明寫進 `text`。**但這段文字不會自己送到使用者面前**——Answer 早在例外發生前就串流結束了，實測使用者只拿到 331／8／5／4 字的殘段。真正讓它出現的是下面的 If-Else 分支 |
+| 失敗分支 | Agent 之後應有 **If-Else + 兩個 Answer**：`true`＝`text` 為空（模型「成功」卻回空字串，沒有例外，`default-value` 不會觸發）；`errored`＝`text` 含「抱歉，這個問題這次沒能完成」（例外路徑）。兩條邊的 `sourceHandle` 必須分別是 `true` 與 `errored`，留在預設的 `source` 會匯入成功但永遠不觸發 |
 | 記憶 | 開啟，視窗 20 |
 
 右上「預覽」問「列出可用的 E&O 凍結日期」，應看到呼叫 `query_dw_eo_frozen_dates`
@@ -195,6 +197,8 @@ Dify → 建立應用 → **匯入 DSL 檔案** → 選 `eo-analyst.yml`。
 | 工具回 **404**，路徑是 `/DW/tools/...` | API Hub 還沒部署這個轉接路由，或定義被停用（訊息會寫 disabled） |
 | 工具回 **400** `Unknown argument(s)` | schema 過期：API Hub 的定義改了參數，Dify 還是舊副本——重抓貼上 |
 | 工具回 **429** | 共用帳號的同時在途上限（4）或每分鐘上限（300）被打滿，見第 0 節 |
+| **回答一片空白，但 Dify 顯示成功** | 最難察覺的一種：workflow `succeeded`、Agent 節點 `succeeded`、無 error，只有 `answer` 是 0 字。**Dify 端看不出原因**，要到閘道的 `LiteLLM_SpendLogs` 查該次呼叫。若 `finish_reason=length`、`completion_tokens` 恰為模型上限、`content` 0 字、`tool_calls` 0，就是**推理把輸出預算燒光**（thinking 模型與答案共用 `max_tokens`）——調高閘道該模型的 `max_tokens`（見 litellm repo K.25）。⚠️ 但若 `reasoning_tokens == completion_tokens` 且反覆如此，屬推理不收斂的「病態題」，調參救不了（K.17.10），只能換題或換非 thinking 模型 |
+| 只回了開頭幾句就沒了 | Agent 中途拋例外（context 溢位、plugin timeout）。`default-value` 有寫入 `text`，但 Answer 已串流結束，所以使用者只看到例外前吐出的殘段。`errored` 分支就是為此而設——若沒看到失敗說明，先確認該分支的 `sourceHandle` 是 `errored` 而不是 `source` |
 | 回答有數字但沒呼叫任何工具 | 模型不支援 tool call，或工具被停用；換模型，**不要採信那個回答** |
 | 查詢回零筆 | 多半是期別或代碼猜錯（週不是月、`BU_NO` 像 `S3B`）——與 MCP 版相同，見 `eo-mcp-setup.md` 第 4 節 |
 | 做到一半就停、沒有結論 | 最大迭代次數太小 |
