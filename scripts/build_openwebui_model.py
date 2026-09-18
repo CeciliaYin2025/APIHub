@@ -197,7 +197,7 @@ def build_export() -> list[dict]:
             "meta": {
                 "profile_image_url": "/static/favicon.png",
                 "description": (
-                    "Sercomm E&O 庫存分析。查詢 API Hub 的 13 個 query_dw_eo_* 工具，"
+                    "Sercomm E&O 庫存分析。查詢 API Hub 的 14 個 query_dw_eo_* 工具，"
                     "並依 E&O skill 的欄位語意與歸屬追查流程解讀結果。"
                     "使用前請把 base_model_id 改成這台實例上實際存在的模型，"
                     f'並確認 toolIds 的 "{TOOL_ID}" 對得上這台實例的工具伺服器 id。'

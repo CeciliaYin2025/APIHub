@@ -20,7 +20,7 @@
                                                   │
                  Start → Agent（Function Calling）→ Answer → If-Else ┬─ true ───► Answer（空白通知）
                                                   │                 └─ errored ─► Answer（失敗說明）
-                                                  │  13 個 API 工具（apihub_eo）
+                                                  │  14 個 API 工具（apihub_eo）
                                                   ▼  X-API-Key（服務帳號 svc_dify_eo）
                              https://ia-dev.sercomm.com/apihub/api/v1/DW/tools/<definition>
                                                   │
@@ -91,7 +91,7 @@ Dify 從 OpenAPI 匯入工具時，**只會依 request body 的第一層屬性�
 export APIHUB=https://ia-dev.sercomm.com/apihub/api/v1
 export APIHUB_API_KEY=ahk_...
 
-# 工具文件 -> 應為 200，13 個 operation
+# 工具文件 -> 應為 200，14 個 operation
 curl -ks -H "X-API-Key: $APIHUB_API_KEY" "$APIHUB/DW/tools/openapi.json?group=eo" \
   | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d['paths']),d['servers'])"
 
@@ -128,7 +128,7 @@ DSL 已把它列為相依套件，匯入時 Dify 也會提示安裝。
 1. 用上一節的 curl 抓 `openapi.json?group=eo`，存成檔案
 2. Dify → 工具 → 自訂 → **建立自訂工具**
    - 名稱：`apihub_eo`
-   - Schema：貼上整份 JSON，下方應列出 **13 個工具**，名稱都是 `query_dw_eo_*`
+   - Schema：貼上整份 JSON，下方應列出 **14 個工具**，名稱都是 `query_dw_eo_*`
    - 認證方法：**API Key**，標頭 `X-API-Key`，前綴 **無**，值填金鑰
 3. 儲存。任選 `query_dw_eo_max_frozen_date` 按「測試」，應回一筆日期
 
@@ -164,7 +164,7 @@ Dify → 建立應用 → **匯入 DSL 檔案** → 選 `eo-analyst.yml`。
 |---|---|
 | Agent 策略 | FunctionCalling |
 | 模型 | 支援 tool call 的模型（本台 `gb10/qwen3.8-27b`） |
-| 工具清單 | 13 個 `query_dw_eo_*`，全部啟用 |
+| 工具清單 | 14 個 `query_dw_eo_*`，全部啟用 |
 | 指令 | 以 `# Role` 開頭，約 4 萬字元 |
 | 最大迭代次數 | 12（月度檢視一次約要 10 次工具呼叫；再高只會讓上下文更容易爆掉） |
 | 錯誤處理 | 預設值（`default-value`）：Agent 拋例外時把「請縮小範圍」的說明寫進 `text`。**但這段文字不會自己送到使用者面前**——Answer 早在例外發生前就串流結束了，實測使用者只拿到 331／8／5／4 字的殘段。真正讓它出現的是下面的 If-Else 分支 |

@@ -4,7 +4,7 @@ Dify has no skill mechanism and does not need MCP: it imports tools from an
 OpenAPI document, which API Hub serves at ``GET /api/v1/DW/tools/openapi.json``
 (one operation per definition, see ``app/services/tool_openapi.py``). This emits
 the app that sits on top of those tools: Start -> Agent (function calling, the
-thirteen ``query_dw_eo_*`` tools, the five E&O skills folded into its instruction)
+fourteen ``query_dw_eo_*`` tools, the five E&O skills folded into its instruction)
 -> Answer.
 
 The checked-in copy at ``docs/dify/eo-analyst.yml`` carries two placeholders,
@@ -48,7 +48,7 @@ OUTPUT = REPO_ROOT / "docs" / "dify" / "eo-analyst.yml"
 DSL_VERSION = "0.7.0"  # Dify 1.17.x (api/constants/dsl_version.py)
 APP_NAME = "E&O Analyst"
 
-# The thirteen E&O definitions, by the operationId API Hub gives them. Must match
+# The fourteen E&O definitions, by the operationId API Hub gives them. Must match
 # what GET /DW/tools/openapi.json?group=eo lists for an eo_reader credential;
 # tests/test_dify_app_export.py checks it against the tool names the skills use.
 EO_TOOLS = [
@@ -58,6 +58,7 @@ EO_TOOLS = [
     "query_dw_eo_summary",
     "query_dw_eo_detail",
     "query_dw_eo_red_items",
+    "query_dw_eo_group_diff",
     "query_dw_eo_item_diff",
     "query_dw_eo_item_history",
     "query_dw_eo_trends",
@@ -298,7 +299,7 @@ def build_dsl(provider_id: str = PROVIDER_ID_PLACEHOLDER, model: str = MODEL_PLA
     return {
         "app": {
             "description": (
-                "Sercomm E&O 庫存分析。經 API Hub web API 查詢 13 個 query_dw_eo_* 工具，"
+                "Sercomm E&O 庫存分析。經 API Hub web API 查詢 14 個 query_dw_eo_* 工具，"
                 "並依 E&O skill 的欄位語意與歸屬追查流程解讀結果。"
             ),
             "icon": "📦",
