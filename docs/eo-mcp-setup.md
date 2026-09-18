@@ -611,6 +611,25 @@ the tool's own `Returns:` text — read it rather than assuming.
   the attribution beside it is one of several, and a reader who is not told will
   take it as the owner. On 2026-09-16, SP's largest item (549B000RMR0,
   1.77bn TWD) sat under **8 BUs and 7 PIDs**, and the answer showed only `E1B`.
+- **Gross increase is not net change. Report both, and never call the gainers
+  "the whole story."** Ranking by delta shows you only the rows that moved the way
+  you sorted; the ones that fell are off the bottom of the page. Add them up and
+  you have described a different period than the one the user asked about. On
+  2026-09-18, Charter 8/1 → 9/1: the three projects that rose contributed
+  **+538.4M** (DX8 +365.9, EAC +155.3, DY1 +17.2), and an answer led with that as
+  "the whole story" — but Charter's total went **1,632.9M → 1,875.0M, a net
+  +242.1M**, because `DXR` alone fell **291.2M**. The gross figure overstated the
+  period's deterioration by more than double, and the same answer had DXR's fall
+  sitting in its own footnote, unconnected. When you rank by delta, also total the
+  population and say which number is which.
+- **A total must come from the same column you ranked on.** `eo_dimensions`
+  returns `OBSOLETE_OHOPO_AMT_TWD` — the variant that **excludes** TP70/TP75 —
+  while `eo_summary`, `eo_group_diff` and the reports use
+  `OBSOLETE_OHOPO_ALL_AMT_TWD`. They differ (Charter, 2026-09-01: 1,857.0M vs
+  1,875.0M). Quoting a headline total from one while every line item is built on
+  the other is not a rounding difference, it is two different metrics in one
+  table. Re-total with the ranking column rather than borrowing a number from
+  whichever tool happened to print one.
 
 ## Investigating an attribution issue
 
