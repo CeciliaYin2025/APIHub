@@ -164,6 +164,7 @@ python -m scripts.extract_query --db DW --query eo_detail \
 
 ### 9. Rate Limiting and Concurrency
 - In-memory sliding window, one bucket per caller: per API key (honouring that key's own `rate_limit_per_minute`), per username for human callers, per client IP for anonymous requests
+- Over the limit returns `429` with `Retry-After` set to the seconds until the oldest request in the window ages out (1–60)
 - A second, independent cap limits how many requests one caller may have **in flight** at the same time (`MAX_CONCURRENT_REQUESTS_PER_PRINCIPAL`, default 4). A request waits up to `CONCURRENCY_WAIT_SECONDS` (default 5) for a slot, then gets `429` with `Retry-After`
 - The two answer different questions: the window caps request *volume*, the concurrency cap stops one caller occupying the server with a handful of slow queries. A client fanning out 8 parallel page requests against a heavy definition stays under 60/min while starving everyone else
 - Both use the same bucket key, and both are **process-local** — they do not coordinate across API instances or Celery workers, so with N instances the effective concurrency cap is N × the setting

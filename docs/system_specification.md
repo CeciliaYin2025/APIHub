@@ -2603,6 +2603,7 @@ CORSMiddleware(
 2. 清除超過 60 秒的歷史記錄
 3. 若現存記錄 >= 上限
    → 回傳 HTTP 429: {"detail": "Rate limit exceeded. Try again later."}
+     並附 Retry-After：視窗內最舊一筆請求滑出所需的秒數（1–60）
 4. 否則記錄本次請求時間，繼續處理
 ```
 

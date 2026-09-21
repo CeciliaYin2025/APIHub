@@ -4,6 +4,7 @@ For production with multiple API instances, replace this with a Redis-backed
 limiter (e.g. fastapi-limiter).
 """
 
+import math
 import time
 from collections import defaultdict
 
@@ -36,9 +37,16 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         self._hits[key] = [t for t in self._hits[key] if now - t < self.window]
 
         if len(self._hits[key]) >= limit:
+            # The window slides, so the next slot opens when the oldest hit ages out —
+            # tell the client exactly that instead of leaving it to guess a backoff.
+            # A key with rate_limit=0 is blocked with no hits on record; waiting never helps,
+            # so it just gets the full window.
+            hits = self._hits[key]
+            retry_after = max(1, math.ceil(self.window - (now - hits[0]))) if hits else self.window
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Rate limit exceeded. Try again later."},
+                headers={"Retry-After": str(retry_after)},
             )
 
         self._hits[key].append(now)
