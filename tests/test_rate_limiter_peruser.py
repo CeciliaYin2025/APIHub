@@ -49,6 +49,16 @@ def test_single_user_still_limited(monkeypatch):
     assert client.get("/probe").status_code == 429
 
 
+def test_429_carries_retry_after_within_the_window(monkeypatch):
+    """The window slides, so the wait is until the oldest hit ages out — 1..60 s."""
+    client = TestClient(_app(monkeypatch, lambda request: _user_principal("alice")))
+    client.get("/probe")
+    client.get("/probe")
+    resp = client.get("/probe")
+    assert resp.status_code == 429
+    assert 1 <= int(resp.headers["Retry-After"]) <= 60
+
+
 def test_sso_principal_keyed_like_a_user(monkeypatch):
     """An OAuth/SSO caller is a user, not an api_key — same per-username rule."""
     client = TestClient(_app(monkeypatch, lambda request: _user_principal("carol", ptype="sso_user")))
