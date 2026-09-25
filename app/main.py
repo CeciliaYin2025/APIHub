@@ -81,6 +81,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Browsers hide non-safelisted response headers from JS unless exposed, so without
+    # this a web client sees the 429 but cannot read how long to wait.
+    expose_headers=["Retry-After"],
 )
 
 # ── Routers ──────────────────────────────────────────────────────────────────

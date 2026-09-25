@@ -169,6 +169,7 @@ python -m scripts.extract_query --db DW --query eo_detail \
 - The two answer different questions: the window caps request *volume*, the concurrency cap stops one caller occupying the server with a handful of slow queries. A client fanning out 8 parallel page requests against a heavy definition stays under 60/min while starving everyone else
 - Both use the same bucket key, and both are **process-local** — they do not coordinate across API instances or Celery workers, so with N instances the effective concurrency cap is N × the setting
 - `/admin`, `/docs`, `/static` and `/favicon` are exempt from the concurrency cap: the SPA loads assets in parallel and they never touch a data source
+- Both 429s pass through CORS (outermost), so they carry `Access-Control-Allow-Origin`, and `Retry-After` is listed in `Access-Control-Expose-Headers` so browser JS can read it
 
 ### 9b. E&O MC / Sales views (`/api/v1/eo/field-dictionary`)
 - The same `INV_EO_PID_SUMMARY_F` row is published to two audiences under **different column names** — MC says "Obsolete All OH Amt", the Sales workbook says "E&O OH (All) Amt". The dictionary maps `db_field` × `mc_label` × `sales_label` so either name resolves to the same column

@@ -2573,8 +2573,11 @@ CORSMiddleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 ```
+
+CORS 是最外層中介層，因此速率限制與並發限制自行回傳的 429 也會帶 `Access-Control-Allow-Origin`。`Retry-After` 不在 CORS safelist 內，必須列在 `Access-Control-Expose-Headers`，瀏覽器端 JS 才讀得到要等幾秒。
 
 > **生產環境注意：** 應將 `allow_origins` 設為明確的前端網域清單。
 
