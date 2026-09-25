@@ -9,8 +9,10 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import settings
 
+# The driver is named explicitly: SQLAlchemy 2.1 maps a bare ``postgresql://`` to psycopg 3,
+# which is not installed — only psycopg2-binary is (see requirements.txt).
 SQLALCHEMY_DATABASE_URL = (
-    f"postgresql://{settings.postgres_user}:{settings.postgres_password}"
+    f"postgresql+psycopg2://{settings.postgres_user}:{settings.postgres_password}"
     f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
 )
 
