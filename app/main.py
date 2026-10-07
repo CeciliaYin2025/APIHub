@@ -9,7 +9,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1 import audit, auth, databases, eo, health, mcp, procedures, queries, schemas, tools, writes
+from app.api.v1 import (
+    audit,
+    auth,
+    databases,
+    eo,
+    health,
+    mcp,
+    procedures,
+    queries,
+    schemas,
+    tools,
+    write_definitions,
+    writes,
+)
 from app.core.config import settings
 from app.db.multi_pool import db_registry
 from app.db.oracle_pool import close_pool, init_pool
@@ -100,6 +113,7 @@ app.include_router(eo.router, prefix=settings.api_prefix)
 app.include_router(queries.router, prefix=settings.api_prefix)
 app.include_router(procedures.router, prefix=settings.api_prefix)
 app.include_router(writes.router, prefix=settings.api_prefix)
+app.include_router(write_definitions.router, prefix=settings.api_prefix)
 app.include_router(schemas.router, prefix=settings.api_prefix)
 app.include_router(tools.router, prefix=settings.api_prefix)
 

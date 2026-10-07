@@ -3,10 +3,10 @@
 | 項目 | 內容 |
 |------|------|
 | 文件名稱 | Oracle RESTful API Hub 系統規格書 |
-| 版本 | 1.10.0 |
+| 版本 | 1.11.0 |
 | 目標資料庫 | Oracle Database 11g (11.1.0.4)（支援多資料庫） |
 | 框架 | FastAPI (Python 3.10+) |
-| 文件日期 | 2026-08-14 |
+| 文件日期 | 2026-10-07 |
 
 ---
 
@@ -515,6 +515,34 @@ UPDATE employees SET emp_name = :set_emp_name WHERE emp_id = :wh_emp_id
 -- DELETE
 DELETE FROM employees WHERE emp_id = :wh_emp_id
 ```
+
+### 4.8.1 具名寫入服務 — `app/services/named_write_service.py`
+
+通用寫入（§4.8）的欄位清單取自第一筆 row、`where` 由呼叫端決定，因此一個寫錯的 payload 可以寫任何欄位，省略 `where` 時甚至會 `DELETE ... WHERE 1=1`。具名寫入把這兩者都移到**定義**（`api_hub_write_definitions`，§6.1.8）裡：
+
+| 規則 | 行為 |
+|------|------|
+| 欄位 allowlist | 請求出現定義未宣告的欄位 → 400；`required` 欄位缺漏、null 或空白 → 400；欄位名比對不分大小寫 |
+| 型別轉換 | `string` 原樣；`number` 接受 JSON 數字或數字字串 → `Decimal`；`date` 接受 `YYYY-MM-DD` / `YYYY/MM/DD` → `datetime.date`；`datetime` 接受 ISO 8601。由 Hub 轉成 driver 原生型別綁定，**不再依賴資料源 session 的 `NLS_DATE_FORMAT`** |
+| `insert` 模式 | 只新增；不接受 `key`，`rows` 不可為空 |
+| `replace` 模式 | 同一交易內先 `DELETE FROM <table> WHERE <key_columns> = key`，再 `executemany` INSERT。`key` 必填、欄位集合須等於 `key_columns`、值不可為空；**每筆 row 的鍵欄位值必須等於 `key`**。允許 `rows` 為空（只刪不插，代表上游檔案已清空） |
+| 欄位集合 | 所有 row 的欄位集合必須相同；未送的欄位不出現在 INSERT，DB `DEFAULT` 生效（例如 `CREATION_DATE DEFAULT SYSDATE`） |
+| `max_rows` | 每次呼叫的筆數上限（預設 10000） |
+| `dry_run` | 實際執行後 rollback，回報真實的 `deleted_rows` / `inserted_rows` |
+
+**為何 row 的鍵值必須等於 `key`：** `replace` 承諾「重送同一個檔案是冪等的」。只約束刪除條件、不約束插入資料的話，呼叫端可以用 `key=A` 寫入 `SOURCE_FILE=B` 的資料，重送 A 時刪不到 B。兩邊綁同一個鍵，刪除範圍恰好等於這個鍵曾寫入的範圍，也就碰不到 ERP 或其他寫入者的資料。
+
+SQL 識別字（表名、欄位名）只來自定義，請求值一律以 bind 傳入；bind 名稱用位置式 `:c0`、`:k0`，因為欄位名可能是 Oracle 不接受當 bind 名稱的保留字。表名仍經 dialect 的 `table_name_regex()` 驗證。
+
+```sql
+-- replace，key_columns = [SOURCE_FILE]（Oracle）
+DELETE FROM SOM_I698_REPORT WHERE SOURCE_FILE = :k0
+INSERT INTO SOM_I698_REPORT (ORGANIZATION_CODE, INVOICE_NO, RECEIPT_DATE, SOURCE_FILE) VALUES (:c0, :c1, :c2, :c3)
+```
+
+定義建立／修改表名或欄位時，透過 `schema_service.describe_table()`（§4.9）以**該 alias 的 DB 帳號**檢查表與欄位是否存在，同時驗證了該帳號看得到這張表；表尚未建立時可帶 `skip_table_check=true` 略過。具名寫入沒有 in-memory registry：寫入量小，每次呼叫以 `(name, db_alias)` 讀平台 store，CRUD 後不需要 reload，多 worker 也不會不同步。非同步（Celery）執行、`update` / `upsert` 模式、MCP / OpenAPI tool 暴露皆不在範圍內。
+
+設計文件：`docs/superpowers/specs/2026-10-07-named-write-definitions-design.md`。
 
 ### 4.9 表結構探查服務 — `app/services/schema_service.py`
 
@@ -1258,6 +1286,75 @@ POST /api/v1/{db}/writes/batch
 }
 ```
 
+#### 5.6.1 具名寫入定義（`/api/v1/{db}/writes/definitions`、`/api/v1/{db}/writes/named/execute`）
+
+規則見 §4.8.1。定義以 `(name, db_alias)` 唯一，`{db}` 即定義所屬的 alias。
+
+| 方法 | 路徑 | 認證 | 說明 |
+|------|------|------|------|
+| GET | `/{db}/writes/definitions` | superuser | 列出該資料庫的寫入定義（含停用） |
+| GET | `/{db}/writes/definitions/{name}` | superuser | 單筆 |
+| POST | `/{db}/writes/definitions[?skip_table_check=true]` | superuser | 建立；`permission` 空白時自動填 `write:<name>`；預設對實際資料表檢查表與欄位 |
+| PUT | `/{db}/writes/definitions/{name}[?skip_table_check=true]` | superuser | 修改（`name`、alias 不可改）；合併後重新驗證模式／鍵；改到表名或欄位時重新檢查資料表 |
+| DELETE | `/{db}/writes/definitions/{name}` | superuser | 刪除 |
+| POST | `/{db}/writes/definitions/{name}/validate` | superuser | 重新檢查宣告的表與欄位 |
+| POST | `/{db}/writes/named/execute` | 定義的 `permission` + `write` | 執行具名寫入（同步） |
+
+**建立定義 Request：**
+```json
+{
+  "name": "juniper_i698_load",
+  "group_name": "juniper",
+  "description": "Airflow: Juniper I698 receipts from POTrace files",
+  "table_name": "SOM_I698_REPORT",
+  "mode": "replace",
+  "columns": [
+    {"name": "ORGANIZATION_CODE", "type": "string", "required": true},
+    {"name": "INVOICE_NO", "type": "string"},
+    {"name": "RECEIPT_DATE", "type": "date"},
+    {"name": "UNITS_EXPECTED", "type": "number"},
+    {"name": "SOURCE_FILE", "type": "string"}
+  ],
+  "key_columns": ["SOURCE_FILE"],
+  "max_rows": 10000,
+  "permission": ""
+}
+```
+
+**執行 Request：**
+```json
+{
+  "name": "juniper_i698_load",
+  "key": {"SOURCE_FILE": "20261007_074842_SERCOMM_PH_POTrace.csv"},
+  "rows": [
+    {"ORGANIZATION_CODE": "EIAMSFGI", "INVOICE_NO": "MOCKTEST-PH-0001", "RECEIPT_DATE": "2026-10-07",
+     "UNITS_EXPECTED": 15, "SOURCE_FILE": "20261007_074842_SERCOMM_PH_POTrace.csv"}
+  ],
+  "dry_run": false
+}
+```
+
+**Response：**
+```json
+{
+  "success": true,
+  "name": "juniper_i698_load",
+  "mode": "replace",
+  "deleted_rows": 2,
+  "inserted_rows": 1,
+  "committed": true,
+  "dry_run": false
+}
+```
+
+| 狀態碼 | 情況 |
+|--------|------|
+| 400 | 請求不符定義（未宣告欄位、型別錯誤、缺 `key`、row 鍵值與 `key` 不符、超過 `max_rows`…），訊息指出第幾筆、哪個欄位；或資料庫拒絕寫入 —— `detail` 含 `phase`（`delete` / `insert` / `commit`）、`error`、`committed: false`，整筆交易已 rollback |
+| 403 | 未持有定義的 `permission` + `write`（`table:` 權限不適用） |
+| 404 | 該 alias 下沒有此定義 |
+| 409 | 定義已停用 |
+| 503 | 該 alias 連線池已滿 |
+
 ### 5.7 表結構探查端點 (`/api/v1/{db}/schemas`)
 
 | 方法 | 路徑 | 認證 | 說明 |
@@ -1654,7 +1751,8 @@ MCP 工具、Admin UI 與所有 API key 都早於本字典存在，且僅持有 
 | `procedure` | `POST /{db}/procedures/execute`、`/execute-async` | 程序名 | `{params, out_params, is_function}` | NULL |
 | `write` | `POST /{db}/writes/execute` | 表名 | `{operation, data, where, async_mode}` | `affected_rows` |
 | `write` | `POST /{db}/writes/batch` | 表名 | `{operations, async_mode}` | `total_affected` |
-| `definition` | `POST`/`PUT`/`DELETE /{db}/queries/definitions[/{name}]` | 定義名 | 請求 body（DELETE 為 NULL） | NULL |
+| `write` | `POST /{db}/writes/named/execute` | 定義名 | `{key, rows, dry_run}`，成功時另含 `result: {deleted_rows, inserted_rows, committed, dry_run}` | `deleted_rows + inserted_rows` |
+| `definition` | `POST`/`PUT`/`DELETE /{db}/queries/definitions[/{name}]`、`/{db}/writes/definitions[/{name}]` | 定義名 | 請求 body（DELETE 為 NULL） | NULL |
 | `report` | `GET /api/v1/audit/*` | `usage`/`logs`/`log_detail`/`filters` | NULL | NULL |
 
 `AuditMiddleware` 在 `call_next` 之後才組 row，讀不到已被消費的 request body，所以上表的資料是由各 router 呼叫 `app/middleware/audit.py::record_audit()` 放進 `request.state`，middleware 只負責搬進 audit row。失敗的請求（4xx/5xx）同樣留下含 `params` 的列。
@@ -1662,6 +1760,26 @@ MCP 工具、Admin UI 與所有 API key 都早於本字典存在，且僅持有 
 **保留期限：** 沒有任何自動清理機制。`params` 原樣儲存（`writes/batch` 的 payload 可能達數 MB），表的大小完全由 `AUDIT_RETENTION_DAYS` 加上手動／排程執行 `python -m scripts.purge_audit_logs [--days N] [--dry-run]` 決定；該指令分批 `DELETE`（預設每批 10000 列）以避免長交易鎖表。
 
 > **安全性：** `params` 不遮罩，呼叫方若把密碼、token 之類的值當作 bind 參數傳入會原樣落地。此表僅 superuser 可讀，但資料庫備份會一併帶走。
+
+#### 6.1.8 寫入定義表 `api_hub_write_definitions`
+
+具名寫入（§4.8.1）的定義。與 SQL 定義相同，以 `(name, db_alias)` 唯一（`uq_write_def_name_db_alias`）。由 `scripts/init_db.py` 的 `create_all` 建立。
+
+| 欄位 | 型態 | 約束 | 說明 |
+|------|------|------|------|
+| `id` | INTEGER | PK, AUTO | 主鍵 |
+| `name` | VARCHAR(200) | NN, INDEX | 定義名稱（識別字格式） |
+| `db_alias` | VARCHAR(64) | NN, INDEX | 所屬資料來源別名 |
+| `group_name` | VARCHAR(100) | NN, DEFAULT '', INDEX | Admin UI 分組 |
+| `description` | TEXT | NN, DEFAULT '' | 說明 |
+| `table_name` | VARCHAR(128) | NN | 目標表（可含 schema，依 dialect regex 驗證） |
+| `mode` | VARCHAR(20) | NN | `insert` / `replace` |
+| `columns` | JSONB | NN | `[{name, type, required, description}]`，`type` ∈ `string`/`number`/`date`/`datetime` |
+| `key_columns` | JSONB | NN, DEFAULT '[]' | `replace` 的刪除鍵（必須是宣告欄位；`insert` 時為空） |
+| `max_rows` | INTEGER | NN, DEFAULT 10000 | 每次呼叫筆數上限 |
+| `permission` | VARCHAR(200) | NN | 執行所需權限，預設 `write:<name>` |
+| `enabled` | BOOLEAN | NN, DEFAULT true | 停用後執行回 409 |
+| `created_at` / `updated_at` | DATETIME | | 建立 / 更新時間 |
 
 ### 6.2 ER Diagram
 
@@ -1693,6 +1811,20 @@ MCP 工具、Admin UI 與所有 API key 都早於本字典存在，且僅持有 
 │ params          JSONB       │
 │ created_at                  │
 │ updated_at                  │
+└─────────────────────────────┘
+
+┌─────────────────────────────┐
+│  api_hub_write_definitions  │
+├─────────────────────────────┤
+│ id              PK          │
+│ name + db_alias UQ          │
+│ table_name      NN          │
+│ mode            NN          │
+│ columns         JSONB       │
+│ key_columns     JSONB       │
+│ max_rows                    │
+│ permission      NN          │
+│ enabled                     │
 └─────────────────────────────┘
 ```
 
@@ -1911,6 +2043,9 @@ passthrough 模式少一個共用密碼、少一個必須在閘道封鎖的內�
 | 查詢 | `query:employees`、`query:RD_TC*`（前綴）、`query:*`（整類） | `read` |
 | 程序 | `procedure:PKG_HR.GET_SALARY`、`procedure:*` | `execute` |
 | 表 | `table:HR.EMPLOYEES`、`table:*` | `write` |
+| 具名寫入 | `write:juniper_i698_load`、`write:*` | `write` |
+
+> `table:*` 與 `write:*` 互不涵蓋：前綴比對以資源字串為準，兩者前綴不同。因此收回呼叫端的通用寫入權限（`table:`）不影響其具名寫入，反之亦然。
 
 ### 7.4 權限檢查邏輯
 
@@ -1951,6 +2086,7 @@ passthrough 模式少一個共用密碼、少一個必須在閘道封鎖的內�
 | 查詢 | DB 中 `api_hub_sql_definitions.permission` 欄位 | `read` | `SqlDefinition.permission` |
 | 程序 | `procedure:{name}` | `execute` | 由請求中的 `name` 動態組合 |
 | 寫入 | `table:{table}` | `write` | 由請求中的 `table` 動態組合 |
+| 具名寫入 | DB 中 `api_hub_write_definitions.permission` 欄位 | `write` | 依請求的 `name` 讀取定義 |
 
 ---
 
@@ -2432,6 +2568,7 @@ context**，而不是把整份資料印出來 —— 否則等於繞一圈又把
 | **Roles** | — | 角色清單 + 新增角色（名稱、描述、權限指派） |
 | **Permissions** | — | 權限清單 + 新增權限（resource、action、描述） |
 | **SQL Definitions** | — | 左右兩欄清單（左：**群組**依名稱排序並顯示定義數；右：該群組的定義依名稱排序）+ SQL 定義完整 CRUD：新增、編輯、刪除、檢視詳情（含 SQL）、YAML 匯出下載、YAML 檔案上傳匯入、伺服器端 YAML 匯入、熱重載 |
+| **Write Definitions** | — | 具名寫入定義（§4.8.1）：與 SQL Definitions 相同的左右兩欄清單（依頂部 DB selector），完整 CRUD；表單可「Load columns from table」從實際資料表帶入欄位與推測型別，再刪去呼叫端不該寫的欄位（例如有 DB DEFAULT 的稽核欄位）並勾選 key；詳情頁顯示表／模式／鍵／欄位、持有該權限的角色、由定義產生的 request 範例，以及永遠以 `dry_run` 執行的 Dry run 測試。**僅 superuser**，非 superuser 連側邊欄項目都不顯示 |
 | **Query Console** | — | 互動式查詢測試台（選擇 fetch mode、填入參數、即時查看結果表格） |
 | **Procedure Console** | — | 執行 Procedure / Function（支援 OUT 參數、非同步模式） |
 | **Write Console** | — | 執行 INSERT / UPDATE / DELETE（支援非同步佇列模式） |
@@ -2496,7 +2633,8 @@ app/admin/
 └── js/
     ├── app.js            # 應用邏輯（路由、共用 helper、多數頁面渲染）
     ├── usage_report.js   # API Usage Report 專屬（在 app.js 之後載入，沿用其全域 helper）
-    └── mcp_tools.js      # MCP Tools 專屬（同樣在 app.js 之後載入，沿用其全域 helper）
+    ├── mcp_tools.js      # MCP Tools 專屬（同樣在 app.js 之後載入，沿用其全域 helper）
+    └── write_definitions.js  # Write Definitions 專屬（同上）
 ```
 
 `/admin/js` 是整個目錄掛載為 StaticFiles，新增 JS 檔只需在 `index.html` 加 `<script>` 標籤，不必改 `main.py`。
@@ -2865,12 +3003,14 @@ Oracle-api-hub/
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── user.py                      # User / Role / Permission ORM 模型
-│   │   └── sql_definition.py            # SqlDefinitionModel ORM（api_hub_sql_definitions）
+│   │   ├── sql_definition.py            # SqlDefinitionModel ORM（api_hub_sql_definitions）
+│   │   └── write_definition.py          # WriteDefinitionModel ORM（api_hub_write_definitions）
 │   ├── schemas/
 │   │   ├── __init__.py
 │   │   ├── auth.py                      # 認證相關 Pydantic Schema
 │   │   ├── query.py                     # 查詢 / 程序 / 寫入 / 批次交易 Pydantic Schema
-│   │   └── sql_definition.py            # SQL 定義 CRUD Pydantic Schema
+│   │   ├── sql_definition.py            # SQL 定義 CRUD Pydantic Schema
+│   │   └── write_definition.py          # 寫入定義 CRUD + 具名寫入請求 Schema
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── auth_service.py              # 認證邏輯 + PermissionChecker
@@ -2880,6 +3020,7 @@ Oracle-api-hub/
 │   │   ├── query_service.py             # SQL 查詢執行 + ROWNUM 分頁
 │   │   ├── procedure_service.py         # Oracle Procedure / Function 呼叫
 │   │   ├── write_service.py             # DML 操作（INSERT/UPDATE/DELETE + 批次交易）
+│   │   ├── named_write_service.py       # 具名寫入：依定義驗證、型別轉換、依鍵 replace
 │   │   ├── schema_service.py            # 表結構探查（ALL_TAB_COLUMNS / 主鍵偵測）
 │   │   ├── db_health_service.py         # 資料來源即時連線檢查（併發 + 共用 deadline）
 │   │   └── mcp_catalog_service.py       # MCP 工具目錄唯讀投影（撞名 / 截斷偵測）
@@ -2904,6 +3045,7 @@ Oracle-api-hub/
 │   │       ├── queries.py               # 查詢端點（CRUD / 匯出 / 匯入 / 重載 / /{db}/執行）
 │   │       ├── procedures.py            # 程序端點（/{db}/同步 / 非同步）
 │   │       ├── writes.py                # 寫入端點（/{db}/單筆 / 批次 / 非同步 / 狀態查詢）
+│   │       ├── write_definitions.py     # 寫入定義 CRUD + 具名寫入執行
 │   │       ├── schemas.py              # 表結構探查端點（/{db}/describe）
 │   │       └── mcp.py                   # MCP 工具目錄唯讀端點（/mcp/tools，superuser only）
 │   ├── admin/                           # 管理介面 SPA
@@ -2951,6 +3093,8 @@ Oracle-api-hub/
 │   ├── test_security.py                 # 安全模組測試
 │   ├── test_sql_registry.py             # SQL 登錄服務測試
 │   ├── test_write_service.py            # 寫入服務測試（表名驗證）
+│   ├── test_named_write_service.py      # 具名寫入：定義驗證、請求驗證、SQL、交易
+│   ├── test_write_definitions_api.py    # 寫入定義端點：CRUD、權限、稽核、錯誤對應
 │   └── test_docs_skill_sync.py          # 守門測試：規格附錄與 SKILL.md 不一致即失敗
 ├── docs/
 │   ├── system_specification.md          # 本系統規格書

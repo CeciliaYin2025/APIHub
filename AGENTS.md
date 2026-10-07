@@ -120,6 +120,19 @@ celery -A app.tasks.celery_app flower --port=5555
   Hub cannot verify the column exists without running the query, so a missing one comes back
   from the driver and is mapped to 400 rather than 500.
 
+- **Named write definitions** (`app/services/named_write_service.py`, `app/api/v1/write_definitions.py`,
+  table `api_hub_write_definitions`): the constrained alternative to `/writes/batch`, which
+  takes its column list from the first row and its `where` from the caller (omit it and the
+  whole table goes). A definition pins alias, table, a typed column **allowlist** and a mode —
+  `insert`, or `replace` = `DELETE WHERE <key_columns> = key` then insert, one transaction.
+  **Every row must carry the request's key**: that is what makes resending a file idempotent
+  and keeps the delete off rows other writers own (the 2026-10-07 Juniper UAT overwrote an ERP
+  row through `/writes/batch`). Values are coerced to driver-native types in the Hub, so dates
+  never depend on the session's `NLS_DATE_FORMAT`. Permission is `write:<name>` — `table:*`
+  does not cover it. No in-memory registry (low volume; read per call), no Celery path, not
+  exposed as MCP/OpenAPI tools. `dry_run` executes and rolls back; the audit row's `params.result`
+  holds `deleted_rows`/`inserted_rows` separately. `/writes/batch` is unchanged.
+
 ### Data Source Databases vs Platform Store
 
 Two distinct database roles, do not confuse them:

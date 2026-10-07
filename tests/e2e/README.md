@@ -23,6 +23,21 @@ Admin UI in headless chromium.
   database, so `tests/test_audit_report_service.py` covers only the query
   building and pure helpers.
 
+- `write-definitions.spec.js` — named write definitions against a **real**
+  PostgreSQL: creates the definition through the UI (columns loaded from the
+  table), then checks that `replace` is idempotent per key, never touches a row
+  another writer owns, coerces dates, lets the DB default fill omitted columns,
+  that dry run counts without writing, and the 400 guards.
+
+## Data sources
+`test-env.js` sets `DATABASE_DEFINITIONS_DIR` to `fixtures/databases/`, so the
+run never uses a developer's own `app/database_definitions/databases.yaml`:
+- `default` — Oracle at `127.0.0.1:1`, deliberately unreachable. The seeded
+  definitions are dummy SQL and `usage-report.spec.js` relies on executions
+  against it failing.
+- `pg_test` — the throwaway Postgres container itself; the target of the
+  write-definition specs and the alias the query-console DB-switch specs select.
+
 ## Prerequisites
 - Docker (pulls `postgres:16-alpine` on first run)
 - The project's Python venv with app dependencies installed

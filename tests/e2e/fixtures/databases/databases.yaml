@@ -1,0 +1,26 @@
+# E2E data sources. global-setup points DATABASE_DEFINITIONS_DIR here so the run
+# never picks up a developer's real app/database_definitions/databases.yaml.
+#
+# `default` is deliberately unreachable: the seeded definitions are dummy SQL and
+# usage-report.spec.js relies on executions against it FAILING (failed calls are
+# audited too). `pg_test` is the throwaway Postgres container itself, used by
+# write-definitions.spec.js for real writes.
+- alias: default
+  db_type: oracle
+  description: "E2E placeholder (unreachable)"
+  dsn: "127.0.0.1:1/NONE"
+  user: "none"
+  password: "none"
+  pool_min: 0
+  pool_max: 1
+
+- alias: pg_test
+  db_type: postgresql
+  description: "E2E Postgres"
+  host: "localhost"
+  port: 55432
+  database: "api_hub"
+  user: "api_hub"
+  password: ""          # DB_PG_TEST_PASSWORD
+  pool_min: 0
+  pool_max: 2
