@@ -116,6 +116,9 @@ async function showApp() {
   // definitions they have no query:<name> permission for. Backend enforces it.
   const mcpNav = document.getElementById('navMcpTools');
   if (mcpNav) mcpNav.classList.toggle('hidden', !(currentUser && currentUser.is_superuser));
+  // Write definitions are managed by superusers only (the CRUD API 403s otherwise).
+  const writeDefsNav = document.getElementById('navWriteDefs');
+  if (writeDefsNav) writeDefsNav.classList.toggle('hidden', !(currentUser && currentUser.is_superuser));
   await loadDatabases();
   navigateTo('dashboard');
 }
@@ -295,7 +298,7 @@ function navigateTo(page) {
   const titles = {
     dashboard: 'Dashboard', users: 'User Management', roles: 'Role Management',
     permissions: 'Permission Management', 'api-keys': 'API Keys',
-    'sql-definitions': 'SQL Definitions',
+    'sql-definitions': 'SQL Definitions', 'write-definitions': 'Write Definitions',
     'query-console': 'Query Console', 'procedure-console': 'Procedure Console',
     'write-console': 'Write Console', 'data-maintenance': 'Data Maintenance',
     tasks: 'Async Tasks', 'usage-report': 'API Usage Report',
@@ -305,7 +308,7 @@ function navigateTo(page) {
   const renderers = {
     dashboard: renderDashboard, users: renderUsers, roles: renderRoles,
     permissions: renderPermissions, 'api-keys': renderApiKeys,
-    'sql-definitions': renderSqlDefs,
+    'sql-definitions': renderSqlDefs, 'write-definitions': renderWriteDefs,
     'query-console': renderQueryConsole, 'procedure-console': renderProcConsole,
     'write-console': renderWriteConsole, 'data-maintenance': renderDataMaintenance,
     tasks: renderTasks, 'usage-report': renderUsageReport,

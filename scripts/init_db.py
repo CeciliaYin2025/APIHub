@@ -15,6 +15,7 @@ from app.db.session import Base, SessionLocal, engine
 from app.models.audit_log import AuditLog  # noqa: F401 — registers model
 from app.models.sql_definition import SqlDefinitionModel  # noqa: F401 — registers model
 from app.models.user import ApiKey, Permission, Role, User  # noqa: F401 — registers models
+from app.models.write_definition import WriteDefinitionModel  # noqa: F401 — registers model
 
 
 def main():

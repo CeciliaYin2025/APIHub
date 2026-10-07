@@ -108,6 +108,31 @@ Drop YAML files into `app/database_definitions/` — each file is a list of data
 - **Async mode**: enqueue write operations via Celery + Redis to buffer DB load
 - Batch insert via `executemany` for high throughput
 
+### 3b. Named Write Definitions (`/api/v1/{db}/writes/named/execute`)
+The generic write endpoints trust the caller's column list and `where`; a named
+write definition does not. Managed in the Admin UI (**Write Definitions**) by
+superusers, each definition pins:
+- the alias and table, and an **allowlist of columns** with types
+  (`string` / `number` / `date` / `datetime`) — the Hub converts values to
+  driver-native types, so dates no longer depend on the session's `NLS_DATE_FORMAT`;
+- a mode: `insert` (append only) or `replace` — delete `WHERE <key_columns> = key`,
+  then insert, in one transaction. The key is mandatory and every row must carry
+  it, so resending a file replaces exactly what that file wrote and nothing else.
+
+Callers need `write:<name>` (`table:` permissions do not apply), may pass
+`dry_run: true` to get real counts and roll back, and the audit row records
+`deleted_rows` / `inserted_rows` separately. Design:
+`docs/superpowers/specs/2026-10-07-named-write-definitions-design.md`.
+
+```json
+POST /api/v1/ebs_ysc/writes/named/execute
+{"name": "juniper_i698_load",
+ "key":  {"SOURCE_FILE": "20261007_074842_SERCOMM_PH_POTrace.csv"},
+ "rows": [{"ORGANIZATION_CODE": "EIAMSFGI", "RECEIPT_DATE": "2026-10-07",
+           "SOURCE_FILE": "20261007_074842_SERCOMM_PH_POTrace.csv"}]}
+→ {"success": true, "mode": "replace", "deleted_rows": 2, "inserted_rows": 1, "committed": true, "dry_run": false}
+```
+
 ### 4. Task Queue (Celery + Redis)
 - Separate queues for `write` and `procedure` operations
 - Automatic retry with exponential backoff
@@ -548,17 +573,20 @@ app/
 ├── database_definitions/    # YAML database connection configs (multi-DB)
 ├── models/
 │   ├── user.py              # User, Role, Permission ORM models
-│   └── sql_definition.py    # SQL Definition ORM model (PostgreSQL)
+│   ├── sql_definition.py    # SQL Definition ORM model (PostgreSQL)
+│   └── write_definition.py  # Named write definition ORM model
 ├── schemas/
 │   ├── auth.py              # Auth request/response schemas
 │   ├── query.py             # Query/Procedure/Write schemas
-│   └── sql_definition.py    # SQL Definition CRUD schemas
+│   ├── sql_definition.py    # SQL Definition CRUD schemas
+│   └── write_definition.py  # Write definition CRUD + named-write request schemas
 ├── services/
 │   ├── auth_service.py      # Auth logic + PermissionChecker
 │   ├── sql_registry.py      # SQL definition registry (DB primary, YAML fallback)
 │   ├── query_service.py     # Query execution with pagination
 │   ├── procedure_service.py # Oracle proc/func execution
 │   ├── write_service.py     # DML operations
+│   ├── named_write_service.py # Named writes: validate against the definition, key-bounded replace
 │   ├── db_health_service.py # Live connectivity checks for data sources
 │   └── mcp_catalog_service.py # Read-only projection of the MCP tool catalog
 ├── tasks/
@@ -572,6 +600,7 @@ app/
 │   ├── queries.py           # Query endpoints (CRUD + execute)
 │   ├── procedures.py        # Procedure endpoints
 │   ├── writes.py            # Write endpoints
+│   ├── write_definitions.py # Write definition CRUD + named-write execution
 │   ├── mcp.py               # MCP tool catalog view (superuser only)
 │   └── health.py            # Health check
 └── sql_definitions/         # YAML query definitions (fallback/import source)
